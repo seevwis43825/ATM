@@ -1,0 +1,49 @@
+{
+  "_comment": "银行卡 Mock 数据 | 维护人：A",
+  "cards": [
+    {
+      "cardId": "card_001",
+      "userId": "u_1001",
+      "cardNo": "6222 **** **** 8888",
+      "cardType": "金卡",
+      "brand": "银联",
+      "dailyLimit": 50000,
+      "singleLimit": 20000,
+      "usedToday": 8888,
+      "status": "normal",
+      "statusText": "正常",
+      "boundPhone": "138****8001"
+    },
+    {
+      "cardId": "card_002",
+      "userId": "u_1001",
+      "cardNo": "6217 **** **** 1234",
+      "cardType": "普卡",
+      "brand": "VISA",
+      "dailyLimit": 20000,
+      "singleLimit": 10000,
+      "usedToday": 0,
+      "status": "normal",
+      "statusText": "正常",
+      "boundPhone": "138****8001"
+    },
+    {
+      "cardId": "card_003",
+      "userId": "u_1001",
+      "cardNo": "6225 **** **** 6666",
+      "cardType": "信用卡",
+      "brand": "万事达",
+      "dailyLimit": 30000,
+      "singleLimit": 15000,
+      "usedToday": 1999,
+      "status": "locked",
+      "statusText": "已锁定",
+      "boundPhone": "138****8001"
+    }
+  ],
+  "cardTypes": [
+    { "type": "普卡", "annualFee": 0, "limitRange": "0 - 20000", "desc": "基础卡种，免年费" },
+    { "type": "金卡", "annualFee": 100, "limitRange": "20000 - 100000", "desc": "额度较高，享机场贵宾厅" },
+    { "type": "白金卡", "annualFee": 800, "limitRange": "100000 - 500000", "desc": "高额度，含全球礼遇" }
+  ]
+}

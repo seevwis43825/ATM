@@ -1,0 +1,24 @@
+{
+  "_comment": "理财产品 Mock 数据 | 维护人：A | 12个产品，覆盖 R1-R5 风险等级",
+  "products": [
+    { "productId": "p_001", "name": "天天盈货币A", "type": "货币基金", "riskLevel": "R1", "expectedReturn": 1.85, "minAmount": 1, "termDays": 0, "liquidity": "T+0", "manager": "华夏基金" },
+    { "productId": "p_002", "name": "现金宝", "type": "货币基金", "riskLevel": "R1", "expectedReturn": 1.72, "minAmount": 100, "termDays": 0, "liquidity": "T+0", "manager": "天弘基金" },
+    { "productId": "p_003", "name": "稳健纯债90天", "type": "纯债基金", "riskLevel": "R2", "expectedReturn": 3.45, "minAmount": 1000, "termDays": 90, "liquidity": "持有到期", "manager": "易方达" },
+    { "productId": "p_004", "name": "月月盈固收", "type": "固收+", "riskLevel": "R2", "expectedReturn": 3.80, "minAmount": 1000, "termDays": 30, "liquidity": "T+1", "manager": "南方基金" },
+    { "productId": "p_005", "name": "平衡配置混合", "type": "混合基金", "riskLevel": "R3", "expectedReturn": 6.20, "minAmount": 1000, "termDays": 0, "liquidity": "T+1", "manager": "广发基金" },
+    { "productId": "p_006", "name": "红利优选混合", "type": "混合基金", "riskLevel": "R3", "expectedReturn": 7.10, "minAmount": 1000, "termDays": 0, "liquidity": "T+1", "manager": "中欧基金" },
+    { "productId": "p_007", "name": "沪深300指数增强", "type": "指数基金", "riskLevel": "R3", "expectedReturn": 7.80, "minAmount": 100, "termDays": 0, "liquidity": "T+1", "manager": "富国基金" },
+    { "productId": "p_008", "name": "科技创新股票型", "type": "股票基金", "riskLevel": "R4", "expectedReturn": 12.50, "minAmount": 1000, "termDays": 0, "liquidity": "T+1", "manager": "嘉实基金" },
+    { "productId": "p_009", "name": "医药主题基金", "type": "股票基金", "riskLevel": "R4", "expectedReturn": 11.30, "minAmount": 1000, "termDays": 0, "liquidity": "T+1", "manager": "招商基金" },
+    { "productId": "p_010", "name": "新能源产业基金", "type": "股票基金", "riskLevel": "R4", "expectedReturn": 13.80, "minAmount": 1000, "termDays": 0, "liquidity": "T+1", "manager": "汇添富" },
+    { "productId": "p_011", "name": "量化对冲专户", "type": "另类投资", "riskLevel": "R5", "expectedReturn": 18.20, "minAmount": 100000, "termDays": 180, "liquidity": "封闭期", "manager": "某私募" },
+    { "productId": "p_012", "name": "境外资产配置计划", "type": "QDII", "riskLevel": "R5", "expectedReturn": 15.60, "minAmount": 50000, "termDays": 365, "liquidity": "封闭期", "manager": "华安基金" }
+  ],
+  "riskLevelMap": {
+    "R1": "谨慎型（保本为主）",
+    "R2": "稳健型（低波动）",
+    "R3": "平衡型（中等波动）",
+    "R4": "进取型（高波动）",
+    "R5": "激进型（高风险）"
+  }
+}

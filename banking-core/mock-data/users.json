@@ -1,0 +1,37 @@
+{
+  "_comment": "用户与账户 Mock 数据 | 维护人：A | 其他人只读",
+  "users": [
+    {
+      "userId": "u_1001",
+      "name": "李明",
+      "phone": "13800138001",
+      "idCardTail": "****1234",
+      "birthday": "1995-10-08",
+      "riskLevel": "R3",
+      "riskLevelName": "平衡型",
+      "accounts": [
+        { "accountId": "acc_001", "type": "活期储蓄", "balance": 58234.5, "currency": "CNY" },
+        { "accountId": "acc_002", "type": "理财账户", "balance": 120000.0, "currency": "CNY" }
+      ],
+      "monthlyBudget": 8000,
+      "contacts": [
+        { "name": "张三", "phone": "13900139001", "lastTransferAt": "2026-08-15" },
+        { "name": "王五", "phone": "13900139002", "lastTransferAt": "2026-07-02" },
+        { "name": "赵小美", "phone": "13900139003", "lastTransferAt": "2026-09-01" }
+      ]
+    },
+    {
+      "userId": "u_1002",
+      "name": "王芳",
+      "phone": "13800138002",
+      "birthday": "1990-03-22",
+      "riskLevel": "R2",
+      "riskLevelName": "稳健型",
+      "accounts": [
+        { "accountId": "acc_101", "type": "活期储蓄", "balance": 23400.0, "currency": "CNY" }
+      ],
+      "monthlyBudget": 5000,
+      "contacts": []
+    }
+  ]
+}

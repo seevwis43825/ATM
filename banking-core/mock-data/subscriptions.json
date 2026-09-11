@@ -1,0 +1,75 @@
+{
+  "_comment": "订阅/代扣 Mock 数据 | 维护人：A | 埋点：1个即将续费的订阅，用于演示'续费提醒'",
+  "subscriptions": [
+    {
+      "subscriptionId": "sub_001",
+      "userId": "u_1001",
+      "merchant": "腾讯视频",
+      "plan": "年度会员",
+      "amount": 299.0,
+      "cycle": "年",
+      "lastChargedAt": "2026-09-03",
+      "nextChargeAt": "2027-09-03",
+      "status": "active",
+      "autoRenew": true,
+      "cancelPath": "腾讯视频APP → 我的 → 会员中心"
+    },
+    {
+      "subscriptionId": "sub_002",
+      "userId": "u_1001",
+      "merchant": "QQ音乐",
+      "plan": "豪华绿钻",
+      "amount": 9.9,
+      "cycle": "月",
+      "lastChargedAt": "2026-09-07",
+      "nextChargeAt": "2026-10-07",
+      "status": "active",
+      "autoRenew": true,
+      "cancelPath": "QQ音乐APP → 我的 → 已开通服务"
+    },
+    {
+      "subscriptionId": "sub_003",
+      "userId": "u_1001",
+      "merchant": "中国移动",
+      "plan": "畅享套餐",
+      "amount": 100.0,
+      "cycle": "月",
+      "lastChargedAt": "2026-08-28",
+      "nextChargeAt": "2026-09-28",
+      "status": "active",
+      "autoRenew": true,
+      "cancelPath": "需致电 10086 或营业厅办理"
+    },
+    {
+      "subscriptionId": "sub_004",
+      "userId": "u_1001",
+      "merchant": "某云盘会员",
+      "plan": "超级会员",
+      "amount": 25.0,
+      "cycle": "月",
+      "lastChargedAt": "2026-08-12",
+      "nextChargeAt": "2026-09-14",
+      "status": "active",
+      "autoRenew": true,
+      "cancelPath": "云盘APP → 设置 → 自动续费管理",
+      "warning": "即将在 2 天后扣费，用户可能已遗忘该订阅"
+    },
+    {
+      "subscriptionId": "sub_005",
+      "userId": "u_1001",
+      "merchant": "健身APP",
+      "plan": "年度课程包",
+      "amount": 688.0,
+      "cycle": "年",
+      "lastChargedAt": "2025-10-01",
+      "nextChargeAt": "2026-10-01",
+      "status": "active",
+      "autoRenew": true,
+      "cancelPath": "健身APP → 我的 → 会员管理",
+      "warning": "续费日在生日前后，可联动跨场景演示"
+    }
+  ],
+  "_scenarioHooks": {
+    "生日联动场景": "用户李明生日 10月8日，健身APP年费 10月1日到期。可设计：生日前2天提示'本月为你锁定1000元活期，用于生日鲜花蛋糕购置'，同时提示健身卡即将扣费 688 元。"
+  }
+}
