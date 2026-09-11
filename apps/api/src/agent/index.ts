@@ -12,6 +12,9 @@ import type {
 } from '../types';
 import { recognize } from './intent';
 import { addPending, makeAuditId, takePending, writeAudit } from '../lib/store';
+import {
+  appendTurn, getSession, patchSession, type SessionContext,
+} from '../lib/session';
 
 import {
   transferByContact, scheduleTransfer, splitBill, executeTransfer,
@@ -159,12 +162,58 @@ function flattenFields(data: unknown): Array<[string, string]> {
   return out;
 }
 
+/** 从工具结果里提取要写回会话的实体引用 —— 这是多轮对话能"记住"的关键 */
+function contextPatchFor(tool: string, result: ToolResult): Partial<SessionContext> {
+  const d = result.data as any;
+  if (!result.ok || !d) return {};
+
+  switch (tool) {
+    case 'transferByContact':
+      return { lastTarget: d.target ?? null, lastAmount: d.amount ?? null };
+
+    case 'recommendProduct':
+      return {
+        lastProducts: (d.products ?? []).map((p: any) => ({
+          productId: p.productId, name: p.name,
+        })),
+        // 记住用户这轮提到的金额，下一句「就买第一个」可以直接复用
+        ...(typeof d.investAmount === 'number' && d.investAmount > 0
+          ? { lastAmount: d.investAmount }
+          : {}),
+      };
+
+    case 'listSubscriptions':
+      return {
+        lastSubscriptions: (d.subscriptions ?? []).map((s: any) => ({
+          subscriptionId: s.subscriptionId, merchant: s.merchant,
+        })),
+      };
+
+    case 'listCards':
+      return {
+        lastCards: (d.cards ?? []).map((c: any) => ({
+          cardId: c.cardId, cardNo: c.cardNo,
+        })),
+      };
+
+    case 'birthdayWorkflow':
+      return {
+        lastSubscriptions: (d.upcomingSubscriptions ?? []).map((s: any) => ({
+          subscriptionId: s.subscriptionId, merchant: s.merchant,
+        })),
+      };
+
+    default:
+      return {};
+  }
+}
+
 /** 调度：意图 + 参数 → 工具结果 + UI */
 async function dispatch(
   userId: string,
   intent: Intent,
   params: Record<string, unknown>,
-): Promise<{ tool: string; result: ToolResult; ui: UiDirective }> {
+): Promise<{ tool: string; result: ToolResult; ui: UiDirective; ctxPatch: Partial<SessionContext> }> {
   const action = (params.action as string) ?? '';
   const p = params as any;
 
@@ -366,21 +415,39 @@ async function dispatch(
     });
   }
 
-  return { tool, result, ui };
+  return { tool, result, ui, ctxPatch: contextPatchFor(tool, result) };
 }
 
-/** 对外主入口：处理一条用户消息 */
+/** 对外主入口：处理一条用户消息（带多轮上下文） */
 export async function handleChat(
   sessionId: string,
   userId: string,
   message: string,
 ): Promise<ChatResponse> {
-  const { intent, params } = await recognize(message);
-  const { tool, result, ui } = await dispatch(userId, intent, params);
+  // 1. 取会话上下文（含历史对话与最近引用的实体）
+  const ctx = getSession(sessionId, userId);
+  appendTurn(sessionId, 'user', message);
+
+  // 2. 带上下文识别意图 —— 能补全「那再转200」里省略的收款人
+  const { intent, params, usedContext } = await recognize(message, ctx);
+
+  // 3. 调度工具
+  const { tool, result, ui, ctxPatch } = await dispatch(userId, intent, params);
+
+  // 4. 把本轮产生的实体写回会话，供下一轮指代使用
+  patchSession(sessionId, { ...ctxPatch, lastIntent: intent });
+
+  // 5. 回复里明确提示"我用了上下文"，让用户（和评委）看得见
+  const reply =
+    usedContext && result.ok
+      ? `${result.message}\n\n（已根据上一轮对话补全信息）`
+      : result.message;
+
+  appendTurn(sessionId, 'agent', reply);
 
   return {
     sessionId,
-    reply: result.message,
+    reply,
     intent,
     toolCalls: [{ tool, ...result }],
     ui,
@@ -410,9 +477,11 @@ export async function handleConfirm(req: ConfirmRequest): Promise<ChatResponse> 
       auditId, userId, tool: pending.tool, params,
       action: 'reject', riskLevel: pending.riskLevel,
     });
+    const reply = '好的，已取消这笔操作，没有产生任何资金变动。';
+    appendTurn(sessionId, 'agent', reply);
     return {
       sessionId,
-      reply: '好的，已取消这笔操作，没有产生任何资金变动。',
+      reply,
       intent: 'unknown',
       toolCalls: [],
       ui: { type: 'text', payload: {} },
@@ -437,6 +506,8 @@ export async function handleConfirm(req: ConfirmRequest): Promise<ChatResponse> 
     auditId, userId, tool: pending.tool, params,
     action: 'execute', riskLevel: pending.riskLevel,
   });
+
+  appendTurn(sessionId, 'agent', result.message);
 
   return {
     sessionId,

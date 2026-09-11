@@ -115,6 +115,8 @@ export async function recommendProduct(
       profileLevel,
       statedLevel,
       excludedCount: filtered,
+      // 回传用户提到的可投金额，供多轮对话复用
+      investAmount: amount > 0 ? amount : null,
       products: candidates.map((p) => ({
         productId: p.productId,
         name: p.name,
@@ -159,6 +161,15 @@ export async function subscribeProduct(
       ok: false, code: 'RISK_EXCEED',
       message: `无法申购：产品风险等级 ${product.riskLevel} 高于你的风险承受能力 ${user.riskLevel}。如确需购买，请先重新做风险评估。`,
       data: null, riskLevel: 'high', auditId,
+    };
+  }
+
+  // 风控 1：金额必须合法
+  if (!amount || Number.isNaN(amount) || amount <= 0) {
+    return {
+      ok: false, code: 'MISSING_AMOUNT',
+      message: `申购「${product.name}」需要指定金额，该产品起投 ${product.minAmount} 元。你想投多少？`,
+      data: null, riskLevel: 'low', auditId,
     };
   }
 

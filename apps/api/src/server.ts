@@ -13,6 +13,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { handleChat, handleConfirm } from './agent';
 import { listAudit } from './lib/store';
+import { debugSession, resetSession } from './lib/session';
 
 const app = express();
 const PORT = Number(process.env.API_PORT ?? 3001);
@@ -103,6 +104,35 @@ app.get('/api/audit', (req, res) => {
   const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
   const logs = listAudit(userId);
   res.json({ count: logs.length, logs: logs.slice(-50) });
+});
+
+// ---------- 会话状态（调试 / 答辩演示用）----------
+// 展示 Agent 当前"记得"什么 —— 答辩时可以现场证明多轮对话是真的
+app.get('/api/session/:sessionId', (req, res) => {
+  const s = debugSession(req.params.sessionId);
+  if (!s) {
+    return res.status(404).json({ error: 'SESSION_NOT_FOUND', message: '会话不存在或已过期' });
+  }
+  res.json({
+    sessionId: s.sessionId,
+    userId: s.userId,
+    turnCount: s.turns.length,
+    lastIntent: s.lastIntent,
+    remembered: {
+      lastTarget: s.lastTarget,
+      lastAmount: s.lastAmount,
+      lastProducts: s.lastProducts,
+      lastSubscriptions: s.lastSubscriptions,
+      lastCards: s.lastCards,
+    },
+    recentTurns: s.turns.slice(-6),
+  });
+});
+
+app.post('/api/session/reset', (req, res) => {
+  const { sessionId } = req.body ?? {};
+  if (sessionId) resetSession(sessionId);
+  res.json({ ok: true });
 });
 
 // ---------- 前端静态文件（生产构建后）----------

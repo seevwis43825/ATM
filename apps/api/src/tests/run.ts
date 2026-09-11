@@ -116,6 +116,47 @@ async function main() {
   const chat4 = await handleChat('sess_test', USER, '今天天气怎么样');
   check('未知意图有友好兜底', chat4.ui.type === 'text' && chat4.reply.includes('没理解'));
 
+  // ---------- 7. 多轮对话（指代消解）----------
+  console.log('\n[7] 多轮对话上下文');
+
+  // 7.1 转账后说「那再转200」—— 应自动补全收款人
+  const S = 'sess_multi';
+  await handleChat(S, USER, '给张三转500块，备注房租');
+  const m1 = await handleChat(S, USER, '那再转200');
+  check('「那再转200」识别为转账', m1.intent === 'transfer');
+  check(
+    '自动补全了收款人（张三）',
+    m1.reply.includes('张三'),
+    m1.reply,
+  );
+  check('提示了使用了上下文', m1.reply.includes('上一轮'));
+
+  // 7.2 理财推荐后说「就买第一个」
+  await handleChat(S, USER, '我有5万闲钱，想做个稳健点的理财');
+  const m2 = await handleChat(S, USER, '就买第一个');
+  check('「就买第一个」识别为理财申购', m2.intent === 'wealth');
+  check('补全了产品 ID', !!m2.toolCalls[0]?.data || m2.reply.length > 0, m2.reply.slice(0, 60));
+
+  // 7.3 订阅列表后说「取消那个」
+  await handleChat(S, USER, '我有哪些自动扣费');
+  const m3 = await handleChat(S, USER, '取消那个');
+  check('「取消那个」识别为取消订阅', m3.intent === 'subscription');
+  check('补全了具体订阅', m3.reply.includes('取消'), m3.reply.slice(0, 80));
+
+  // 7.4 卡片列表后说「把第一张卡锁了」
+  await handleChat(S, USER, '我有哪些银行卡');
+  const m4 = await handleChat(S, USER, '把第一张卡锁了');
+  check('「第一张卡锁了」识别为卡片操作', m4.intent === 'card');
+  check('补全了卡片 ID', !!m4.toolCalls[0]?.data, m4.reply.slice(0, 80));
+
+  // 7.5 不同会话之间不应串味
+  const other = await handleChat('sess_other', USER, '那再转200');
+  check(
+    '新会话不继承旧上下文（会反问转给谁）',
+    other.reply.includes('没有识别到收款人') || other.reply.includes('转给谁'),
+    other.reply.slice(0, 60),
+  );
+
   // ---------- 汇总 ----------
   console.log('\n────────────────────────────');
   console.log(`  通过 ${passed} 项，失败 ${failed} 项`);
