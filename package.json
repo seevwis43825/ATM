@@ -1,0 +1,16 @@
+{
+  "name": "ai-banking",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Banking Agent —— 人工智能赛道参赛作品：用自然语言对话完成银行业务",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "install:all": "npm --prefix apps/api install --no-audit --no-fund && npm --prefix apps/web install --no-audit --no-fund",
+    "test": "npm --prefix apps/api test",
+    "build": "npm --prefix apps/web run build",
+    "typecheck": "npm --prefix apps/api run typecheck"
+  }
+}

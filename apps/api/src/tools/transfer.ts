@@ -2,75 +2,78 @@
  * 智能转账工具集 —— 负责人：B
  *
  * 契约见 banking-core/contracts/agent-tool-contract.md
- * 铁律：所有函数必须返回 ToolResult<T> 结构，MOCK_MODE 下可独立运行。
+ * 铁律：所有函数返回 ToolResult<T>，MOCK_MODE 下可独立运行。
  */
 
-export type RiskLevel = 'low' | 'mid' | 'high';
+import type { ToolResult } from '../types';
+import { findUser, makeAuditId, riskByAmount } from '../lib/store';
 
-export interface ToolResult<T = unknown> {
-  ok: boolean;
-  code: string;
-  message: string;
-  data: T | null;
-  needConfirm?: boolean;
-  riskLevel?: RiskLevel;
-  auditId?: string;
+/** 从用户通讯录里查联系人（支持姓名或手机号） */
+function findContact(userId: string, keyword: string) {
+  const user = findUser(userId);
+  if (!user?.contacts) return null;
+  return (
+    user.contacts.find((c: any) => c.name === keyword || c.phone === keyword) ?? null
+  );
 }
 
-/** 生成审计 ID —— 安全自评报告需要，每次操作都要留痕 */
-export function makeAuditId(prefix = 'aud'): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  const rand = Math.random().toString(36).slice(2, 6);
-  return `${prefix}_${stamp}_${rand}`;
-}
-
-/** 从 Mock 数据里查联系人 —— 按姓名或手机号 */
-function findContact(keyword: string) {
-  const contacts = [
-    { name: '张三', phone: '13900139001' },
-    { name: '王五', phone: '13900139002' },
-    { name: '赵小美', phone: '13900139003' },
-  ];
-  return contacts.find((c) => c.name === keyword || c.phone === keyword) || null;
+/** 取主账户（活期储蓄）余额 */
+function mainBalance(userId: string): number {
+  const user = findUser(userId);
+  const acc = user?.accounts?.find((a: any) => a.type === '活期储蓄');
+  return acc?.balance ?? 0;
 }
 
 /**
  * 按人名 / 手机号转账
  * 演示话术：「给张三转500块，备注房租」
  */
-export async function transferByContact(params: {
-  target: string;
-  amount: number;
-  remark?: string;
-}): Promise<ToolResult> {
+export async function transferByContact(
+  userId: string,
+  params: { target: string; amount: number; remark?: string },
+): Promise<ToolResult> {
   const auditId = makeAuditId('aud_transfer');
   const { target, amount, remark } = params;
 
-  if (!target || !target.trim()) {
-    return { ok: false, code: 'MISSING_TARGET', message: '没有识别到收款人，请告诉我要转给谁。', data: null, auditId };
+  if (!target || !String(target).trim()) {
+    return {
+      ok: false, code: 'MISSING_TARGET',
+      message: '没有识别到收款人，请告诉我要转给谁。',
+      data: null, auditId,
+    };
   }
-  if (!amount || amount <= 0) {
-    return { ok: false, code: 'INVALID_AMOUNT', message: '转账金额需要是大于 0 的数字。', data: null, auditId };
+  if (!amount || Number.isNaN(amount) || amount <= 0) {
+    return {
+      ok: false, code: 'INVALID_AMOUNT',
+      message: '转账金额需要是大于 0 的数字。',
+      data: null, auditId,
+    };
   }
   if (amount > 50000) {
     return {
-      ok: false, code: 'EXCEED_LIMIT', message: '单笔转账超过 5 万元限额，请分笔操作或前往柜台。',
+      ok: false, code: 'EXCEED_LIMIT',
+      message: '单笔转账超过 5 万元限额，请分笔操作或前往柜台办理。',
       data: null, riskLevel: 'high', auditId,
     };
   }
 
-  const contact = findContact(target);
+  const balance = mainBalance(userId);
+  if (amount > balance) {
+    return {
+      ok: false, code: 'INSUFFICIENT_BALANCE',
+      message: `账户余额不足。当前活期余额 ${balance.toFixed(2)} 元，本次需转 ${amount.toFixed(2)} 元。`,
+      data: null, riskLevel: 'low', auditId,
+    };
+  }
 
-  // 大额转账标记为中风险，走二次确认
-  const riskLevel: RiskLevel = amount >= 5000 ? 'high' : amount >= 1000 ? 'mid' : 'low';
+  const contact = findContact(userId, target);
+  const riskLevel = riskByAmount(amount);
 
   return {
     ok: true,
     code: 'OK',
     message: contact
-      ? `已准备好转账：收款人 ${contact.name}（${contact.phone.slice(-4)}），金额 ${amount.toFixed(2)} 元${remark ? `，备注「${remark}」` : ''}。请确认后执行。`
+      ? `已准备好转账：收款人 ${contact.name}（尾号 ${contact.phone.slice(-4)}），金额 ${amount.toFixed(2)} 元${remark ? `，备注「${remark}」` : ''}。请确认后执行。`
       : `未在通讯录找到「${target}」，将通过对方手机号转账 ${amount.toFixed(2)} 元。请确认。`,
     needConfirm: true,
     riskLevel,
@@ -82,6 +85,7 @@ export async function transferByContact(params: {
       remark: remark ?? '',
       fee: 0,
       willArriveIn: '实时到账',
+      balanceAfter: Number((balance - amount).toFixed(2)),
     },
   };
 }
@@ -90,18 +94,24 @@ export async function transferByContact(params: {
  * 定时转账
  * 演示话术：「每月1号自动给房东转1200房租」
  */
-export async function scheduleTransfer(params: {
-  target: string;
-  amount: number;
-  cron: string;
-}): Promise<ToolResult> {
+export async function scheduleTransfer(
+  userId: string,
+  params: { target: string; amount: number; cron: string },
+): Promise<ToolResult> {
   const auditId = makeAuditId('aud_schedule');
-  const contact = findContact(params.target);
+  const contact = findContact(userId, params.target);
+
+  if (!params.amount || params.amount <= 0) {
+    return {
+      ok: false, code: 'INVALID_AMOUNT',
+      message: '定时转账金额需要大于 0。', data: null, auditId,
+    };
+  }
 
   return {
     ok: true,
     code: 'OK',
-    message: `已创建定时转账计划：${params.cron} 自动向 ${contact?.name ?? params.target} 转账 ${params.amount.toFixed(2)} 元。可在「我的计划」中随时修改或终止。`,
+    message: `已创建定时转账计划：每月 1 日自动向 ${contact?.name ?? params.target} 转账 ${params.amount.toFixed(2)} 元。可在「我的计划」中随时修改或终止。`,
     needConfirm: true,
     riskLevel: 'mid',
     auditId,
@@ -120,15 +130,24 @@ export async function scheduleTransfer(params: {
  * 拆分 AA 收款
  * 演示话术：「这顿饭620，我们4个人AA」
  */
-export async function splitBill(params: {
-  totalAmount: number;
-  members: string[];
-}): Promise<ToolResult> {
+export async function splitBill(
+  userId: string,
+  params: { totalAmount: number; members: string[] },
+): Promise<ToolResult> {
   const auditId = makeAuditId('aud_split');
   const { totalAmount, members } = params;
 
   if (!members || members.length < 2) {
-    return { ok: false, code: 'INVALID_MEMBERS', message: 'AA 至少需要 2 个人。', data: null, auditId };
+    return {
+      ok: false, code: 'INVALID_MEMBERS',
+      message: 'AA 至少需要 2 个人。', data: null, auditId,
+    };
+  }
+  if (!totalAmount || totalAmount <= 0) {
+    return {
+      ok: false, code: 'INVALID_AMOUNT',
+      message: 'AA 总金额需要大于 0。', data: null, auditId,
+    };
   }
 
   const perPerson = Number((totalAmount / members.length).toFixed(2));
@@ -142,5 +161,32 @@ export async function splitBill(params: {
     riskLevel: 'low',
     auditId,
     data: { totalAmount, memberCount: members.length, perPerson, shares },
+  };
+}
+
+/** 用户确认后的真实执行（演示用：扣减内存余额并留痕） */
+export async function executeTransfer(
+  userId: string,
+  params: { target: string; amount: number; remark?: string },
+): Promise<ToolResult> {
+  const auditId = makeAuditId('aud_transfer_exec');
+  const user = findUser(userId);
+  const acc = user?.accounts?.find((a: any) => a.type === '活期储蓄');
+
+  if (acc) acc.balance = Number((acc.balance - params.amount).toFixed(2));
+
+  return {
+    ok: true,
+    code: 'OK',
+    message: `转账成功：已向 ${params.target} 转出 ${params.amount.toFixed(2)} 元，实时到账。`,
+    riskLevel: riskByAmount(params.amount),
+    auditId,
+    data: {
+      target: params.target,
+      amount: params.amount,
+      remark: params.remark ?? '',
+      balanceAfter: acc?.balance ?? 0,
+      status: 'success',
+    },
   };
 }
