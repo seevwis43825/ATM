@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BankingAgent.Base\BankingAgent.Base.csproj" />
+    <ProjectReference Include="..\BankingAgent.Plugin.Sdk\BankingAgent.Plugin.Sdk.csproj" />
+  </ItemGroup>
+
+  <!--
+    示例插件：以「构建后复制」方式输出到 plugins 目录。
+    真实项目中插件由各自团队独立发布，放入 plugins 目录即可被扫描加载，
+    宿主无需重新编译。
+  -->
+  <ItemGroup>
+    <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.Transfer\bin\$(Configuration)\net8.0\BankingAgent.Plugin.Transfer.dll" />
+    <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.BillAnalysis\bin\$(Configuration)\net8.0\BankingAgent.Plugin.BillAnalysis.dll" />
+    <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.CardManagement\bin\$(Configuration)\net8.0\BankingAgent.Plugin.CardManagement.dll" />
+  </ItemGroup>
+
+  <Target Name="CopyPluginsToOutput" AfterTargets="Build">
+    <Copy SourceFiles="@(PluginArtifact)"
+          DestinationFolder="$(OutDir)plugins"
+          SkipUnchangedFiles="true"
+          Condition="Exists('%(PluginArtifact.Identity)')" />
+  </Target>
+
+</Project>

@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BankingAgent.Plugin.Sdk\BankingAgent.Plugin.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\BankingAgent.Base\BankingAgent.Base.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>AI 银行助手 · IM 对话 H5 原型</title>
+<style>
+  /* === Design Tokens === */
+  :root {
+    --primary-50:  #EEF2FF;
+    --primary-100: #E0E7FF;
+    --primary-500: #6366F1;
+    --primary-600: #4F46E5;
+    --primary-700: #4338CA;
+    --success: #10B981;
+    --warning: #F59E0B;
+    --danger:  #EF4444;
+    --info:    #3B82F6;
+    --ink-900: #0F172A;
+    --ink-700: #334155;
+    --ink-500: #64748B;
+    --ink-300: #CBD5E1;
+    --ink-100: #F1F5F9;
+    --canvas:  #F8FAFC;
+    --bg:      #FFFFFF;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--ink-900);
+    background: var(--canvas);
+    overflow: hidden;
+  }
+
+  /* === Phone Frame === */
+  .phone {
+    width: 390px;
+    height: 844px;
+    margin: 20px auto;
+    background: var(--bg);
+    border-radius: 36px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.15), 0 0 0 8px #1a1a1a, 0 0 0 10px #2a2a2a;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  @media (max-width: 430px) {
+    .phone { width: 100%; height: 100vh; margin: 0; border-radius: 0; box-shadow: none; }
+  }
+
+  /* === Status Bar === */
+  .status-bar {
+    height: 44px;
+    padding: 0 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink-900);
+    background: var(--bg);
+    flex-shrink: 0;
+  }
+  .status-bar .icons { display: flex; gap: 6px; font-size: 12px; }
+
+  /* === Header === */
+  .header {
+    padding: 12px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--ink-100);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .header .left { display: flex; align-items: center; gap: 12px; }
+  .avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--primary-500), var(--primary-700));
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 14px;
+  }
+  .header .title { font-size: 16px; font-weight: 600; }
+  .header .subtitle { font-size: 12px; color: var(--ink-500); }
+  .header .actions { display: flex; gap: 16px; font-size: 20px; color: var(--ink-700); cursor: pointer; }
+
+  /* === Chat Stream === */
+  .chat-stream {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    background: var(--canvas);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .message {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    animation: slideUp .3s ease;
+  }
+  @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .message.user { flex-direction: row-reverse; }
+  .message .avatar-sm {
+    width: 32px; height: 32px;
+    border-radius: 8;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600;
+    color: white;
+  }
+  .message.user .avatar-sm { background: var(--primary-500); }
+  .message.assistant .avatar-sm { background: linear-gradient(135deg, var(--primary-500), var(--primary-700)); }
+
+  .bubble {
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    font-size: 15px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+  .message.user .bubble {
+    background: var(--primary-500);
+    color: white;
+    border-bottom-right-radius: 4px;
+  }
+  .message.assistant .bubble {
+    background: white;
+    color: var(--ink-900);
+    border-bottom-left-radius: 4px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.05);
+  }
+
+  .ai-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--ink-500);
+    margin-top: 4px;
+  }
+  .ai-badge::before {
+    content: "✨";
+    font-size: 10px;
+  }
+
+  /* === Business Cards === */
+  .card {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.06);
+    padding: 16px;
+    margin-top: 8px;
+    max-width: 320px;
+    font-size: 14px;
+  }
+  .card-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .card-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 0;
+    font-size: 13px;
+  }
+  .card-row .label { color: var(--ink-500); }
+  .card-row .value { font-weight: 500; }
+  .card-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+  /* === Buttons === */
+  .btn {
+    border: none;
+    cursor: pointer;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    font-family: inherit;
+    transition: all .15s;
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 4px;
+  }
+  .btn:active { transform: scale(.96); }
+  .btn-primary { background: var(--primary-600); color: white; flex: 1; }
+  .btn-primary:hover { background: var(--primary-700); }
+  .btn-secondary { background: var(--ink-100); color: var(--ink-700); flex: 1; }
+  .btn-danger { background: var(--danger); color: white; flex: 1; }
+  .btn-text { background: transparent; color: var(--primary-600); padding: 6px 12px; }
+  .btn-full { width: 100%; }
+
+  /* === Quick Replies === */
+  .quick-replies {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    padding: 8px 16px;
+    background: var(--bg);
+    border-top: 1px solid var(--ink-100);
+    overflow-x: auto;
+    flex-shrink: 0;
+  }
+  .quick-reply {
+    padding: 8px 14px;
+    border: 1px solid var(--ink-300);
+    border-radius: 20px;
+    font-size: 13px;
+    color: var(--ink-700);
+    background: var(--bg);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all .15s;
+  }
+  .quick-reply:hover { border-color: var(--primary-500); color: var(--primary-600); }
+
+  /* === Input Area === */
+  .input-area {
+    padding: 12px 16px 24px;
+    background: var(--bg);
+    border-top: 1px solid var(--ink-100);
+    display: flex; gap: 8px; align-items: center;
+    flex-shrink: 0;
+  }
+  .input-area input {
+    flex: 1;
+    border: none;
+    background: var(--ink-100);
+    border-radius: 24px;
+    padding: 10px 16px;
+    font-size: 15px;
+    font-family: inherit;
+    outline: none;
+  }
+  .input-area input:focus { background: var(--primary-50); }
+  .icon-btn {
+    width: 36px; height: 36px;
+    border: none;
+    background: transparent;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 20px;
+    color: var(--ink-700);
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s;
+  }
+  .icon-btn:hover { background: var(--ink-100); }
+  .icon-btn.primary { background: var(--primary-500); color: white; }
+
+  /* === Welcome / Empty === */
+  .welcome {
+    text-align: center;
+    padding: 40px 20px;
+  }
+  .welcome .greeting { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+  .welcome .sub { color: var(--ink-500); font-size: 14px; margin-bottom: 24px; }
+  .welcome-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    max-width: 320px; margin: 0 auto;
+  }
+  .welcome-tile {
+    padding: 16px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.05);
+    cursor: pointer;
+    transition: transform .15s;
+  }
+  .welcome-tile:hover { transform: translateY(-2px); }
+  .welcome-tile .icon { font-size: 28px; margin-bottom: 8px; }
+  .welcome-tile .label { font-size: 13px; font-weight: 500; }
+
+  /* === Risk Alert === */
+  .risk-alert {
+    background: linear-gradient(135deg, #FEF3C7, #FDE68A);
+    border-left: 4px solid var(--warning);
+    padding: 12px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #78350F;
+    margin-top: 8px;
+  }
+  .risk-alert strong { color: #92400E; }
+
+  /* === Typing Indicator === */
+  .typing { display: inline-flex; gap: 4px; padding: 4px 0; }
+  .typing span {
+    width: 6px; height: 6px;
+    background: var(--ink-300);
+    border-radius: 50%;
+    animation: typing 1.4s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes typing { 0%,60%,100% { opacity: .3; } 30% { opacity: 1; } }
+
+  /* === Tooltip / Notice === */
+  .notice {
+    margin: 8px 16px;
+    padding: 8px 12px;
+    background: var(--primary-50);
+    color: var(--primary-700);
+    border-radius: 8px;
+    font-size: 12px;
+    text-align: center;
+  }
+
+  /* === Bill Bar Chart === */
+  .bar-chart { display: flex; gap: 6px; align-items: flex-end; height: 60px; margin-top: 8px; }
+  .bar { flex: 1; background: var(--primary-100); border-radius: 4px 4px 0 0; position: relative; }
+  .bar.active { background: var(--primary-500); }
+
+  /* === Helpers === */
+  .text-success { color: var(--success); }
+  .text-warning { color: var(--warning); }
+  .text-danger { color: var(--danger); }
+  .text-muted { color: var(--ink-500); }
+  .mt-8 { margin-top: 8px; }
+  .mt-12 { margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<!-- ============ SCREEN 1: IM Conversation ============ -->
+<div class="phone">
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span>9:41</span>
+    <span class="icons">📶 5G 🔋 86%</span>
+  </div>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="left">
+      <div class="avatar">AI</div>
+      <div>
+        <div class="title">小慧 · AI 银行助手</div>
+        <div class="subtitle">✨ 在线 · 已加密会话</div>
+      </div>
+    </div>
+    <div class="actions">
+      <span style="cursor:pointer" title="历史">📋</span>
+      <span style="cursor:pointer" title="菜单">⋯</span>
+    </div>
+  </div>
+
+  <!-- Chat Stream -->
+  <div class="chat-stream" id="chatStream">
+
+    <!-- Welcome -->
+    <div class="welcome">
+      <div class="greeting">👋 你好，张先生</div>
+      <div class="sub">我是你的 AI 银行助手，能帮你转账、分析账单、推荐理财</div>
+    </div>
+
+    <!-- User Msg 1 -->
+    <div class="message user">
+      <div class="avatar-sm">张</div>
+      <div class="bubble">帮我查一下这个月花了多少钱</div>
+    </div>
+
+    <!-- Assistant 1: Bill Analysis -->
+    <div class="message assistant">
+      <div class="avatar-sm">AI</div>
+      <div>
+        <div class="bubble">
+          好的，已为您分析本月支出 ✨
+          <div class="card">
+            <div class="card-title">📊 9 月账单</div>
+            <div class="card-row"><span class="label">总支出</span><span class="value">¥ 8,234.50</span></div>
+            <div class="card-row"><span class="label">较上月</span><span class="value text-success">↓ 12%</span></div>
+            <div class="card-row"><span class="label">交易笔数</span><span class="value">87 笔</span></div>
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ink-100)">
+              <div style="font-size:12px;color:var(--ink-500);margin-bottom:6px">分类 TOP 3</div>
+              <div class="card-row"><span class="label">🍜 餐饮</span><span class="value">¥ 2,310 (28%)</span></div>
+              <div class="card-row"><span class="label">🛒 购物</span><span class="value">¥ 1,890 (23%)</span></div>
+              <div class="card-row"><span class="label">🚇 交通</span><span class="value">¥ 980 (12%)</span></div>
+            </div>
+            <div class="bar-chart">
+              <div class="bar active" style="height:60%"></div>
+              <div class="bar" style="height:40%"></div>
+              <div class="bar" style="height:80%"></div>
+              <div class="bar" style="height:30%"></div>
+              <div class="bar" style="height:50%"></div>
+              <div class="bar" style="height:70%"></div>
+              <div class="bar active" style="height:90%"></div>
+            </div>
+          </div>
+        </div>
+        <div class="ai-badge">AI 生成 · 数据已脱敏</div>
+      </div>
+    </div>
+
+    <!-- User Msg 2 -->
+    <div class="message user">
+      <div class="avatar-sm">张</div>
+      <div class="bubble">那帮我给李四转 5000 块</div>
+    </div>
+
+    <!-- Assistant 2: Transfer Card -->
+    <div class="message assistant">
+      <div class="avatar-sm">AI</div>
+      <div>
+        <div class="bubble">
+          好的，请确认转账信息 ✨
+          <div class="card">
+            <div class="card-title">💸 转账确认</div>
+            <div class="card-row"><span class="label">收款人</span><span class="value">李四</span></div>
+            <div class="card-row"><span class="label">收款账户</span><span class="value">****-5678</span></div>
+            <div class="card-row"><span class="label">付款账户</span><span class="value">储蓄卡 ****-1234</span></div>
+            <div class="card-row"><span class="label">金额</span><span class="value" style="font-size:20px;font-weight:600;color:var(--primary-600)">¥ 5,000.00</span></div>
+            <div class="card-row"><span class="label">手续费</span><span class="value text-success">免费</span></div>
+
+            <div class="risk-alert mt-12">
+              <strong>⚠️ 大额转账提示</strong><br/>
+              单笔超过 5000 元，需要您二次确认（指纹或短信）
+            </div>
+
+            <div class="card-actions">
+              <button class="btn btn-secondary">取消</button>
+              <button class="btn btn-primary">👆 指纹确认</button>
+            </div>
+          </div>
+        </div>
+        <div class="ai-badge">AI 生成 · 已审计</div>
+      </div>
+    </div>
+
+    <!-- User Msg 3 -->
+    <div class="message user">
+      <div class="avatar-sm">张</div>
+      <div class="bubble">确认了</div>
+    </div>
+
+    <!-- Assistant 3: Success -->
+    <div class="message assistant">
+      <div class="avatar-sm">AI</div>
+      <div>
+        <div class="bubble">
+          ✅ 转账成功
+          <div class="card">
+            <div class="card-title text-success">✓ 转账完成</div>
+            <div class="card-row"><span class="label">交易号</span><span class="value">tx_202609211023</span></div>
+            <div class="card-row"><span class="label">到账时间</span><span class="value">实时</span></div>
+            <div class="card-actions">
+              <button class="btn btn-text">查看详情</button>
+              <button class="btn btn-text">再转一笔</button>
+            </div>
+          </div>
+        </div>
+        <div class="ai-badge">AI 生成</div>
+      </div>
+    </div>
+
+    <!-- User Msg 4: Wealth -->
+    <div class="message user">
+      <div class="avatar-sm">张</div>
+      <div class="bubble">我手头还有 5 万闲钱，能买啥理财</div>
+    </div>
+
+    <!-- Assistant 4: Wealth Recommendation -->
+    <div class="message assistant">
+      <div class="avatar-sm">AI</div>
+      <div>
+        <div class="bubble">
+          根据您的风险测评（R3 稳健型）和资金情况 ✨
+          <div class="card">
+            <div class="card-title">💎 理财推荐</div>
+
+            <div style="background:var(--primary-50);padding:12px;border-radius:8px;margin-bottom:12px">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <strong>稳健理财 · 30 天</strong>
+                <span style="color:var(--success);font-weight:600">3.2%</span>
+              </div>
+              <div style="font-size:12px;color:var(--ink-500);margin-top:4px">
+                风险 R2 · 起投 ¥1000
+              </div>
+            </div>
+
+            <div style="background:var(--ink-100);padding:12px;border-radius:8px;margin-bottom:12px">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <strong>债基组合</strong>
+                <span style="color:var(--success);font-weight:600">4.1%</span>
+              </div>
+              <div style="font-size:12px;color:var(--ink-500);margin-top:4px">
+                风险 R2 · 起投 ¥5000
+              </div>
+            </div>
+
+            <div class="risk-alert">
+              <strong>📌 投资有风险</strong><br/>
+              理财非存款、产品过往业绩不预示未来表现。请确认风险承受能力。
+            </div>
+
+            <div class="card-actions">
+              <button class="btn btn-text">查看更多</button>
+              <button class="btn btn-primary">立即购买</button>
+            </div>
+          </div>
+        </div>
+        <div class="ai-badge">AI 生成 · 合规审查通过</div>
+      </div>
+    </div>
+
+    <!-- User Msg 5: Error state -->
+    <div class="message user">
+      <div class="avatar-sm">张</div>
+      <div class="bubble">刚才那笔转账能不能撤回</div>
+    </div>
+
+    <!-- Assistant 5: error fallback -->
+    <div class="message assistant">
+      <div class="avatar-sm">AI</div>
+      <div>
+        <div class="bubble" style="background:#FEF2F2;color:#991B1B">
+          ⚠️ 抱歉，转账已实时到账，无法通过 AI 撤回
+          <div class="card">
+              <div style="font-size:13px;line-height:1.6">
+                您可以：
+              </div>
+              <ul style="font-size:13px;margin:8px 0 0 16px;color:var(--ink-700)">
+                <li>联系收款人协商退回</li>
+                <li>通过客服热线 95XXX 处理</li>
+                <li>前往任意网点申请</li>
+              </ul>
+              <div class="card-actions">
+                <button class="btn btn-secondary">取消</button>
+                <button class="btn btn-primary">转人工客服</button>
+              </div>
+            </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Typing Indicator (placeholder for demo) -->
+    <div class="message assistant" id="typingIndicator" style="display:none">
+      <div class="avatar-sm">AI</div>
+      <div class="bubble">
+        <div class="typing">
+          <span></span><span></span><span></span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Quick Replies -->
+  <div class="quick-replies">
+    <div class="quick-reply">💰 查余额</div>
+    <div class="quick-reply">💸 转账</div>
+    <div class="quick-reply">📊 账单</div>
+    <div class="quick-reply">💎 理财</div>
+    <div class="quick-reply">💳 卡片</div>
+  </div>
+
+  <!-- Input Area -->
+  <div class="input-area">
+    <button class="icon-btn" title="语音">🎙️</button>
+    <input type="text" placeholder="说点什么…" />
+    <button class="icon-btn" title="快捷">+</button>
+    <button class="icon-btn primary" title="发送">➤</button>
+  </div>
+</div>
+
+<script>
+  // Auto-scroll to bottom
+  const chat = document.getElementById('chatStream');
+  chat.scrollTop = chat.scrollHeight;
+
+  // Quick replies interaction (demo)
+  document.querySelectorAll('.quick-reply').forEach(el => {
+    el.addEventListener('click', () => {
+      const input = document.querySelector('.input-area input');
+      input.value = el.textContent;
+      input.focus();
+    });
+  });
+
+  // Send button (demo: just shows typing indicator)
+  document.querySelector('.input-area .icon-btn.primary').addEventListener('click', () => {
+    const input = document.querySelector('.input-area input');
+    if (!input.value.trim()) return;
+    // In real app: send to API, receive SSE
+    input.value = '';
+    const indicator = document.getElementById('typingIndicator');
+    indicator.style.display = 'flex';
+    chat.scrollTop = chat.scrollHeight;
+    setTimeout(() => { indicator.style.display = 'none'; }, 2000);
+  });
+
+  // Enter to send
+  document.querySelector('.input-area input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      document.querySelector('.input-area .icon-btn.primary').click();
+    }
+  });
+</script>
+
+</body>
+</html>

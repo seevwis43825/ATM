@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/mock-bank/">
+    <Project Path="mock-bank/MockBank.Api/MockBank.Api.csproj" />
+  </Folder>
+  <Folder Name="/plugins/">
+    <Project Path="plugins/BankingAgent.Plugin.BillAnalysis/BankingAgent.Plugin.BillAnalysis.csproj" />
+    <Project Path="plugins/BankingAgent.Plugin.CardManagement/BankingAgent.Plugin.CardManagement.csproj" />
+    <Project Path="plugins/BankingAgent.Plugin.Transfer/BankingAgent.Plugin.Transfer.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/BankingAgent.Base/BankingAgent.Base.csproj" />
+    <Project Path="src/BankingAgent.Host/BankingAgent.Host.csproj" />
+    <Project Path="src/BankingAgent.Plugin.Sdk/BankingAgent.Plugin.Sdk.csproj" />
+  </Folder>
+  <Project Path="StressTest/StressTest.csproj" />
+</Solution>

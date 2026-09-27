@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Banking Agent · Admin 后台原型</title>
+<style>
+  :root {
+    --primary-50:  #EEF2FF;
+    --primary-100: #E0E7FF;
+    --primary-500: #6366F1;
+    --primary-600: #4F46E5;
+    --primary-700: #4338CA;
+    --success: #10B981;
+    --warning: #F59E0B;
+    --danger:  #EF4444;
+    --info:    #3B82F6;
+    --ink-900: #0F172A;
+    --ink-700: #334155;
+    --ink-500: #64748B;
+    --ink-300: #CBD5E1;
+    --ink-100: #F1F5F9;
+    --canvas:  #F8FAFC;
+    --bg:      #FFFFFF;
+    --sidebar-bg: #1E293B;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    color: var(--ink-900);
+    background: var(--canvas);
+  }
+
+  /* === Layout === */
+  .layout {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    height: 100vh;
+  }
+
+  /* === Sidebar === */
+  .sidebar {
+    background: var(--sidebar-bg);
+    color: white;
+    padding: 20px 0;
+    overflow-y: auto;
+  }
+  .logo {
+    padding: 0 20px 20px;
+    font-size: 18px;
+    font-weight: 700;
+    display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid rgba(255,255,255,.1);
+  }
+  .logo .badge {
+    background: var(--primary-500);
+    color: white;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .nav-group { padding: 16px 0; }
+  .nav-title {
+    padding: 0 20px;
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--ink-300);
+    margin-bottom: 8px;
+    letter-spacing: .5px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 20px;
+    color: var(--ink-300);
+    cursor: pointer;
+    transition: all .15s;
+    font-size: 13px;
+    border-left: 3px solid transparent;
+  }
+  .nav-item:hover { background: rgba(255,255,255,.05); color: white; }
+  .nav-item.active {
+    background: rgba(99,102,241,.15);
+    color: white;
+    border-left-color: var(--primary-500);
+  }
+  .nav-item .icon { width: 18px; text-align: center; font-size: 16px; }
+  .nav-item .badge-count {
+    margin-left: auto;
+    background: var(--danger);
+    color: white;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+
+  /* === Main === */
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+
+  .topbar {
+    background: white;
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--ink-100);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .breadcrumb { font-size: 13px; color: var(--ink-500); }
+  .breadcrumb strong { color: var(--ink-900); font-weight: 600; }
+  .topbar-right { display: flex; gap: 16px; align-items: center; }
+  .topbar-right .icon-btn {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--ink-100);
+    border: none;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    position: relative;
+  }
+  .topbar-right .icon-btn .dot {
+    position: absolute; top: 4px; right: 4px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--danger);
+  }
+  .user-chip {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 12px 4px 4px;
+    border: 1px solid var(--ink-300);
+    border-radius: 24px;
+    cursor: pointer;
+  }
+  .user-chip .avatar {
+    width: 28px; height: 28px;
+    background: var(--primary-500);
+    color: white;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600;
+  }
+
+  .content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+  }
+
+  .page-header {
+    margin-bottom: 24px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .page-header h1 { font-size: 22px; font-weight: 600; }
+  .page-header .sub { font-size: 13px; color: var(--ink-500); margin-top: 4px; }
+
+  /* === KPI Cards === */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .kpi-card {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.05);
+  }
+  .kpi-card .label { font-size: 12px; color: var(--ink-500); margin-bottom: 8px; }
+  .kpi-card .value { font-size: 28px; font-weight: 700; color: var(--ink-900); }
+  .kpi-card .delta { font-size: 12px; margin-top: 6px; }
+  .kpi-card .delta.up { color: var(--success); }
+  .kpi-card .delta.down { color: var(--danger); }
+
+  /* === Panels === */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .panel {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.05);
+  }
+  .panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--ink-100);
+  }
+  .panel-title { font-size: 15px; font-weight: 600; }
+  .panel-subtitle { font-size: 12px; color: var(--ink-500); margin-top: 2px; }
+  .panel-actions { display: flex; gap: 8px; }
+
+  /* === Tables === */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; color: var(--ink-500); font-weight: 500; font-size: 12px; border-bottom: 1px solid var(--ink-100); }
+  td { padding: 12px; border-bottom: 1px solid var(--ink-100); }
+  tr:hover { background: var(--canvas); }
+  tr:last-child td { border-bottom: none; }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .tag-success { background: #D1FAE5; color: #065F46; }
+  .tag-warning { background: #FEF3C7; color: #92400E; }
+  .tag-danger  { background: #FEE2E2; color: #991B1B; }
+  .tag-info    { background: #DBEAFE; color: #1E40AF; }
+  .tag-neutral { background: var(--ink-100); color: var(--ink-700); }
+
+  /* === Buttons === */
+  .btn {
+    border: none; cursor: pointer;
+    padding: 6px 12px; border-radius: 6px;
+    font-size: 12px; font-weight: 500;
+    font-family: inherit;
+  }
+  .btn-primary { background: var(--primary-600); color: white; }
+  .btn-primary:hover { background: var(--primary-700); }
+  .btn-text { background: transparent; color: var(--primary-600); }
+  .btn-text:hover { background: var(--primary-50); }
+
+  /* === Conversation List === */
+  .conv-list { max-height: 360px; overflow-y: auto; }
+  .conv-item {
+    padding: 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background .15s;
+    margin-bottom: 6px;
+  }
+  .conv-item:hover { background: var(--ink-100); }
+  .conv-item .head {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 4px;
+  }
+  .conv-item .user { font-weight: 600; font-size: 13px; }
+  .conv-item .time { font-size: 11px; color: var(--ink-500); }
+  .conv-item .preview { font-size: 12px; color: var(--ink-700); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* === Severity Indicator === */
+  .sev { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; }
+  .sev::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+  }
+  .sev-p0::before { background: var(--danger); }
+  .sev-p1::before { background: var(--warning); }
+  .sev-p2::before { background: var(--info); }
+  .sev-p3::before { background: var(--ink-300); }
+
+  /* === Code / Mono === */
+  code {
+    background: var(--ink-100);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    color: var(--primary-700);
+  }
+
+  /* === Bar === */
+  .progress {
+    height: 6px;
+    background: var(--ink-100);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress > div {
+    height: 100%;
+    background: var(--primary-500);
+  }
+
+  /* === Metric Sparkline === */
+  .sparkline {
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 24px; width: 100px;
+  }
+  .sparkline span {
+    flex: 1;
+    background: var(--primary-100);
+    border-radius: 1px;
+  }
+  .sparkline span.active { background: var(--primary-500); }
+
+  /* === Audit search === */
+  .search-box {
+    display: flex; gap: 8px;
+    margin-bottom: 16px;
+  }
+  .search-box input {
+    flex: 1; padding: 8px 12px;
+    border: 1px solid var(--ink-300);
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+  }
+  .search-box input:focus { border-color: var(--primary-500); }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- ============ Sidebar ============ -->
+  <aside class="sidebar">
+    <div class="logo">
+      <span>🏦</span>
+      <span>AI Banking Agent</span>
+      <span class="badge">Admin</span>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">概览</div>
+      <div class="nav-item active">
+        <span class="icon">📊</span> Dashboard
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">业务</div>
+      <div class="nav-item">
+        <span class="icon">💬</span> 实时对话
+        <span class="badge-count">3</span>
+      </div>
+      <div class="nav-item">
+        <span class="icon">👥</span> 用户管理
+      </div>
+      <div class="nav-item">
+        <span class="icon">📦</span> 功能开关
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">合规</div>
+      <div class="nav-item">
+        <span class="icon">🔍</span> 审计查询
+      </div>
+      <div class="nav-item">
+        <span class="icon">⚖️</span> 合规拦截
+        <span class="badge-count">12</span>
+      </div>
+      <div class="nav-item">
+        <span class="icon">📝</span> PIA 管理
+      </div>
+      <div class="nav-item">
+        <span class="icon">📤</span> 监管报送
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">风控</div>
+      <div class="nav-item">
+        <span class="icon">🚨</span> AML 监控
+        <span class="badge-count">5</span>
+      </div>
+      <div class="nav-item">
+        <span class="icon">⚠️</span> 风险告警
+      </div>
+      <div class="nav-item">
+        <span class="icon">🚫</span> 黑名单
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">LLM</div>
+      <div class="nav-item">
+        <span class="icon">🎯</span> 黄金集
+      </div>
+      <div class="nav-item">
+        <span class="icon">📈</span> 评估结果
+      </div>
+      <div class="nav-item">
+        <span class="icon">💬</span> Prompt 管理
+      </div>
+      <div class="nav-item">
+        <span class="icon">💰</span> 成本监控
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-title">系统</div>
+      <div class="nav-item">
+        <span class="icon">📋</span> 操作日志
+      </div>
+      <div class="nav-item">
+        <span class="icon">⚙️</span> 系统设置
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ Main ============ -->
+  <main class="main">
+    <!-- Top Bar -->
+    <div class="topbar">
+      <div class="breadcrumb">
+        <span>概览</span> / <strong>Dashboard</strong>
+      </div>
+      <div class="topbar-right">
+        <button class="icon-btn" title="环境">🛠</button>
+        <button class="icon-btn" title="搜索">🔍</button>
+        <button class="icon-btn" title="告警">
+          🔔 <span class="dot"></span>
+        </button>
+        <div class="user-chip">
+          <div class="avatar">合</div>
+          <span style="font-size:13px">合规员·小李</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+
+      <!-- Page Header -->
+      <div class="page-header">
+        <div>
+          <h1>Dashboard 总览</h1>
+          <div class="sub">实时业务指标 + 系统健康度 · 更新于 15:21:11</div>
+        </div>
+        <div>
+          <button class="btn btn-text">⏱ 实时</button>
+          <button class="btn btn-primary">📥 导出报表</button>
+        </div>
+      </div>
+
+      <!-- KPI Row -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="label">今日对话量</div>
+          <div class="value">12,847</div>
+          <div class="delta up">↑ 8.3% vs 昨日</div>
+        </div>
+        <div class="kpi-card">
+          <div class="label">转账总金额</div>
+          <div class="value">¥ 4.2M</div>
+          <div class="delta up">↑ 12.1%</div>
+        </div>
+        <div class="kpi-card">
+          <div class="label">人工接管率</div>
+          <div class="value">8.2%</div>
+          <div class="delta down">↓ 2.1%</div>
+        </div>
+        <div class="kpi-card">
+          <div class="label">意图识别准确率</div>
+          <div class="value">96.4%</div>
+          <div class="delta up">↑ 0.5%</div>
+        </div>
+      </div>
+
+      <!-- Two Columns -->
+      <div class="grid-2">
+        <!-- Left: Live Conversations -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">实时对话（3 个待接管）</div>
+              <div class="panel-subtitle">客服可主动接管 AI 对话</div>
+            </div>
+            <button class="btn btn-text">查看全部 →</button>
+          </div>
+
+          <div class="conv-list">
+            <div class="conv-item">
+              <div class="head">
+                <span class="user">👤 张明 (u_8a7b6c6c5d)</span>
+                <span class="time">15:18</span>
+              </div>
+              <div class="preview">"我要撤销刚才那笔 5 万的转账……"</div>
+              <div style="margin-top:6px"><span class="tag tag-danger">待人工</span> <span class="tag tag-warning">高风险</span></div>
+            </div>
+
+            <div class="conv-item">
+              <div class="head">
+                <span class="user">👤 李华 (u_9c8d7e6f5a)</span>
+                <span class="time">15:12</span>
+              </div>
+              <div class="preview">"理财亏损超过预期，怎么办？"</div>
+              <div style="margin-top:6px"><span class="tag tag-warning">情绪异常</span></div>
+            </div>
+
+            <div class="conv-item">
+              <div class="head">
+                <span class="user">👤 王芳 (u_4b3a2c1d)</span>
+                <span class="time">15:08</span>
+              </div>
+              <div class="preview">"我的账户被锁定了，能帮我看看吗"</div>
+              <div style="margin-top:6px"><span class="tag tag-info">待人工</span></div>
+            </div>
+
+            <div class="conv-item">
+              <div class="head">
+                <span class="user">👤 陈强 (u_2e3f4a5b)</span>
+                <span class="time">14:55</span>
+              </div>
+              <div class="preview">"查询本月账单"</div>
+              <div style="margin-top:6px"><span class="tag tag-success">AI 处理</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Compliance -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">合规拦截（24h）</div>
+              <div class="panel-subtitle">按规则分组</div>
+            </div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>大额转账超限</span><strong>42 次</strong>
+            </div>
+            <div class="progress"><div style="width:70%"></div></div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>AML 可疑交易</span><strong>8 次</strong>
+            </div>
+            <div class="progress"><div style="width:30%;background:var(--warning)"></div></div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>未授权同意</span><strong>5 次</strong>
+            </div>
+            <div class="progress"><div style="width:20%;background:var(--danger)"></div></div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>频次限制</span><strong>3 次</strong>
+            </div>
+            <div class="progress"><div style="width:15%;background:var(--info)"></div></div>
+          </div>
+
+          <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--ink-100);font-size:12px;color:var(--ink-500)">
+            ⚠️ AML 可疑交易等待人工复核（5 笔）
+            <div style="margin-top:8px"><button class="btn btn-primary btn-full">立即处理</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Audit Search -->
+      <div class="panel" style="margin-bottom:16px">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title">审计日志查询</div>
+            <div class="panel-subtitle">所有关键操作可追溯（不可篡改）</div>
+          </div>
+          <div class="panel-actions">
+            <button class="btn btn-text">导出</button>
+            <button class="btn btn-primary">高级搜索</button>
+          </div>
+        </div>
+
+        <div class="search-box">
+          <input type="text" placeholder="搜索用户 ID、请求 ID、规则 ID…">
+          <select style="padding:8px 12px;border:1px solid var(--ink-300);border-radius:6px;font-size:13px">
+            <option>所有操作</option>
+            <option>转账</option>
+            <option>卡片</option>
+            <option>理财</option>
+            <option>订阅</option>
+          </select>
+          <button class="btn btn-primary">🔍 搜索</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>用户</th>
+              <th>操作</th>
+              <th>金额</th>
+              <th>决策</th>
+              <th>规则</th>
+              <th>Trace</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="font-family:monospace">15:18:42</td>
+              <td>u_8a7b6c6c5d</td>
+              <td><code>transfer.create</code></td>
+              <td>¥ 50,000</td>
+              <td><span class="tag tag-warning">PENDING</span></td>
+              <td>amount.exceeds_daily_limit</td>
+              <td><a href="#" style="color:var(--primary-600)">abc123…</a></td>
+            </tr>
+            <tr>
+              <td style="font-family:monospace">15:18:31</td>
+              <td>u_4b3a2c1d</td>
+              <td><code>card.freeze</code></td>
+              <td>—</td>
+              <td><span class="tag tag-success">APPROVED</span></td>
+              <td>—</td>
+              <td><a href="#" style="color:var(--primary-600)">def456…</a></td>
+            </tr>
+            <tr>
+              <td style="font-family:monospace">15:18:15</td>
+              <td>u_9c8d7e6f5a</td>
+              <td><code>wealth.purchase</code></td>
+              <td>¥ 100,000</td>
+              <td><span class="tag tag-danger">REJECTED</span></td>
+              <td>risk.mismatch_profile</td>
+              <td><a href="#" style="color:var(--primary-600)">ghi789…</a></td>
+            </tr>
+            <tr>
+              <td style="font-family:monospace">15:17:58</td>
+              <td>u_2e3f4a5b</td>
+              <td><code>conversation.start</code></td>
+              <td>—</td>
+              <td><span class="tag tag-success">OK</span></td>
+              <td>—</td>
+              <td><a href="#" style="color:var(--primary-600)">jkl012…</a></td>
+            </tr>
+            <tr>
+              <td style="font-family:monospace">15:17:42</td>
+              <td>u_5a4b3c2e</td>
+              <td><code>transfer.create</code></td>
+              <td>¥ 8,500</td>
+              <td><span class="tag tag-success">APPROVED</span></td>
+              <td>aml.clear</td>
+              <td><a href="#" style="color:var(--primary-600)">mno345…</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- LLM Performance -->
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">LLM 性能（24h）</div>
+              <div class="panel-subtitle">黄金集评估结果</div>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr><th>指标</th><th>当前</th><th>趋势</th><th>目标</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>意图识别准确率</td>
+                <td><strong>96.4%</strong></td>
+                <td><div class="sparkline"><span></span><span></span><span></span><span></span><span class="active"></span><span class="active"></span><span class="active"></span></div></td>
+                <td>≥ 95% ✅</td>
+              </tr>
+              <tr>
+                <td>槽位抽取 F1</td>
+                <td><strong>92.1%</strong></td>
+                <td><div class="sparkline"><span></span><span></span><span></span><span class="active"></span><span class="active"></span><span></span><span class="active"></span></div></td>
+                <td>≥ 90% ✅</td>
+              </tr>
+              <tr>
+                <td>幻觉率</td>
+                <td><strong>1.4%</strong></td>
+                <td><div class="sparkline"><span class="active"></span><span class="active"></span><span></span><span class="active"></span><span></span><span></span><span></span></div></td>
+                <td>≤ 2% ✅</td>
+              </tr>
+              <tr>
+                <td>响应 P99</td>
+                <td><strong>2.3s</strong></td>
+                <td><div class="sparkline"><span></span><span></span><span class="active"></span><span></span><span class="active"></span><span></span><span class="active"></span></div></td>
+                <td>≤ 3s ✅</td>
+              </tr>
+              <tr>
+                <td>Prompt 注入拦截</td>
+                <td><strong>23 次</strong></td>
+                <td>—</td>
+                <td>100% ✅</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Cost Monitor -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">LLM 成本（今日）</div>
+              <div class="panel-subtitle">按模型分摊</div>
+            </div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>Qwen3-72B</span><strong>¥ 1,240</strong>
+            </div>
+            <div class="progress"><div style="width:62%"></div></div>
+            <div style="font-size:11px;color:var(--ink-500);margin-top:4px">82 万 tokens · 62% of budget</div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>DeepSeek-V3</span><strong>¥ 580</strong>
+            </div>
+            <div class="progress"><div style="width:29%;background:var(--success)"></div></div>
+            <div style="font-size:11px;color:var(--ink-500);margin-top:4px">45 万 tokens · 29% of budget</div>
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>GPT-4o（仅开发）</span><strong>¥ 180</strong>
+            </div>
+            <div class="progress"><div style="width:9%;background:var(--ink-500)"></div></div>
+            <div style="font-size:11px;color:var(--ink-500);margin-top:4px">12 万 tokens · 9% of budget</div>
+          </div>
+
+          <div style="margin-top:16px;padding:12px;background:var(--canvas);border-radius:8px;font-size:12px">
+            💡 <strong>优化建议：</strong>简单意图（balance.query）可降至 Qwen3-7B，预计节省 35%。
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

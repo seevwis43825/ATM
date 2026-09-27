@@ -1,23 +1,46 @@
-node_modules/
-dist/
-build/
-.env
-.env.local
+# ===== .NET 构建产物 =====
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+
+# ===== 运行时产物 =====
+*.db
+*.db-wal
+*.db-shm
+logs/
 *.log
-npm-debug.log*
-.DS_Store
-Thumbs.db
+e2e-result.txt
+stress-result.txt
+
+# ===== 密钥与配置（严禁入库）=====
+*.pfx
+*.key
+appsettings.Local.json
+appsettings.*.Development.json
+.env
+.env.*
+
+# ===== IDE =====
+.vs/
 .vscode/
 .idea/
-*.mp4
-*.mov
-*.zip
-*.rar
-coverage/
-.cache/
-__pycache__/
-*.pyc
-venv/
-.venv/
-data/*.db
-data/*.sqlite
+*.swp
+
+# ===== Node 依赖（apps/ 是既有的 TS 项目，保留源码，仅忽略依赖）=====
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# ===== 论文 PDF（大文件，按需调整）=====
+# 如需版本管理论文，取消下行注释
+# papers/pdfs/
+
+# ===== 系统 =====
+Thumbs.db
+.DS_Store
+desktop.ini

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MockBank.Api</RootNamespace>
+    <AssemblyName>MockBank.Api</AssemblyName>
+    <!-- 生成 XML 文档文件，便于外部工具与 IDE 读取中文接口说明 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 1591: record 位置参数生成的属性无法逐个写 XML 注释，统一抑制该警告 -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+</Project>
