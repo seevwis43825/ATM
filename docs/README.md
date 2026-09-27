@@ -24,6 +24,11 @@
 | **怎么加一个新功能？** | **[`plugin/01-plugin-onboarding-guide.md`](plugin/01-plugin-onboarding-guide.md)** |
 | **接口有哪些、怎么调？** | **[`plugin/02-api-reference.md`](plugin/02-api-reference.md)** |
 | **哪些做了、哪些没做？** | **[`plugin/03-implementation-status.md`](plugin/03-implementation-status.md)** |
+| **密码能抗量子吗？安全吗？** | **[`10-security/01-cryptography-and-hardening.md`](10-security/01-cryptography-and-hardening.md)** |
+| **系统能扛多少 QPS？** | **[`11-performance/01-capacity-test-report.md`](11-performance/01-capacity-test-report.md)** |
+| **多 Agent 怎么协同？** | **[`12-multi-agent/01-orchestration-design.md`](12-multi-agent/01-orchestration-design.md)** |
+| **看架构图 / UML / 数据模型** | **[`09-uml/`](09-uml/)** |
+| **数据库怎么演进？** | **[`13-database/01-migration-and-ci.md`](13-database/01-migration-and-ci.md)** |
 | 出了事故怎么办？ | [`04-operations/03-incident-response.md`](04-operations/03-incident-response.md) |
 
 ---
@@ -102,6 +107,24 @@ docs/
     ├── 01-plugin-onboarding-guide.md        插件接入指南（5 分钟上手）
     ├── 02-api-reference.md                  实测 API 参考（宿主 + 模拟银行）
     └── 03-implementation-status.md          实现状态与设计对照（含缺口清单）
+│
+├── 09-uml/                                 ← UML 与结构化架构文档
+│   ├── 01-uml-diagrams.md                  10 张 Mermaid 图（上下文/容器/组件/类图/时序/状态）
+│   ├── 02-architecture-decision-record.md  ADR-011~021（实现过程中的新决策）
+│   ├── 03-api-contract.md                  接口契约（Schema/错误码/权限/幂等）
+│   └── 04-data-model.md                    数据模型（ER 图/字段/索引/迁移）
+│
+├── 10-security/                            ← 安全与密码学
+│   └── 01-cryptography-and-hardening.md    抗量子分析 + 安全能力盘点 + 风险矩阵
+│
+├── 11-performance/                         ← 性能
+│   └── 01-capacity-test-report.md          容量压测（296 QPS 实测 + 瓶颈分析）
+│
+├── 12-multi-agent/                         ← 多 Agent 协同
+│   └── 01-orchestration-design.md          Supervisor 编排器 + 轨迹日志（对齐 Harness）
+│
+└── 13-database/                            ← 数据库
+    └── 01-migration-and-ci.md               EF Migration + CI 协同方案
 ```
 
 > **代码位置**：`../src/`（54 个文件 / 6753 行）

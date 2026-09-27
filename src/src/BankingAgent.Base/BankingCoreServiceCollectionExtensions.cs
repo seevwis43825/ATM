@@ -12,6 +12,7 @@ using BankingAgent.Base.Plugins;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.Base.Security.Auth;
 using BankingAgent.Base.Security.Compliance;
+using BankingAgent.Base.Security.RateLimit;
 using BankingAgent.PluginSdk;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -124,16 +125,19 @@ public static class BankingCoreServiceCollectionExtensions
     public static IServiceCollection AddBankingSecurity(
         this IServiceCollection services, IConfiguration configuration)
     {
-        // 配置对象必须注册为具体类型，因为规则类直接注入它们
         services.Configure<AuditOptions>(configuration.GetSection("Audit"));
         services.Configure<ComplianceOptions>(configuration.GetSection("Compliance"));
         services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
+        services.Configure<RateLimitOptions>(configuration.GetSection("RateLimit"));
+
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AuditOptions>>().Value);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ComplianceOptions>>().Value);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<JwtOptions>>().Value);
+        services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<RateLimitOptions>>().Value);
 
         services.AddSingleton<IAuditLogger, AuditLogger>();
         services.AddSingleton<ITokenService, TokenService>();
+        services.AddSingleton<RateLimiter>();
 
         // 内置合规规则。插件可追加自定义规则。
         services.AddSingleton<IComplianceRule, TransferAmountRule>();
@@ -149,6 +153,11 @@ public static class BankingCoreServiceCollectionExtensions
     public static IServiceCollection AddPluginAgents(this IServiceCollection services)
     {
         services.AddSingleton<AgentRouter>();
+
+        // 编排体系：轨迹日志 + 策略 + 编排器
+        services.AddSingleton<ITrajectoryLog, InMemoryTrajectoryLog>();
+        services.AddSingleton<IOrchestrationStrategy, AdaptiveStrategy>();
+        services.AddSingleton<AgentOrchestrator>();
         return services;
     }
 }

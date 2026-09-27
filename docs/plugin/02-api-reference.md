@@ -59,6 +59,40 @@ Authorization: Bearer <token>
 
 仅 `/health` 与 `/api/auth/token` 免认证，其余端点均需令牌。
 
+#### 速率限制
+
+所有端点受**双维度令牌桶**保护：按 IP（防扫描）+ 按身份（防单账号爆破）。
+
+| 档位 | 端点 | 配额（每分钟） | 突发容量 |
+|------|------|--------------|---------|
+| 严格 | `/api/auth/token` | 5 | 3 |
+| 中等 | 含 transfer / confirm / wealth | 20 | 15 |
+| 普通 | 业务端点 | 120 | 30 |
+| 只读 | `/api/plugins` `/api/trajectory` (GET) | 300 | 60 |
+| IP 兜底 | 全部 | 600 | 120 |
+
+超过配额返回 **429 Too Many Requests**：
+
+```json
+{
+  "code": "RATE_LIMITED",
+  "message": "请求过于频繁，请稍后重试",
+  "dimension": "identity",
+  "retryAfterSeconds": 12
+}
+```
+
+响应头携带配额信息：
+
+| 响应头 | 说明 |
+|-------|------|
+| `X-RateLimit-Limit` | 当前窗口配额 |
+| `X-RateLimit-Remaining` | 剩余次数 |
+| `Retry-After` | 限流触发时的建议重试秒数 |
+
+> 配额可通过 `appsettings.json` 的 `RateLimit` 节调整。
+> 未认证请求按「IP + 请求体中的 userId」分桶，避免同一 NAT 出口的用户互相牵连。
+
 #### 查询当前身份
 
 ```http

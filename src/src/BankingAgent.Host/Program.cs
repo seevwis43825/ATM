@@ -11,6 +11,8 @@ using BankingAgent.Base.Security.Audit;
 using BankingAgent.Base.Security.Auth;
 using BankingAgent.Base.Security.Compliance;
 using BankingAgent.PluginSdk;
+using BankingAgent.Base.Security.RateLimit;
+using BankingAgent.Host.Middleware;
 using Microsoft.Extensions.DependencyInjection;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -49,8 +51,11 @@ foreach (var svc in registry.Services)
     builder.Services.Add(svc);
 }
 
-// Agent 路由器需要在所有插件服务就位后才能解析
+// 编排器与路由器并列暴露：路由器做单跳，编排器做多跳规划
 builder.Services.AddSingleton<AgentRouter>();
+builder.Services.AddSingleton<ITrajectoryLog, InMemoryTrajectoryLog>();
+builder.Services.AddSingleton<IOrchestrationStrategy, AdaptiveStrategy>();
+builder.Services.AddSingleton<AgentOrchestrator>();
 
 var app = builder.Build();
 registry.AttachProvider(app.Services);
@@ -77,6 +82,8 @@ foreach (var plugin in registry.LoadedPlugins)
 // ===== 认证中间件 =====
 // 修复越权漏洞：原实现 userId 由客户端传入，任何人可传别人的 userId。
 // 现在所有受保护端点必须携带合法 JWT，且 userId 一律从令牌提取。
+app.UseMiddleware<RateLimitingMiddleware>();
+
 app.Use(async (ctx, next) =>
 {
     var tokenService = ctx.RequestServices.GetRequiredService<ITokenService>();
@@ -193,6 +200,96 @@ app.MapGet("/api/plugins/agents", () =>
         role = a.Role.ToString(),
         intents = a.SupportedIntents
     }));
+});
+
+// ===== 编排器（多 Agent 协同）=====
+app.MapPost("/api/orchestrate", async (ChatRequest req, HttpContext ctx, CancellationToken ct) =>
+{
+    var orchestrator = app.Services.GetRequiredService<AgentOrchestrator>();
+    var principal = (CurrentPrincipal?)ctx.Items["Principal"];
+    if (principal is null) return Results.Unauthorized();
+
+    var intent = DetectIntent(req.Message);
+    var request = new AgentRequest
+    {
+        UserInput = req.Message,
+        UserId = principal.UserId,
+        SessionId = req.SessionId,
+        CancellationToken = ct,
+        Slots = req.Slots ?? new Dictionary<string, object?>(),
+        SharedContext = new Dictionary<string, object?> { ["intent"] = intent },
+        Upstream = AgentResult.Ok(intent: intent)
+    };
+
+    var result = await orchestrator.RunAsync(request, ct: ct);
+
+    return Results.Ok(new
+    {
+        success = result.Success,
+        content = result.FinalContent,
+        requiresHumanApproval = result.RequiresHumanApproval,
+        pendingStepId = result.PendingStepId,
+        stepsExecuted = result.StepsExecuted,
+        totalElapsedMs = result.TotalElapsedMs,
+        steps = result.Steps.Select(s => new
+        {
+            stepId = s.StepId,
+            success = s.Success,
+            elapsedMs = s.ElapsedMs,
+            failureReason = s.FailureReason,
+            agents = s.AgentResults.Select(a => new
+            {
+                agentId = a.Key,
+                success = a.Value.Success,
+                intent = a.Value.Intent,
+                content = a.Value.Content,
+                requiresHumanInLoop = a.Value.RequiresHumanInLoop
+            })
+        })
+    });
+});
+
+// ===== 轨迹查询（对齐 Harness 的 Trajectory 视图）=====
+app.MapGet("/api/trajectory/{sessionId}", (string sessionId) =>
+{
+    var log = app.Services.GetRequiredService<ITrajectoryLog>();
+    var events = log.GetSession(sessionId);
+    if (events.Count == 0) return Results.NotFound(new { code = "SESSION_NOT_FOUND" });
+
+    return Results.Ok(new
+    {
+        sessionId,
+        eventCount = events.Count,
+        events = events.Select(e => new
+        {
+            sequence = e.Sequence,
+            type = e.Type.ToString(),
+            timestamp = e.Timestamp,
+            stepId = e.StepId,
+            agentId = e.AgentId,
+            intent = e.Intent,
+            success = e.Success,
+            detail = e.Detail,
+            data = e.Data
+        })
+    });
+});
+
+app.MapGet("/api/trajectory", (int? limit) =>
+{
+    var log = app.Services.GetRequiredService<ITrajectoryLog>();
+    var events = log.GetAll(limit ?? 200);
+    return Results.Ok(new
+    {
+        total = events.Count,
+        events = events.Select(e => new
+        {
+            sequence = e.Sequence,
+            sessionId = e.SessionId,
+            type = e.Type.ToString(),
+            timestamp = e.Timestamp
+        })
+    });
 });
 
 // AgentRouter 是单例，从根容器解析

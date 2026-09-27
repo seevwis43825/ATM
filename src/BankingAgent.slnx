@@ -12,5 +12,6 @@
     <Project Path="src/BankingAgent.Host/BankingAgent.Host.csproj" />
     <Project Path="src/BankingAgent.Plugin.Sdk/BankingAgent.Plugin.Sdk.csproj" />
   </Folder>
+  <Project Path="LoadTest/LoadTest.csproj" />
   <Project Path="StressTest/StressTest.csproj" />
 </Solution>
