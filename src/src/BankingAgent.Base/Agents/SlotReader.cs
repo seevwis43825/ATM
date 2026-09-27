@@ -18,11 +18,27 @@ public static class SlotReader
         return value switch
         {
             string s => s,
-            JsonElement je when je.ValueKind == JsonValueKind.String => je.GetString(),
-            JsonElement je when je.ValueKind is JsonValueKind.Number
-                or JsonValueKind.True or JsonValueKind.False => je.ToString(),
+            // JsonElement 来自已释放的 JsonDocument 时会抛异常，防御性降级为空
+            JsonElement je => TryRead(je, out var r) ? r : null,
             _ => value.ToString()
         };
+    }
+
+    /// <summary>安全读取 JsonElement，捕获文档已释放的情况。</summary>
+    private static bool TryRead(JsonElement je, out string result)
+    {
+        try
+        {
+            result = je.ValueKind == JsonValueKind.String
+                ? je.GetString() ?? ""
+                : je.ToString();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            result = "";
+            return false;
+        }
     }
 
     /// <summary>读取十进制槽位。支持 JSON 数字与字符串。</summary>
@@ -36,12 +52,29 @@ public static class SlotReader
             int i => i,
             long l => l,
             double dbl => (decimal)dbl,
-            JsonElement je when je.ValueKind == JsonValueKind.Number => je.GetDecimal(),
-            JsonElement je when je.ValueKind == JsonValueKind.String
-                && decimal.TryParse(je.GetString(), out var parsed) => parsed,
             string s when decimal.TryParse(s, out var parsed) => parsed,
+            JsonElement je => TryReadDecimal(je),
             _ => null
         };
+    }
+
+    /// <summary>安全读取 JsonElement 数值。</summary>
+    private static decimal? TryReadDecimal(JsonElement je)
+    {
+        try
+        {
+            if (je.ValueKind == JsonValueKind.Number) return je.GetDecimal();
+            if (je.ValueKind == JsonValueKind.String
+                && decimal.TryParse(je.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+            return null;
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>读取整数槽位。</summary>
@@ -54,12 +87,28 @@ public static class SlotReader
             int i => i,
             long l => (int)l,
             decimal d => (int)d,
-            JsonElement je when je.ValueKind == JsonValueKind.Number => je.GetInt32(),
-            JsonElement je when je.ValueKind == JsonValueKind.String
-                && int.TryParse(je.GetString(), out var parsed) => parsed,
             string s when int.TryParse(s, out var parsed) => parsed,
+            JsonElement je => TryReadInt(je),
             _ => null
         };
+    }
+
+    private static int? TryReadInt(JsonElement je)
+    {
+        try
+        {
+            if (je.ValueKind == JsonValueKind.Number) return je.GetInt32();
+            if (je.ValueKind == JsonValueKind.String
+                && int.TryParse(je.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+            return null;
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>读取布尔槽位。</summary>
@@ -70,12 +119,28 @@ public static class SlotReader
         return value switch
         {
             bool b => b,
-            JsonElement je when je.ValueKind == JsonValueKind.True => true,
-            JsonElement je when je.ValueKind == JsonValueKind.False => false,
-            JsonElement je when je.ValueKind == JsonValueKind.String
-                && bool.TryParse(je.GetString(), out var parsed) => parsed,
             string s when bool.TryParse(s, out var parsed) => parsed,
+            JsonElement je => TryReadBool(je),
             _ => null
         };
+    }
+
+    private static bool? TryReadBool(JsonElement je)
+    {
+        try
+        {
+            if (je.ValueKind == JsonValueKind.True) return true;
+            if (je.ValueKind == JsonValueKind.False) return false;
+            if (je.ValueKind == JsonValueKind.String
+                && bool.TryParse(je.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+            return null;
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
     }
 }

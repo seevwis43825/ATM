@@ -1,0 +1,43 @@
+# CODEOWNERS
+# 改这些路径会自动通知对应负责人，PR 合并前必须拿到 owner 批准。
+#
+# 角色定义见 docs/07-team/01-team-roles.md
+# 分册见 docs/07-team/by-role/
+
+# ===== 框架层：影响所有插件，必须架构师批准 =====
+/src/src/BankingAgent.Base/            @architect
+/src/src/BankingAgent.Plugin.Sdk/      @architect
+/src/src/BankingAgent.Host/            @architect
+
+# ===== 业务插件：业务开发主责 =====
+/src/plugins/BankingAgent.Plugin.Transfer/        @backend
+/src/plugins/BankingAgent.Plugin.BillAnalysis/    @backend
+/src/plugins/BankingAgent.Plugin.CardManagement/  @backend
+
+# ===== 模拟银行：AI 数据 + 业务共同维护 =====
+/src/mock-bank/                          @backend @ai
+
+# ===== 安全合规：一票否决权 =====
+/src/src/BankingAgent.Base/Security/    @compliance @architect
+/src/src/BankingAgent.Base/Plugins/     @compliance @architect
+
+# ===== 测试与 CI：架构师 + 平台 =====
+/src/UnitTests/                          @architect @platform
+/src/E2ETest/                            @architect @platform
+/src/StressTest/                         @architect @platform
+/.github/                                @architect @platform
+
+# ===== 文档 =====
+/docs/00-architecture/                   @architect
+/docs/01-domain/                         @architect @backend
+/docs/02-api/                            @backend @ai
+/docs/03-development/                    @architect @platform
+/docs/04-operations/                     @platform
+/docs/05-security-compliance/            @compliance
+/docs/06-product/                        @ai
+/docs/07-team/                           @architect
+/docs/08-frontend/                       @ai @backend
+/docs/plugin/                            @architect @backend
+
+# ===== 既有 TypeScript 项目 =====
+/apps/                                   @backend

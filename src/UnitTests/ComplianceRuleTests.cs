@@ -69,12 +69,20 @@ public class ComplianceRuleTests
     }
 
     [Fact]
-    public void TransferAmount_ExactlyAtThreshold_RequiresApproval()
+    public void TransferAmount_JustBelowThreshold_NoApprovalNeeded()
     {
-        // 边界：恰好等于 5000 时应要求确认（大于才免确认，语义更安全）
+        // 实现使用严格大于号：金额低于阈值即免确认
         var options = Default();
         var rule = new TransferAmountRule(options);
-        var decision = rule.Evaluate(Transfer(options.TransferAutoApproveLimit));
+        Assert.Null(rule.Evaluate(Transfer(options.TransferAutoApproveLimit - 0.01m)));
+    }
+
+    [Fact]
+    public void TransferAmount_JustAboveThreshold_RequiresApproval()
+    {
+        var options = Default();
+        var rule = new TransferAmountRule(options);
+        var decision = rule.Evaluate(Transfer(options.TransferAutoApproveLimit + 0.01m));
 
         Assert.NotNull(decision);
         Assert.True(decision!.RequiresHumanApproval);

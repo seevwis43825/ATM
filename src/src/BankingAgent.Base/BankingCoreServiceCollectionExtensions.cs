@@ -10,6 +10,7 @@ using BankingAgent.Base.Data;
 using BankingAgent.Base.Events;
 using BankingAgent.Base.Plugins;
 using BankingAgent.Base.Security.Audit;
+using BankingAgent.Base.Security.Auth;
 using BankingAgent.Base.Security.Compliance;
 using BankingAgent.PluginSdk;
 using Microsoft.EntityFrameworkCore;
@@ -126,10 +127,13 @@ public static class BankingCoreServiceCollectionExtensions
         // 配置对象必须注册为具体类型，因为规则类直接注入它们
         services.Configure<AuditOptions>(configuration.GetSection("Audit"));
         services.Configure<ComplianceOptions>(configuration.GetSection("Compliance"));
+        services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AuditOptions>>().Value);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ComplianceOptions>>().Value);
+        services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<JwtOptions>>().Value);
 
         services.AddSingleton<IAuditLogger, AuditLogger>();
+        services.AddSingleton<ITokenService, TokenService>();
 
         // 内置合规规则。插件可追加自定义规则。
         services.AddSingleton<IComplianceRule, TransferAmountRule>();

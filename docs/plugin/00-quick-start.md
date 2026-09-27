@@ -77,20 +77,50 @@ Invoke-RestMethod http://localhost:5243/health
 # => status: healthy, plugins: 3
 ```
 
+### 2.5 获取访问令牌
+
+除 `/health` 与 `/api/auth/token` 外，所有端点都需要 JWT 令牌。
+
+```powershell
+$login = @{ userId = "u_demo01"; password = "demo1234" } | ConvertTo-Json
+$token = (Invoke-RestMethod http://localhost:5243/api/auth/token -Method Post `
+  -ContentType "application/json" -Body $login).token
+```
+
+**演示账号**
+
+| userId | 密码 | 角色 |
+|--------|------|------|
+| `u_demo01` / `u_demo02` / `u_demo03` | `demo1234` | user |
+| `staff_01` | `staff1234` | staff（可代客） |
+| `audit_01` | `audit1234` | auditor（可查审计） |
+| `admin_01` | `admin1234` | admin（可管理插件） |
+
 ---
 
-## 3. 端到端测试
+## 3. 测试
+
+### 3.1 单元测试
+
+```powershell
+cd G:\cunchu\大学\poject\ATM\src
+dotnet test UnitTests
+# 预期：112 个断言全部通过
+```
+
+### 3.2 端到端测试
 
 ```powershell
 cd G:\cunchu\大学\poject\ATM\src
 dotnet run --project E2ETest
 ```
 
-覆盖 10 个场景，30 项断言：
+覆盖 11 个场景，38 项断言：
 
 | # | 场景 | 验证点 |
 |---|------|-------|
 | 0 | 环境连通性 | 两个服务在线 |
+| 0B | **JWT 鉴权与越权防护** | 签发令牌、无令牌拒绝、伪造令牌拒绝、**越权 403**、RBAC 分级 |
 | 1 | 查询银行卡 | 意图路由 + **L3 卡号脱敏** |
 | 2 | 月度账单 | 只读场景 + 账户号脱敏 + 分类占比 |
 | 3 | 小额转账 800 | 直接执行 + **余额真实扣减** |
@@ -102,7 +132,17 @@ dotnet run --project E2ETest
 | 9 | 事件总线 | **跨插件联动事件已发布** |
 | 10 | 审计链 | **HMAC 链式签名 + 用户 ID 哈希** |
 
-**重跑前须清库**（幂等键会阻止重复扣款）：
+### 3.3 并发压力测试
+
+```powershell
+dotnet run --project StressTest
+```
+
+覆盖 6 个场景，29 项断言，详见 [`03-implementation-status.md`](03-implementation-status.md)。
+
+### 3.4 重跑前置
+
+**幂等键会阻止重复扣款**，重跑前须清数据库：
 
 ```powershell
 cd G:\cunchu\大学\poject\ATM\src\src\BankingAgent.Host
@@ -270,8 +310,27 @@ src/
 │   └── BankingAgent.Plugin.CardManagement/# 写操作 + 依赖声明范例
 ├── mock-bank/
 │   └── MockBank.Api/                 # 模拟银行核心系统
-└── E2ETest/                          # 端到端测试（30 项断言）
+├── UnitTests/                        # 单元测试（112 断言）
+├── E2ETest/                          # 端到端测试（38 断言）
+└── StressTest/                       # 并发压测（29 断言）
 ```
+
+---
+
+## 10. CI 与协作
+
+| 机制 | 位置 | 作用 |
+|------|------|------|
+| CI 流水线 | `.github/workflows/ci.yml` | 编译 + 单测 + 静态检查 + 集成测试 + 汇总门禁 |
+| CODEOWNERS | `.github/CODEOWNERS` | 按路径绑定 owner，PR 自动通知 |
+| 忽略规则 | `.gitignore` | 排除构建产物、依赖、密钥 |
+
+**首次使用需做的配置**（详见 [`03-implementation-status.md` §9.3](03-implementation-status.md)）：
+
+1. 把 CODEOWNERS 中的 `@architect` 等占位符替换为真实 GitHub 用户名
+2. 推送到远程仓库（CI 与 CODEOWNERS 仅在远程生效）
+3. 在 GitHub 上手动触发一次 CI 确认可用
+4. 通过环境变量配置 `Jwt__SigningKey`（禁止入库）
 
 ---
 

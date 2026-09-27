@@ -20,6 +20,14 @@ var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 int passed = 0, failed = 0;
 
+// 认证令牌
+var tokenResp = await http.PostAsync($"{hostBase}/api/auth/token",
+    new StringContent("""{"userId":"u_demo01","password":"demo1234"}""", Encoding.UTF8, "application/json"));
+var token = tokenResp.IsSuccessStatusCode
+    ? JsonDocument.Parse(await tokenResp.Content.ReadAsStringAsync())
+        .RootElement.GetProperty("token").GetString() ?? ""
+    : "";
+
 void Section(string t)
 {
     Console.WriteLine();
@@ -269,8 +277,14 @@ try
             };
             if (slots is not null) body["slots"] = slots;
 
-            var content = new StringContent(JsonSerializer.Serialize(body, json), Encoding.UTF8, "application/json");
-            var resp = await http.PostAsync($"{hostBase}/api/chat", content, ct);
+            // Authorization 是请求头，必须挂在 HttpRequestMessage 上
+            var request = new HttpRequestMessage(HttpMethod.Post, $"{hostBase}/api/chat")
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(body, json), Encoding.UTF8, "application/json")
+            };
+            request.Headers.Add("Authorization", $"Bearer {token}");
+            var resp = await http.SendAsync(request, ct);
             var text = await resp.Content.ReadAsStringAsync(ct);
             using var d = JsonDocument.Parse(text);
             outcomes.Add($"{S(d.RootElement, "intent")}|{S(d.RootElement, "success")}");

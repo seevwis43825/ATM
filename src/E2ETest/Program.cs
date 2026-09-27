@@ -14,6 +14,20 @@ var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
 var jsonOpts = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 int passed = 0, failed = 0;
 
+// 认证令牌：所有受保护端点必须携带 JWT
+string token = "";
+
+async Task<string> GetTokenAsync(string userId = "u_demo01", string password = "demo1234")
+{
+    var content = new StringContent(
+        JsonSerializer.Serialize(new { userId, password }, jsonOpts),
+        Encoding.UTF8, "application/json");
+    var resp = await http.PostAsync($"{hostBase}/api/auth/token", content);
+    if (!resp.IsSuccessStatusCode) return "";
+    using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+    return doc.RootElement.GetProperty("token").GetString() ?? "";
+}
+
 void Section(string title)
 {
     Console.WriteLine();
@@ -39,9 +53,15 @@ async Task<JsonElement> PostChat(string message, string userId, string? sessionI
     if (sessionId is not null) body["sessionId"] = sessionId;
     if (slots is not null) body["slots"] = slots;
 
-    var content = new StringContent(
-        JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json");
-    var resp = await http.PostAsync($"{hostBase}/api/chat", content);
+    // Authorization 是请求头，必须挂在 HttpRequestMessage 上，不能加到 StringContent
+    var request = new HttpRequestMessage(HttpMethod.Post, $"{hostBase}/api/chat")
+    {
+        Content = new StringContent(
+            JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json")
+    };
+    request.Headers.Add("Authorization", $"Bearer {token}");
+
+    var resp = await http.SendAsync(request);
     var text = await resp.Content.ReadAsStringAsync();
     using var doc = JsonDocument.Parse(text);
     return doc.RootElement.Clone();
@@ -57,9 +77,14 @@ async Task<JsonElement> PostConfirm(string userId, string sessionId, decimal amo
         ["amount"] = amount,
         ["slots"] = slots
     };
-    var content = new StringContent(
-        JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json");
-    var resp = await http.PostAsync($"{hostBase}/api/chat/confirm", content);
+    var request = new HttpRequestMessage(HttpMethod.Post, $"{hostBase}/api/chat/confirm")
+    {
+        Content = new StringContent(
+            JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json")
+    };
+    request.Headers.Add("Authorization", $"Bearer {token}");
+
+    var resp = await http.SendAsync(request);
     var text = await resp.Content.ReadAsStringAsync();
     using var doc = JsonDocument.Parse(text);
     return doc.RootElement.Clone();
@@ -90,6 +115,94 @@ try
     Check("AI Agent 宿主在线", hostHealth.Contains("healthy"));
 }
 catch (Exception ex) { Check("AI Agent 宿主在线", false, ex.Message); return 1; }
+
+// ===== 场景 0B：鉴权 =====
+Section("场景 0B: JWT 鉴权与越权防护");
+{
+    token = await GetTokenAsync();
+    Check("可签发访问令牌", !string.IsNullOrEmpty(token));
+
+    // 注意：Authorization 是请求头，必须加到 HttpRequestMessage 上，
+    // 不能加到 StringContent（内容头）上。
+    async Task<HttpResponseMessage> PostWithTokenAsync(
+        string path, object body, string? bearer)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{hostBase}{path}")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json")
+        };
+        if (bearer is not null)
+        {
+            request.Headers.Add("Authorization", $"Bearer {bearer}");
+        }
+        return await http.SendAsync(request);
+    }
+
+    // 无令牌访问受保护端点
+    try
+    {
+        var resp = await PostWithTokenAsync("/api/chat",
+            new { message = "x", userId = "u_demo01" }, null);
+        Check("无令牌访问被拒（401）", (int)resp.StatusCode == 401, $"HTTP {(int)resp.StatusCode}");
+    }
+    catch (Exception ex) { Check("无令牌访问被拒", false, ex.Message); }
+
+    // 伪造令牌
+    try
+    {
+        var resp = await PostWithTokenAsync("/api/chat",
+            new { message = "x", userId = "u_demo01" }, "forged.token.value");
+        Check("伪造令牌被拒（401）", (int)resp.StatusCode == 401, $"HTTP {(int)resp.StatusCode}");
+    }
+    catch (Exception ex) { Check("伪造令牌被拒", false, ex.Message); }
+
+    // 越权：拿 demo01 的令牌查 demo02 的数据
+    try
+    {
+        var resp = await PostWithTokenAsync("/api/chat",
+            new { message = "\u6211\u6709\u54ea\u4e9b\u5361", userId = "u_demo02" }, token);
+        var code = (int)resp.StatusCode;
+        Check("越权访问他人数据被拒（401/403）", code is 401 or 403, $"HTTP {code}");
+    }
+    catch (Exception ex) { Check("越权访问被拒", false, ex.Message); }
+
+    // 正确身份访问
+    try
+    {
+        var resp = await PostWithTokenAsync("/api/chat",
+            new { message = "\u6211\u6709\u54ea\u4e9b\u5361", userId = "u_demo01" }, token);
+        Check("本人访问正常（200）", (int)resp.StatusCode == 200, $"HTTP {(int)resp.StatusCode}");
+    }
+    catch (Exception ex) { Check("本人访问正常", false, ex.Message); }
+
+    // 普通用户不能管理插件
+    try
+    {
+        var resp = await PostWithTokenAsync("/api/plugins/banking.card/stop",
+            new { }, token);
+        Check("普通用户停用插件被拒（403）", (int)resp.StatusCode == 403, $"HTTP {(int)resp.StatusCode}");
+    }
+    catch (Exception ex) { Check("普通用户停用插件被拒", false, ex.Message); }
+
+    // 管理员可以
+    try
+    {
+        var adminToken = await GetTokenAsync("admin_01", "admin1234");
+        var resp = await PostWithTokenAsync("/api/plugins/banking.card/stop",
+            new { }, adminToken);
+        Check("管理员停用插件成功（200）", (int)resp.StatusCode == 200, $"HTTP {(int)resp.StatusCode}");
+
+        // 立即恢复
+        if ((int)resp.StatusCode == 200)
+        {
+            var restore = await PostWithTokenAsync("/api/plugins/banking.card/start",
+                new { }, adminToken);
+            Check("管理员启用插件成功（200）", (int)restore.StatusCode == 200, $"HTTP {(int)restore.StatusCode}");
+        }
+    }
+    catch (Exception ex) { Check("管理员操作插件", false, ex.Message); }
+}
 
 // ===== 场景 1 =====
 Section("场景 1: 查询银行卡 —— 验证 L3 数据强制脱敏 + 插件路由");
@@ -193,9 +306,13 @@ Check("余额未重复扣款", Math.Abs(balBeforeDup - balAfterDup) < 0.01m, $"{
 
 // ===== 场景 9 =====
 Section("场景 9: 事件总线 —— 跨插件联动");
-var evText = await http.GetStringAsync($"{hostBase}/api/plugins/events");
-using (var evDoc = JsonDocument.Parse(evText))
 {
+    var evReq = new HttpRequestMessage(HttpMethod.Get, $"{hostBase}/api/plugins/events");
+    evReq.Headers.Add("Authorization", $"Bearer {token}");
+    var evResp = await http.SendAsync(evReq);
+    var evText = await evResp.Content.ReadAsStringAsync();
+
+    using var evDoc = JsonDocument.Parse(evText);
     var published = evDoc.RootElement.GetProperty("published").GetInt32();
     Console.WriteLine($"  已发布事件数: {published}");
     Check("transfer.completed 事件已发布", evText.Contains("transfer.completed"), "");

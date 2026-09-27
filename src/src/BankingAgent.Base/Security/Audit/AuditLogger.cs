@@ -95,7 +95,7 @@ public partial class AuditLogger(
     /// 读链尾、算签名、写链尾必须在同一临界区内完成，
     /// 否则并发写入时多条记录会引用同一个前序签名，导致审计链断裂。
     /// </summary>
-    private AuditEvent SignAndAdvance(AuditEvent evt)
+    public AuditEvent SignAndAdvance(AuditEvent evt)
     {
         if (!_options.EnableChainSignature) return evt;
 

@@ -1,4 +1,4 @@
-// ===== 审计链单元测试 =====
+﻿// ===== 审计链单元测试 =====
 // 审计链是合规取证的根基：链断裂意味着证据不可采信。
 // 本测试锁定链式签名的正确性，包括并发场景。
 
@@ -13,25 +13,32 @@ public class AuditLoggerTests : IDisposable
     private readonly string _logPath =
         Path.Combine(Path.GetTempPath(), $"audit-test-{Guid.NewGuid():N}.log");
 
-    private AuditLogger CreateLogger(bool chain = true) =>
-        new(Options.Create(new AuditOptions
-        {
-            SigningKey = "unit-test-key",
-            EnableChainSignature = chain,
-            FilePath = _logPath
-        }), NullLogger<AuditLogger>.Instance);
-
-    private static AuditEvent Evt(string id, string actor = "u_1", decimal? amount = null) => new()
+    private AuditLogger CreateLogger(bool chain = true)
     {
-        AuditId = id,
-        Timestamp = DateTimeOffset.UtcNow,
-        ActorType = "USER",
-        ActorId = actor,
-        Operation = "test.op",
-        Scenario = "transfer",
-        Decision = "SUCCESS",
-        Amount = amount
-    };
+        return new AuditLogger(
+            Options.Create(new AuditOptions
+            {
+                SigningKey = "unit-test-key",
+                EnableChainSignature = chain,
+                FilePath = _logPath
+            }),
+            NullLogger<AuditLogger>.Instance);
+    }
+
+    private static AuditEvent Evt(string id, string actor = "u_1", decimal? amount = null)
+    {
+        return new AuditEvent
+        {
+            AuditId = id,
+            Timestamp = DateTimeOffset.UtcNow,
+            ActorType = "USER",
+            ActorId = actor,
+            Operation = "test.op",
+            Scenario = "transfer",
+            Decision = "SUCCESS",
+            Amount = amount
+        };
+    }
 
     public void Dispose()
     {
@@ -39,29 +46,24 @@ public class AuditLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FirstRecord_HasGenesisChain()
+    public void FirstRecord_HasNoPreviousSignature()
     {
         var logger = CreateLogger();
         var signed = logger.Sign(Evt("a1"));
 
-        Assert.Equal("GENESIS", "GENESIS");
         Assert.Null(signed.PreviousSignature);
-        Assert.Equal(64, signed.Signature.Length); // SHA256 hex
+        Assert.Equal(64, signed.Signature.Length);
     }
 
     [Fact]
     public void SequentialRecords_FormValidChain()
     {
         var logger = CreateLogger();
-        var a = logger.Sign(Evt("a1"));
-        logger = CreateLogger();
-
-        // 连续签名应形成链
         var records = new List<AuditEvent>();
+
         for (var i = 1; i <= 5; i++)
         {
-            var signed = logger.SignAndAdvanceForTest(Evt($"a{i}"));
-            records.Add(signed);
+            records.Add(logger.SignAndAdvance(Evt($"a{i}")));
         }
 
         Assert.Null(records[0].PreviousSignature);
@@ -110,10 +112,9 @@ public class AuditLoggerTests : IDisposable
         var records = new List<AuditEvent>();
         for (var i = 1; i <= 4; i++)
         {
-            records.Add(logger.SignAndAdvanceForTest(Evt($"a{i}")));
+            records.Add(logger.SignAndAdvance(Evt($"a{i}")));
         }
 
-        // 用同一密钥重建验证
         var verifier = CreateLogger();
         var result = verifier.VerifyChain(records);
 
@@ -129,10 +130,9 @@ public class AuditLoggerTests : IDisposable
         var records = new List<AuditEvent>();
         for (var i = 1; i <= 4; i++)
         {
-            records.Add(logger.SignAndAdvanceForTest(Evt($"a{i}", amount: 100m)));
+            records.Add(logger.SignAndAdvance(Evt($"a{i}", amount: 100m)));
         }
 
-        // 篡改第 3 条的金额
         var tampered = records.ToList();
         tampered[2] = tampered[2] with { Amount = 999_999m };
 
@@ -150,10 +150,10 @@ public class AuditLoggerTests : IDisposable
         var records = new List<AuditEvent>();
         for (var i = 1; i <= 4; i++)
         {
-            records.Add(logger.SignAndAdvanceForTest(Evt($"a{i}")));
+            records.Add(logger.SignAndAdvance(Evt($"a{i}")));
         }
 
-        // 删除第 2 条，制造断链
+        // Remove the second record to break the chain
         var broken = records.Where((_, i) => i != 1).ToList();
 
         var verifier = CreateLogger();
@@ -191,34 +191,42 @@ public class AuditLoggerTests : IDisposable
         const int total = 100;
         var logger = CreateLogger();
 
-        await Parallel.ForEachAsync(Enumerable.Range(0, total),
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, total),
             new ParallelOptions { MaxDegreeOfParallelism = 32 },
             async (i, ct) => await logger.WriteAsync(Evt($"c{i:D4}"), ct));
 
         var lines = await File.ReadAllLinesAsync(_logPath);
         Assert.Equal(total, lines.Length);
 
-        // 解析并验证链结构
-        var sigs = lines.Select(l =>
-        {
-            using var d = System.Text.Json.JsonDocument.Parse(l);
-            return d.RootElement.GetProperty("sig").GetString()!;
-        }).ToList();
+        var sigs = new List<string>();
+        var prevs = new List<string?>();
 
-        var prevs = lines.Select(l =>
+        foreach (var line in lines)
         {
-            using var d = System.Text.Json.JsonDocument.Parse(l);
-            return d.RootElement.TryGetProperty("prev", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String
-                ? p.GetString() : null;
-        }).ToList();
+            using var d = System.Text.Json.JsonDocument.Parse(line);
+            var r = d.RootElement;
+            sigs.Add(r.GetProperty("sig").GetString()!);
+            prevs.Add(
+                r.TryGetProperty("prev", out var p)
+                && p.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? p.GetString()
+                    : null);
+        }
 
-        // 签名唯一
-        Assert.Equal(total, sigs.Distinct().Count());
-        // 链首唯一
-        Assert.Single(prevs.Where(p => p is null));
-        // 无分叉
-        var forks = prevs.Where(p => p is not null)
-            .GroupBy(p => p!).Count(g => g.Key is not null && g.Count() > 1);
+        // All signatures must be unique
+        Assert.Equal(sigs.Count, sigs.Distinct().Count());
+
+        // Exactly one genesis record
+        Assert.Single(prevs, p => p is null);
+
+        // No forks: every prev is referenced at most once
+        var forks = prevs
+            .Where(p => p is not null)
+            .GroupBy(p => p!)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
         Assert.Empty(forks);
     }
 }

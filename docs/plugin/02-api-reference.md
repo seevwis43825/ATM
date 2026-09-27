@@ -11,6 +11,88 @@
 
 Base URL：`http://localhost:5243`
 
+### 1.0 身份认证（必须先获取令牌）
+
+#### 获取令牌
+
+```http
+POST /api/auth/token
+Content-Type: application/json
+```
+
+```json
+{ "userId": "u_demo01", "password": "demo1234" }
+```
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "tokenType": "Bearer",
+  "userId": "u_demo01",
+  "role": "user",
+  "displayName": "张明",
+  "expiresInSeconds": 1800
+}
+```
+
+**演示账号**
+
+| userId | 密码 | 姓名 | 角色 |
+|--------|------|------|------|
+| `u_demo01` | `demo1234` | 张明 | user |
+| `u_demo02` | `demo1234` | 李华 | user |
+| `u_demo03` | `demo1234` | 王芳 | user |
+| `staff_01` | `staff1234` | 客服小李 | staff |
+| `audit_01` | `audit1234` | 审计员小王 | auditor |
+| `admin_01` | `admin1234` | 管理员 | admin |
+
+> **角色由服务端账号表决定**，客户端传入的 `role` 字段会被忽略（防止自助提权）。
+> **失败时统一返回 401**，不区分「用户不存在」与「密码错误」，防止账号枚举。
+
+#### 带令牌访问
+
+```http
+Authorization: Bearer <token>
+```
+
+#### 免认证白名单
+
+仅 `/health` 与 `/api/auth/token` 免认证，其余端点均需令牌。
+
+#### 查询当前身份
+
+```http
+GET /api/auth/me
+```
+
+```json
+{
+  "userId": "u_demo01",
+  "role": "user",
+  "displayName": "张明",
+  "canAudit": false,
+  "canAdminister": false
+}
+```
+
+#### 权限矩阵
+
+| 能力 | user | staff | auditor | admin |
+|------|:----:|:-----:|:-------:|:-----:|
+| 对话、转账、查卡 | ✅ | ✅ | ✅ | ✅ |
+| 代客操作（需填原因） | ❌ | ✅ | ✅ | ✅ |
+| 插件启停 | ❌ | ❌ | ❌ | ✅ |
+| 审计查询 | ❌ | ❌ | ✅ | ✅ |
+
+#### 越权防护
+
+`/api/chat` 的 `userId` 字段**不会**被信任：
+
+- 令牌身份与请求体 `userId` 不一致 → **403 FORBIDDEN**
+- staff/auditor/admin 代客操作 → 必须提供 `impersonationReason`，并写入审计日志
+
+---
+
 ### 1.1 健康检查
 
 ```http
@@ -487,11 +569,19 @@ X-Mock-Scenario: insufficient_funds | daily_limit_exceeded | account_frozen | ti
 ## 4. 调用示例（PowerShell）
 
 > **中文编码**：PowerShell 5.1 需用 UTF-8 字节，否则中文乱码。
+> **鉴权**：除 `/health` 与 `/api/auth/token` 外，均需 `Authorization: Bearer <token>`。
 
 ```powershell
+# 1. 先取令牌
+$login = @{ userId = "u_demo01"; password = "demo1234" } | ConvertTo-Json
+$token = (Invoke-RestMethod http://localhost:5243/api/auth/token -Method Post `
+  -ContentType "application/json" -Body $login).token
+
+# 2. 带令牌访问
+$headers = @{ Authorization = "Bearer $token" }
 $b = [System.Text.Encoding]::UTF8.GetBytes('{"message":"\u6211\u6709\u54ea\u4e9b\u5361","userId":"u_demo01"}')
 Invoke-RestMethod http://localhost:5243/api/chat -Method Post `
-  -ContentType "application/json; charset=utf-8" -Body $b
+  -Headers $headers -ContentType "application/json; charset=utf-8" -Body $b
 ```
 
 **或者**用测试项目（已处理编码问题）：

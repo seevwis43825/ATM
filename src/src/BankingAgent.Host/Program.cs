@@ -8,6 +8,7 @@ using BankingAgent.Base.Data;
 using BankingAgent.Base.Events;
 using BankingAgent.Base.Plugins;
 using BankingAgent.Base.Security.Audit;
+using BankingAgent.Base.Security.Auth;
 using BankingAgent.Base.Security.Compliance;
 using BankingAgent.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
@@ -73,12 +74,92 @@ foreach (var plugin in registry.LoadedPlugins)
 
 // ===== 5. API 端点 =====
 
+// ===== 认证中间件 =====
+// 修复越权漏洞：原实现 userId 由客户端传入，任何人可传别人的 userId。
+// 现在所有受保护端点必须携带合法 JWT，且 userId 一律从令牌提取。
+app.Use(async (ctx, next) =>
+{
+    var tokenService = ctx.RequestServices.GetRequiredService<ITokenService>();
+
+    var header = ctx.Request.Headers.Authorization.ToString();
+    var principal = tokenService.Validate(header);
+
+    if (principal.IsAuthenticated)
+    {
+        // 让 CurrentUserAccessor 与审计链拿到真实身份
+        using var scope = CurrentUserAccessor.Enter(principal.UserId, role: ParseRole(principal.Role));
+        ctx.Items["Principal"] = principal;
+        await next();
+        return;
+    }
+
+    // 公开端点白名单
+    var path = ctx.Request.Path.Value ?? "";
+    if (IsPublic(path))
+    {
+        await next();
+        return;
+    }
+
+    ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+    await ctx.Response.WriteAsJsonAsync(new
+    {
+        code = "UNAUTHORIZED",
+        message = "缺少或无效的身份凭证，请在 Authorization 头中提供 Bearer 令牌"
+    });
+});
+
 app.MapGet("/health", () => Results.Ok(new
 {
     status = "healthy",
     plugins = registry.LoadedPlugins.Count,
     timestamp = DateTimeOffset.UtcNow
 }));
+
+// ===== 认证端点（演示用；生产应接统一身份认证）=====
+app.MapPost("/api/auth/token", (TokenRequest req, ITokenService tokenService) =>
+{
+    // 演示环境的账号校验。生产环境必须对接银行统一认证/OTP/MFA。
+    if (string.IsNullOrWhiteSpace(req.UserId) || string.IsNullOrWhiteSpace(req.Password))
+    {
+        return Results.BadRequest(new { code = "INVALID_REQUEST", message = "用户名与密码不能为空" });
+    }
+
+    if (!DemoCredentials.TryValidate(req.UserId, req.Password, out var displayName))
+    {
+        // 统一返回 401，不区分"用户不存在"与"密码错误"，避免账号枚举
+        return Results.Unauthorized();
+    }
+
+    // 角色一律以服务端账号表为准，绝不信任客户端传入的角色（否则可自助提权）
+    var role = DemoCredentials.GetRole(req.UserId) ?? JwtRoles.User;
+    var token = tokenService.IssueToken(req.UserId, role, displayName);
+
+    return Results.Ok(new
+    {
+        token,
+        tokenType = "Bearer",
+        userId = req.UserId,
+        role,
+        displayName,
+        expiresInSeconds = 1800
+    });
+});
+
+// 返回当前令牌对应的身份，便于前端自检
+app.MapGet("/api/auth/me", (HttpContext ctx) =>
+{
+    var principal = (CurrentPrincipal?)ctx.Items["Principal"];
+    if (principal is null) return Results.Unauthorized();
+    return Results.Ok(new
+    {
+        userId = principal.UserId,
+        role = principal.Role,
+        displayName = principal.DisplayName,
+        canAudit = principal.CanAudit,
+        canAdminister = principal.CanAdminister
+    });
+});
 
 // ===== 插件管理 =====
 app.MapGet("/api/plugins", () => Results.Ok(registry.LoadedPlugins.Select(p => new
@@ -140,30 +221,84 @@ app.MapGet("/api/plugins/events", () =>
     });
 });
 
-// 停用/启用插件（热插拔演示）
-app.MapPost("/api/plugins/{pluginId}/stop", async (string pluginId, CancellationToken ct) =>
+// 停用/启用插件（热插拔演示）—— 仅管理员
+app.MapPost("/api/plugins/{pluginId}/stop", async (string pluginId, HttpContext ctx, CancellationToken ct) =>
 {
+    var principal = (CurrentPrincipal?)ctx.Items["Principal"];
+    if (principal?.CanAdminister != true) return Forbidden("只有管理员可以停用插件");
+
     var ok = await registry.StopPluginAsync(new PluginId(pluginId), ct);
     return ok ? Results.Ok(new { pluginId, action = "stopped" }) : Results.NotFound();
 });
 
-app.MapPost("/api/plugins/{pluginId}/start", async (string pluginId, CancellationToken ct) =>
+app.MapPost("/api/plugins/{pluginId}/start", async (string pluginId, HttpContext ctx, CancellationToken ct) =>
 {
+    var principal = (CurrentPrincipal?)ctx.Items["Principal"];
+    if (principal?.CanAdminister != true) return Forbidden("只有管理员可以启用插件");
+
     var ok = await registry.StartPluginAsync(new PluginId(pluginId), ct);
     return ok ? Results.Ok(new { pluginId, action = "started" }) : Results.NotFound();
 });
 
 // ===== 对话演示 =====
-app.MapPost("/api/chat", async (ChatRequest req, CancellationToken ct) =>
+app.MapPost("/api/chat", async (ChatRequest req, HttpContext ctx, CancellationToken ct) =>
 {
     var router = app.Services.GetRequiredService<AgentRouter>();
+    var principal = (CurrentPrincipal?)ctx.Items["Principal"];
+
+    if (principal is null)
+    {
+        return Results.Unauthorized();
+    }
 
     var intent = DetectIntent(req.Message);
+
+    // 越权防护：userId 一律取自已验证的令牌，忽略请求体中的任何 userId
+    var effectiveUserId = principal.UserId;
+
+    // 客服角色可代客操作，但必须显式声明目标用户，且会被审计
+    if (principal.CanImpersonateSupport &&
+        !string.IsNullOrWhiteSpace(req.UserId) &&
+        req.UserId != effectiveUserId)
+    {
+        if (req.ImpersonationReason is null)
+        {
+            return Results.BadRequest(new
+            {
+                code = "IMPERSONATION_REASON_REQUIRED",
+                message = "代客操作必须提供 impersonationReason，将记入审计日志"
+            });
+        }
+    }
+    else if (!string.IsNullOrWhiteSpace(req.UserId) && req.UserId != effectiveUserId)
+    {
+        return Forbidden("无权访问其他用户的数据");
+    }
+
+    var targetUserId = principal.CanImpersonateSupport && !string.IsNullOrWhiteSpace(req.UserId)
+        ? req.UserId
+        : effectiveUserId;
+
+    // 代客操作必须留痕
+    if (targetUserId != effectiveUserId)
+    {
+        await app.Services.GetRequiredService<IAuditLogger>().WriteAsync(new AuditEvent
+        {
+            AuditId = Guid.NewGuid().ToString("N")[..12],
+            Timestamp = DateTimeOffset.UtcNow,
+            ActorType = "STAFF",
+            ActorId = effectiveUserId,
+            Operation = "user.impersonation",
+            Scenario = "compliance",
+            Decision = "APPROVED",
+            DecisionReason = req.ImpersonationReason ?? ""
+        }, ct);
+    }
 
     var request = new AgentRequest
     {
         UserInput = req.Message,
-        UserId = req.UserId,
+        UserId = targetUserId,   // 来自令牌，绝不使用请求体中的 userId
         SessionId = req.SessionId,
         CancellationToken = ct,
         Slots = req.Slots ?? new Dictionary<string, object?>(),
@@ -183,17 +318,30 @@ app.MapPost("/api/chat", async (ChatRequest req, CancellationToken ct) =>
 });
 
 // ===== 人工回环确认 =====
-app.MapPost("/api/chat/confirm", async (ConfirmRequest req, CancellationToken ct) =>
+app.MapPost("/api/chat/confirm", async (ConfirmRequest req, HttpContext ctx, CancellationToken ct) =>
 {
     var router = app.Services.GetRequiredService<AgentRouter>();
     var audit = app.Services.GetRequiredService<IAuditLogger>();
+    var principal = (CurrentPrincipal?)ctx.Items["Principal"];
+
+    if (principal is null) return Results.Unauthorized();
+
+    // 越权防护：确认操作也必须以令牌身份为准
+    if (!string.IsNullOrWhiteSpace(req.UserId)
+        && req.UserId != principal.UserId
+        && !principal.CanImpersonateSupport)
+    {
+        return Forbidden("无权为其他用户确认操作");
+    }
+
+    var operatorId = principal.UserId;
 
     await audit.WriteAsync(new AuditEvent
     {
         AuditId = Guid.NewGuid().ToString("N")[..12],
         Timestamp = DateTimeOffset.UtcNow,
         ActorType = "USER",
-        ActorId = req.UserId,
+        ActorId = operatorId,
         Operation = "human.approval",
         Scenario = "transfer",
         Decision = "APPROVED",
@@ -207,7 +355,7 @@ app.MapPost("/api/chat/confirm", async (ConfirmRequest req, CancellationToken ct
     var result = await router.RouteAsync(new AgentRequest
     {
         UserInput = "用户已确认",
-        UserId = req.UserId,
+        UserId = operatorId,   // 来自令牌
         SessionId = req.SessionId,
         Slots = slots,
         SharedContext = new Dictionary<string, object?> { ["intent"] = "transfer.execute" },
@@ -230,6 +378,29 @@ await app.RunAsync();
 
 // ===== 辅助函数 =====
 
+/// <summary>
+/// 返回 403。自定义鉴权中间件下 Results.Forbid() 需要 ASP.NET Core
+/// 鉴权方案配合，否则会抛 InvalidOperationException，因此显式构造响应。
+/// </summary>
+static IResult Forbidden(string message) => Results.Json(
+    new { code = "FORBIDDEN", message },
+    statusCode: StatusCodes.Status403Forbidden);
+
+/// <summary>免认证端点白名单。</summary>
+static bool IsPublic(string path) =>
+    path.StartsWith("/health", StringComparison.OrdinalIgnoreCase)
+    || path.StartsWith("/api/auth/token", StringComparison.OrdinalIgnoreCase);
+
+/// <summary>角色字符串转枚举。</summary>
+static ActorRole ParseRole(string role) => role switch
+{
+    JwtRoles.Admin => ActorRole.Admin,
+    JwtRoles.Auditor => ActorRole.Auditor,
+    JwtRoles.Staff => ActorRole.Staff,
+    JwtRoles.Agent => ActorRole.Agent,
+    _ => ActorRole.User
+};
+
 /// <summary>极简意图识别。生产环境应替换为 LLM 分类器。</summary>
 static string DetectIntent(string message)
 {
@@ -249,7 +420,11 @@ static string DetectIntent(string message)
 
 /// <summary>对话请求。</summary>
 public sealed record ChatRequest(
-    string Message, string UserId, string? SessionId, Dictionary<string, object?>? Slots);
+    string Message, string UserId, string? SessionId, Dictionary<string, object?>? Slots,
+    string? ImpersonationReason = null);
+
+/// <summary>令牌签发请求。</summary>
+public sealed record TokenRequest(string UserId, string Password, string? Role = null);
 
 /// <summary>对话响应。</summary>
 public sealed record ChatResponse(
@@ -260,6 +435,37 @@ public sealed record ChatResponse(
 /// <summary>人工确认请求。</summary>
 public sealed record ConfirmRequest(
     string UserId, string? SessionId, decimal Amount, Dictionary<string, object?> Slots);
+
+/// <summary>
+/// 演示环境的账号表。生产环境必须替换为银行统一身份认证，
+/// 密码不得以明文或可逆方式存储，且需支持 OTP / MFA。
+/// </summary>
+internal static class DemoCredentials
+{
+    private static readonly Dictionary<string, (string Password, string Name, string Role)> Accounts = new()
+    {
+        ["u_demo01"] = ("demo1234", "张明", JwtRoles.User),
+        ["u_demo02"] = ("demo1234", "李华", JwtRoles.User),
+        ["u_demo03"] = ("demo1234", "王芳", JwtRoles.User),
+        ["staff_01"] = ("staff1234", "客服小李", JwtRoles.Staff),
+        ["audit_01"] = ("audit1234", "审计员小王", JwtRoles.Auditor),
+        ["admin_01"] = ("admin1234", "管理员", JwtRoles.Admin)
+    };
+
+    /// <summary>校验演示账号。</summary>
+    public static bool TryValidate(string userId, string password, out string displayName)
+    {
+        displayName = "";
+        if (!Accounts.TryGetValue(userId, out var account)) return false;
+        if (account.Password != password) return false;
+        displayName = account.Name;
+        return true;
+    }
+
+    /// <summary>查询账号角色，供签发令牌时使用。</summary>
+    public static string? GetRole(string userId) =>
+        Accounts.TryGetValue(userId, out var a) ? a.Role : null;
+}
 
 /// <summary>桥接插件生命周期钩子到容器中的 IPlugin 实现。</summary>
 internal sealed class PluginLifecycleBridge(IServiceProvider sp) : IPluginStartupHook, IPluginShutdownHook

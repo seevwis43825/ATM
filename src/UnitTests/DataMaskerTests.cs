@@ -18,14 +18,17 @@ public class DataMaskerTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("   ")]
     [InlineData("123")]
     [InlineData("abcdefghijk")]
     public void MaskPhone_InvalidInput_AlwaysMasked(string? input)
     {
-        var result = DataMasker.MaskPhone(input);
-        Assert.Equal("****", result);
-        Assert.DoesNotContain(input ?? "", result);
+        Assert.Equal("****", DataMasker.MaskPhone(input));
+    }
+
+    [Fact]
+    public void MaskPhone_WhitespaceInput_Masked()
+    {
+        Assert.Equal("****", DataMasker.MaskPhone("   "));
     }
 
     [Fact]
@@ -75,7 +78,7 @@ public class DataMaskerTests
     public void MaskName_LongName_OnlyFirstVisible()
     {
         var result = DataMasker.MaskName("欧阳明日");
-        Assert.Equal("欧***");
+        Assert.Equal("欧***", result);
         Assert.DoesNotContain("阳", result);
     }
 
@@ -149,7 +152,8 @@ public class DataMaskerTests
         var map = Assert.IsType<Dictionary<string, object?>>(result);
         Assert.Equal("138****8000", map["phone"]);
         Assert.Equal("张*", map["name"]);
-        Assert.Equal(5000m, map["amount"]); // 数值类型不脱敏
+        // 数值类型保持原值，不做脱敏
+        Assert.Equal(5000m, Convert.ToDecimal(map["amount"]));
     }
 
     [Fact]
@@ -163,12 +167,24 @@ public class DataMaskerTests
     [Fact]
     public void MaskGraph_HandlesCollection()
     {
+        // 集合元素没有字段名，只能走通用掩码（保留末 4 位）
         var input = new List<object?> { "13800138000", 100 };
         var result = DataMasker.MaskGraph(input, DataClassification.L3);
 
         var list = Assert.IsType<List<object?>>(result);
-        Assert.Equal("138****8000", list[0]);
+        Assert.Equal("*******8000", list[0]);
         Assert.Equal(100, list[1]);
+    }
+
+    [Fact]
+    public void MaskGraph_Dictionary_UsesKeyAwareMasking()
+    {
+        // 字典有键名，应按字段类型脱敏而非通用掩码
+        var input = new Dictionary<string, object?> { ["phone"] = "13800138000" };
+        var result = DataMasker.MaskGraph(input, DataClassification.L3);
+
+        var map = Assert.IsType<Dictionary<string, object?>>(result);
+        Assert.Equal("138****8000", map["phone"]);
     }
 
     [Fact]

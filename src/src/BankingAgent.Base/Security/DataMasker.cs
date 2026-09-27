@@ -17,7 +17,9 @@ public static partial class DataMasker
     private static partial Regex PhonePattern();
 
     // ===== 身份证脱敏 =====
-    [GeneratedRegex(@"^(\d{6})\d{8}(\d{4}[\dXx])$")]
+    // 18 位：前 6 位地址码 + 8 位出生日期 + 3 位顺序码 + 1 位校验码（数字或 X/x）
+    // 第 2 个捕获组保留末 4 位（前 3 位顺序码 + 校验码）
+    [GeneratedRegex(@"^(\d{6})\d{8}(\d{3}[\dXx])$")]
     private static partial Regex IdCardPattern();
 
     /// <summary>脱敏手机号。格式不匹配时全部遮蔽。</summary>
@@ -102,10 +104,13 @@ public static partial class DataMasker
         return input switch
         {
             string s => Apply(s, maxLevel, "generic"),
-            decimal or int or long or bool or DateTimeOffset or Guid => input,
+            decimal or int or long or bool or DateTimeOffset or Guid => input,            // 字典必须把「键名」传给值，才能做字段感知的脱敏
+            // （否则 phone 字段会被当成 generic 走账号掩码）
             IDictionary<string, object?> map => map.ToDictionary(
-                k => k.Key,
-                v => MaskGraph(v, maxLevel)),
+                entry => entry.Key,
+                entry => entry.Value is string s
+                    ? Apply(s, maxLevel, entry.Key)
+                    : MaskGraph(entry.Value, maxLevel)),
             System.Collections.IEnumerable seq and not string => seq
                 .Cast<object?>()
                 .Select(x => MaskGraph(x, maxLevel))
