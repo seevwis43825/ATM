@@ -7,7 +7,6 @@
 //   * 需要落库时实现 IEntitySetContributor（见 Persistence.cs）
 
 using BankingAgent.Base.Agents;
-using BankingAgent.Base.Data;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
@@ -48,14 +47,16 @@ public sealed class 理财PluginEntryPoint : IPluginEntryPoint
         // Agent 无状态，注册为单例即可安全共享
         services.AddSingleton<IBankingAgent, 理财Agent>();
 
-        // 注册本插件的数据分区贡献器。
-        // 注意：实现了 IEntitySetContributor **还不够**，必须在这里注册，
-        // 否则宿主不会把该实体纳入模型 —— 表不会被创建，
-        // 而且不会报任何错（参见 03-implementation-status.md 的"静默失效"清单）。
-        // 这也是 [Encrypted] 字段级加密生效的前提：实体必须先进模型。
-        services.AddSingleton<IEntitySetContributor, 理财PersistenceContributor>();
+        // 本插件是**只读场景**（产品查询 / 推荐 / 余额查询），不落自己的库，
+        // 因此不注册 IEntitySetContributor：模型里不会出现用不到的空表，
+        // 迁移门禁（dotnet ef migrations has-pending-model-changes）也能保持一致。
+        //
+        // 将来若确实需要落库（例如记录推荐历史），照 src/templates/banking-plugin/
+        // 的 Persistence.cs 实现一个 IEntitySetContributor，**在这里注册**，
+        // 并用 `dotnet ef migrations add <名称> --configuration Release` 补迁移。
+        // 注意：实现了贡献器却忘记注册，属于"静默失效"——表不会被创建，也不报错
+        // （见 docs/plugin/03-implementation-status.md 的「静默失效」清单）。
 
-        context.Logger.LogInformation(
-            "理财 插件服务注册完成，数据分区: {Partition}", context.PartitionName);
+        context.Logger.LogInformation("理财插件服务注册完成（只读场景，无独立数据分区）");
     }
 }
