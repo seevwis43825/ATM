@@ -117,6 +117,15 @@ public interface IBankingAgent
     AgentRole Role { get; }
     /// <summary>该 Agent 能处理的意图前缀，用于路由。为空表示兜底 Agent。</summary>
     IReadOnlyList<string> SupportedIntents { get; }
+
+    /// <summary>
+    /// 该 Agent 的自然语言触发关键词（如「转账」「汇款」）。
+    ///
+    /// 用途：规则式意图识别未命中时，宿主用这些关键词从用户原话反推意图。
+    /// 没有它，插件虽然注册了 Agent，却只能靠宿主里硬编码的关键词表才收得到请求，
+    /// 「加插件即加能力」这条设计承诺就不成立。默认返回空集合，不影响既有插件。
+    /// </summary>
+    IReadOnlyList<string> TriggerKeywords => [];
     Task<AgentResult> ExecuteAsync(AgentRequest request, CancellationToken ct = default);
 }
 

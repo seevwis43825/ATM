@@ -37,42 +37,71 @@ public sealed class 理财Agent : BankingAgentBase
 
     /// <summary>
     /// 该 Agent 能处理的意图前缀。宿主按「最长前缀优先」路由，
-    /// 因此 "wealth" 不会抢占 "wealth.redeem"。
+    /// 因此 "wealth" 不会抢占 "wealth.products"。
     /// </summary>
-    public override IReadOnlyList<string> SupportedIntents => ["wealth"];
+    public override IReadOnlyList<string> SupportedIntents =>
+        ["wealth", "wealth.products", "wealth.balance"];
+
+    /// <inheritdoc />
+    public override IReadOnlyList<string> TriggerKeywords =>
+        ["理财", "基金", "投资", "产品", "收益", "净值", "余额", "资产"];
 
     /// <inheritdoc />
     protected override async Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct)
     {
-        // ===== 1. 从槽位取参数 =====
-        // 一律用 SlotReader：它处理了 JSON 反序列化产生的 JsonElement，
-        // 直接强转会失败，且金额读成 null 会让校验被静默跳过。
-        var accountNo = SlotReader.String(request, "account_no");
-
-        if (string.IsNullOrEmpty(accountNo))
+        // ===== 1. 余额 / 资产查询（只读，取用户第一个账户）=====
+        if (request.UserInput.Contains("余额", StringComparison.Ordinal)
+            || request.UserInput.Contains("资产", StringComparison.Ordinal))
         {
             var accounts = await _coreBank.ListAccountsAsync(request.UserId, ct);
-            var first = accounts.FirstOrDefault();
-            if (first is null) return AgentResult.Fail("NO_ACCOUNT", "未找到账户");
-            accountNo = first.AccountNo;
+            var account = accounts.FirstOrDefault();
+            if (account is null) return AgentResult.Fail("NO_ACCOUNT", "未找到账户");
+
+            return AgentResult.Ok(
+                content: $"账户 {DataMasker.MaskAccount(account.AccountNo)} 当前可用 {account.AvailableAmount:N2} {account.Currency}",
+                intent: "wealth.balance",
+                data: new Dictionary<string, object?>
+                {
+                    // L3 字段必须脱敏，账号只返回掩码
+                    ["account_no"] = DataMasker.MaskAccount(account.AccountNo),
+                    ["balance"] = account.Balance,
+                    ["available_amount"] = account.AvailableAmount,
+                    ["currency"] = account.Currency,
+                    ["data_classification"] = "L3-masked"
+                });
         }
 
-        // ===== 2. 查询账户 =====
-        var account = await _coreBank.GetAccountAsync(accountNo, ct);
-        if (account is null)
+        // ===== 2. 理财产品查询与推荐（只读）=====
+        var products = await _coreBank.ListProductsAsync(
+            SlotReader.String(request, "risk_level"), ct);
+
+        if (products.Count == 0)
         {
-            return AgentResult.Fail("ACCOUNT_NOT_FOUND", "未找到该账户");
+            return AgentResult.Fail("NO_PRODUCT", "暂无在售理财产品");
         }
 
-        // ===== 3. 返回结果，L3 及以上字段必须脱敏 =====
+        var list = products.Select(p => new Dictionary<string, object?>
+        {
+            ["code"] = p.Code,
+            ["name"] = p.Name,
+            ["type"] = p.Type,
+            ["risk_level"] = p.RiskLevel,
+            ["annual_rate"] = p.AnnualRate,
+            ["min_amount"] = p.MinInvestment,
+            ["term_days"] = p.TermDays,
+            ["status"] = p.Status
+        }).ToList();
+
+        var best = products.OrderByDescending(p => p.AnnualRate).First();
+
         return AgentResult.Ok(
-            content: $"账户 {DataMasker.MaskAccount(account.AccountNo)} 当前余额 {account.Balance:N2} {account.Currency}",
-            intent: "wealth.query",
+            content: $"当前在售 {products.Count} 只理财产品，年化最高为 {best.Name}"
+                     + $"（{best.RiskLevel}，{best.AnnualRate:F2}%，{best.TermDays} 天，起投 {best.MinInvestment:N0} 元）",
+            intent: "wealth.products",
             data: new Dictionary<string, object?>
             {
-                ["account_no"] = DataMasker.MaskAccount(account.AccountNo),
-                ["balance"] = account.Balance,
-                ["currency"] = account.Currency
+                ["product_count"] = products.Count,
+                ["products"] = list
             });
     }
 

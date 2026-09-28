@@ -28,6 +28,10 @@ public static class TransferEndpoints
             .Produces<ApiErrorResponse>(StatusCodes.Status400BadRequest)
             .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound);
 
+        group.MapGet("/beneficiaries", GetBeneficiaries)
+            .WithMetadata(new ApiOperationMetadata("GetBeneficiaries", "按姓名或手机号检索行内收款人，返回可用于行内转账的储蓄账户。", "按姓名或手机号检索行内收款人，返回可用于行内转账的储蓄账户。", ["转账与流水"]))
+            .Produces<IReadOnlyList<BeneficiaryResponse>>(StatusCodes.Status200OK);
+
         group.MapGet("/transactions", GetTransactions)
             .WithMetadata(new ApiOperationMetadata("GetTransactions", "分页查询交易流水，支持按时间区间、账号与交易分类筛选，按交易时间倒序返回。", "分页查询交易流水，支持按时间区间、账号与交易分类筛选，按交易时间倒序返回。", ["转账与流水"]))
             .Produces<PagedResult<TransactionResponse>>(StatusCodes.Status200OK)
@@ -73,6 +77,36 @@ public static class TransferEndpoints
         return Results.Json(
             new ApiErrorResponse(outcome.Code, outcome.Message, outcome.Details, null),
             statusCode: outcome.StatusCode);
+    }
+
+    /// <summary>GET /api/corebank/v1/beneficiaries — 按姓名或手机号检索行内收款人。</summary>
+    /// <param name="keyword">姓名或手机号片段。</param>
+    /// <param name="store">账本。</param>
+    /// <returns>匹配到的收款账户列表；关键词为空时返回空列表。</returns>
+    private static IResult GetBeneficiaries([FromQuery] string? keyword, MockBankStore store)
+    {
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            return Results.Ok(Array.Empty<BeneficiaryResponse>());
+        }
+
+        var k = keyword.Trim();
+        var matches = new List<BeneficiaryResponse>();
+
+        foreach (var customer in store.Customers)
+        {
+            var hit = customer.Name.Contains(k, StringComparison.Ordinal)
+                      || customer.Phone.Contains(k, StringComparison.Ordinal);
+            if (!hit) continue;
+
+            // 只返回储蓄账户：信用卡账户不能作为行内转账的收款方。
+            matches.AddRange(store.GetAccountsByUser(customer.UserId)
+                .Where(a => a.AccountType == AccountType.Savings)
+                .Select(a => new BeneficiaryResponse(
+                    customer.Name, a.AccountNo, a.AccountTypeText, a.BranchName)));
+        }
+
+        return Results.Ok(matches);
     }
 
     /// <summary>GET /api/corebank/v1/transactions — 分页查询交易流水。</summary>

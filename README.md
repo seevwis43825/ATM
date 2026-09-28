@@ -36,7 +36,7 @@
 | `banking.transfer` | 智能转账 | B | `transfer`, `transfer.execute` | ✅ 完整实现，资金操作参考实现 |
 | `banking.bill` | 账单分析 | C | `bill`, `bill.summary` | ✅ 完整实现 |
 | `banking.card` | 卡片管理 | B | `card`, `card.status` | ✅ 完整实现 |
-| `banking.wealth` | 理财 | B | `wealth` | 🟡 脚手架示例（模板产出，非完整业务） |
+| `banking.wealth` | 理财 | B | `wealth`, `wealth.products`, `wealth.balance` | ✅ 已实现（只读：产品查询与推荐、余额查询） |
 
 > 每个人都是“场景 Owner”：从插件代码、到测试用例、到 PPT 里那两页，全包。
 
@@ -92,17 +92,15 @@ ATM/
 │   ├── CryptoSelfTest/                     密码学自检（ML-KEM/ML-DSA）
 │   ├── DbProbe/                            数据库诊断小工具
 │   └── .config/dotnet-tools.json           锁定 dotnet-ef 版本
-├── apps/                                   <- 早期 Node/TS 版 MVP（历史参考）
-│   ├── api/                                Agent + 业务工具
-│   └── web/                                React 前端（可运行）
 ├── docs/                                   文档体系（见下）
 ├── papers/                                 参考文献与法规清单
 ├── scripts/                                辅助脚本
 └── .github/                                CI 流水线 + CODEOWNERS + PR/Issue 模板
 ```
 
-> `apps/` 是最初用 Node + TypeScript 实现的 MVP（六大场景 + React 前端），与当前 .NET 版并存。
-> **当前交付主线是 `src/`**；`apps/` 保留作为历史与前端参考。
+> **对话控制台**：宿主自带一个零构建的单页控制台（`src/src/BankingAgent.Host/wwwroot/`），
+> 启动后直接访问 <http://localhost:5243> 即可登录、发消息、看确认卡片与插件清单。
+> 早期的 Node + TypeScript 版 MVP 已删除，当前唯一交付主线是 `src/`。
 
 ---
 
@@ -125,6 +123,8 @@ dotnet run --project src/mock-bank/MockBank.Api -c Release
 # 3. 启动 AI 宿主（:5243）—— 再开终端
 dotnet run --project src/src/BankingAgent.Host -c Release
 ```
+
+然后打开 **<http://localhost:5243>** 使用内置对话控制台（登录 → 发消息 → 人工确认）。
 
 验证：
 
@@ -208,8 +208,9 @@ curl -s -X POST http://localhost:5243/api/chat \
 | **字段级加密** | `[Encrypted]` 标注，支持确定性加密（可等值查询） | ✅ 已标注 L3 字段 |
 | **插件化扩展** | 新场景 = 新插件，无需改宿主 | ✅ 模板 + 校验器 + 实测 |
 | **数据库迁移** | 基线迁移 + 设计时插件发现 + 自动建 Schema | ✅ 已生成 |
-| **多 Agent 编排** | Supervisor 编排器 + 轨迹日志（支持回放/分叉） | 🟡 缺 LLM 接入 |
-| **意图识别** | 关键词规则 + 按 Agent 前缀兜底推导 | 🟡 非 LLM |
+| **多 Agent 编排** | Supervisor 编排器 + 轨迹日志（支持回放/分叉） | 🟡 缺 LLM 规划 |
+| **意图识别** | 规则表（插件自报关键词）打底；配置 `Ai:ApiKey` 后由**大模型**判定，失败自动降级 | ✅ 两种模式均可运行 |
+| **收款人解析** | 说「给李华转 500」即按姓名解析收款账户，无需背账号 | ✅ 端到端验证 |
 
 ---
 
@@ -244,6 +245,57 @@ dotnet new banking-plugin -n BankingAgent.Plugin.YourFeature \
 3. 需要落库时注册 `IEntitySetContributor`
 
 详细步骤与排查见 [`docs/plugin/01-plugin-onboarding-guide.md`](docs/plugin/01-plugin-onboarding-guide.md)。
+
+---
+
+## 接入大模型（可选）
+
+**默认不接入也能完整运行** —— 意图识别走规则表（插件自报的关键词）。
+
+### 最省事的填法（推荐）
+
+打开 `src/src/BankingAgent.Host/appsettings.Development.json`，把 `Ai:ApiKey` 填上，重启宿主即可。
+该文件已被 `.gitignore` 忽略，**密钥不会被提交**；`BaseUrl` / `Model` 已预填 DeepSeek，
+换厂商只改这两行（通义千问、智谱、本地 Ollama 的地址都写在该文件的注释里）。
+
+```jsonc
+"Ai": {
+  "Enabled": true,
+  "BaseUrl": "https://api.deepseek.com/v1",
+  "Model": "deepseek-chat",
+  "ApiKey": ""          // ← 只改这一行
+}
+```
+
+### 或者用环境变量
+
+```powershell
+$env:Ai__ApiKey = "sk-xxx"
+dotnet run --project src/src/BankingAgent.Host -c Release
+```
+
+> 优先级：**环境变量 > appsettings.Development.json**。
+> 若发现"填了却没生效"，先用 `Test-Path Env:Ai__ApiKey` 确认终端里没有残留的同名变量（空值同样会覆盖配置文件）。
+
+| 配置项 | 说明 |
+|---|---|
+| `Ai:Enabled` | 总开关，默认 `true`；关闭后完全不调用模型 |
+| `Ai:BaseUrl` | OpenAI 兼容基地址，默认 `https://api.deepseek.com/v1` |
+| `Ai:Model` | 模型名，默认 `deepseek-chat` |
+| `Ai:ApiKey` | **只允许环境变量注入**（`Ai__ApiKey`），禁止写入 appsettings.json |
+| `Ai:TimeoutSeconds` | 生成超时，默认 8 秒；连接超时取其一半（上限 3 秒） |
+
+可直接替换的端点：通义千问 `https://dashscope.aliyuncs.com/compatible-mode/v1`、
+智谱 `https://open.bigmodel.cn/api/paas/v4`、
+本地 Ollama `http://localhost:11434/v1`（ApiKey 填任意占位值，零成本离线演示）。
+
+**接入后的行为（已实测）**
+
+- 候选意图**不是硬编码**的，而是从已注册 Agent（插件）自报的意图与触发关键词生成 → 新增插件零改动即可被模型认识；
+- 送模型前对用户输入**强制脱敏**（账号 / 手机号 / 身份证），意图识别并不需要这些原文；
+- 模型超时、欠费、答非所问、输出越界 → 一律降级规则表，接口不返回失败；
+- 每次模型调用写审计：`Operation=llm.intent.classify`，含模型名、是否降级、脱敏后的输入；
+- 自检：`GET /health` 的 `ai` 字段会告诉你当前走的是 `rule` 还是 `llm+rule`。
 
 ---
 

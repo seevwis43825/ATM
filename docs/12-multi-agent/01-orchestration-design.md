@@ -2,7 +2,7 @@
 
 > **参考架构**：DeepSeek Harness（2026-08 开源，MIT，`npx @deepseek-ai/dsh`）
 > **核心范式**：`Agent = Model + Harness`
-> **本文档状态**：已完成 Supervisor 编排器 + 轨迹日志；LLM 接入与 Spawn/Fork 未做
+> **本文档状态**：已完成 Supervisor 编排器 + 轨迹日志；意图识别已可接 LLM（可选）；LLM 规划与 Spawn/Fork 未做
 
 ---
 
@@ -11,7 +11,7 @@
 在你提这个问题之前，系统的 Agent 协同是**单跳路由**：
 
 ```
-用户输入 → DetectIntent（关键词）→ AgentRouter.Resolve（最长前缀）→ 单个 Agent 执行
+用户输入 → IIntentClassifier（配了密钥走大模型，否则规则表）→ AgentRouter.Resolve（最长前缀）→ 单个 Agent 执行
 ```
 
 **这不是多 Agent 协同**，是「一个分发器 + N 个执行器」。缺失的是：
@@ -230,15 +230,18 @@ SessionStart → PlanCreated → StepStarted → AgentInvoked
 | MCP 工具协议 | 完整实现 | ❌ 未做 | 有 `IAgentTool` 契约 |
 | Sandbox | Docker 隔离 | ❌ 未做 | 当前无代码执行，风险较低 |
 | Skills | 工具的高层组合 | ❌ 未做 | |
-| LLM 接入 | 完整 | ❌ 关键词匹配 | **最大差距** |
+| LLM 接入 | 完整 | 🟡 意图识别已落地（可选）；编排规划与 Slots 抽取仍为规则 | 剩余差距：规划/工具调用 |
 
 ---
 
 ## 5. 尚未实现的关键能力
 
-### 5.1 LLM 接入（P0）
+### 5.1 LLM 接入（🟡 意图识别已落地，规划仍未接）
 
-当前 `DetectIntent` 是关键词匹配。接入 LLM 后需要：
+意图识别已按下面的契约落地为 `IIntentClassifier`（`Base/Ai/LlmIntentClassifier.cs`）：
+配置 `Ai:ApiKey` 后由 OpenAI 兼容模型判定，未配置或调用失败自动降级规则表，
+送模型前强制脱敏并写审计。**仍未做的是把 Slots 抽取与编排规划也交给模型**。
+接入 LLM 后需要应对的成本问题：
 
 ```csharp
 public interface IIntentClassifier

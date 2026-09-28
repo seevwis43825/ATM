@@ -57,6 +57,10 @@ public sealed class TransferAgent : BankingAgentBase
     public override IReadOnlyList<string> SupportedIntents => ["transfer", "transfer.execute"];
 
     /// <inheritdoc />
+    public override IReadOnlyList<string> TriggerKeywords =>
+        ["转账", "转帐", "汇款", "打钱", "转给", "付给", "汇给", "转"];
+
+    /// <inheritdoc />
     protected override async Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct)
     {
         // ===== 1. 槽位抽取 =====
@@ -64,15 +68,44 @@ public sealed class TransferAgent : BankingAgentBase
         var target = SlotReader.String(request, "to_account") ?? _parser.ExtractTargetAccount(request.UserInput);
         var source = SlotReader.String(request, "from_account");
         var confirmed = SlotReader.Bool(request, "confirmed") ?? false;
+        string? targetName = SlotReader.String(request, "to_name");
 
         if (amount is null)
         {
-            return AgentResult.Fail("AMOUNT_MISSING", "未能识别转账金额，请明确说明金额，例如「转账 5000 元」");
+            return AgentResult.Fail("AMOUNT_MISSING", "未能识别转账金额，请明确说明金额，例如「给李华转 500 元」");
+        }
+
+        // 只说了收款人姓名时，向核心系统解析收款账户。
+        // 用户不应该为了转 500 块去背 19 位账号。
+        if (string.IsNullOrEmpty(target))
+        {
+            targetName ??= _parser.ExtractTargetName(request.UserInput);
+            if (!string.IsNullOrEmpty(targetName))
+            {
+                var candidates = await _coreBank.SearchBeneficiariesAsync(targetName, ct);
+
+                if (candidates.Count == 1)
+                {
+                    target = candidates[0].AccountNo;
+                    targetName = candidates[0].Name;
+                }
+                else if (candidates.Count > 1)
+                {
+                    return AgentResult.Fail("TARGET_AMBIGUOUS",
+                        $"「{targetName}」匹配到 {candidates.Count} 个账户，请提供收款账号以确认唯一收款人");
+                }
+                else
+                {
+                    return AgentResult.Fail("TARGET_NOT_FOUND",
+                        $"未找到收款人「{targetName}」，请核对姓名，或直接提供收款账号");
+                }
+            }
         }
 
         if (string.IsNullOrEmpty(target))
         {
-            return AgentResult.Fail("TARGET_MISSING", "未能识别收款账户，请提供收款账号");
+            return AgentResult.Fail("TARGET_MISSING",
+                "未能识别收款账户，请说明收款人姓名或收款账号，例如「给李华转 500 元」");
         }
 
         if (string.IsNullOrEmpty(source))
@@ -133,6 +166,7 @@ public sealed class TransferAgent : BankingAgentBase
                     ["amount"] = amount.Value,
                     ["from_account"] = source,
                     ["to_account"] = target,
+                    ["to_name"] = targetName,
                     ["rule_id"] = compliance.RuleId
                 });
         }
@@ -233,11 +267,14 @@ public sealed class TransferAgent : BankingAgentBase
             SideEffectCommitted = true,
             Intent = "transfer.completed",
             Confidence = 1.0,
-            Content = $"转账成功，金额 {amount.Value:N2} 元，流水号 {result.TransactionNo}",
+            Content = string.IsNullOrEmpty(targetName)
+                ? $"转账成功，金额 {amount.Value:N2} 元，流水号 {result.TransactionNo}"
+                : $"已向 {targetName} 转账 {amount.Value:N2} 元，流水号 {result.TransactionNo}",
             Data = new Dictionary<string, object?>
             {
                 ["transaction_no"] = result.TransactionNo,
                 ["amount"] = amount.Value,
+                ["to_name"] = targetName,
                 ["balance_after"] = result.BalanceAfter,
                 ["human_approved"] = compliance.RequiresHumanApproval
             }

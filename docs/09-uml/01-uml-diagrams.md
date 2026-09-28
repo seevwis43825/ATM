@@ -105,7 +105,7 @@ flowchart TB
 | 客服代客 | 同上，且必须带 `impersonationReason` | `Host/Program.cs:357-393` |
 | 运维启停插件 | `POST /api/plugins/{pluginId}/stop|start` | `Host/Program.cs:322`、`Host/Program.cs:331` |
 | 系统 → CBS | `ICoreBankClient` 9 个方法 | `SDK-CoreBank.cs:8-24`，实现 `CoreBankClient.cs:28` |
-| 系统 → LLM | **当前未接入**。意图识别是硬编码关键词 | `Host/Program.cs:501-514` `DetectIntent` |
+| 系统 → LLM | **可选**（未配 `Ai:ApiKey` 时不调用）。意图识别由 `IIntentClassifier` 统一入口：配了密钥走 OpenAI 兼容模型，否则规则表 | `Base/Ai/LlmIntentClassifier.cs` |
 | 系统 → 监管 | **当前未接入**。`AmlThresholdRule` 只打标不外发 | `ComplianceRules.cs:78-93` |
 | 系统 → IM | **当前未接入**。人工确认靠前端轮询 `/api/chat/confirm` | — |
 
@@ -1260,7 +1260,7 @@ sequenceDiagram
 |------|----------|----------|
 | 1. 鉴权 | `Host/Program.cs:87-117` | 令牌无效 → 401；白名单只有 `/health` 与 `/api/auth/token`（`Host/Program.cs:486-489`） |
 | 2. 身份落地 | `Host/Program.cs:97` | `CurrentUserAccessor.Enter` 写 AsyncLocal，让审计字段拿到真实用户 |
-| 3. 意图识别 | `Host/Program.cs:501-514` | 当前是关键词匹配，**不是** LLM |
+| 3. 意图识别 | `Base/Ai/LlmIntentClassifier.cs` | 默认规则表（插件自报关键词）；配 `Ai:ApiKey` 后由大模型判定，失败自动降级 |
 | 4. 越权防护 | `Host/Program.cs:353-373` | `effectiveUserId = principal.UserId`，请求体 userId 仅用于比对 |
 | 5. 路由 | `AgentRouter.cs:27-39` | 最长前缀优先 |
 | 6. 槽位抽取 | `TransferAgent.cs:63-66` + `SlotReader.cs:14-126` | 统一处理 JsonElement |

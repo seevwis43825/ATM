@@ -30,12 +30,6 @@ appsettings.*.Development.json
 .idea/
 *.swp
 
-# ===== Node 依赖（apps/ 是既有的 TS 项目，保留源码，仅忽略依赖）=====
-node_modules/
-npm-debug.log*
-yarn-error.log*
-.pnpm-store/
-
 # ===== 论文 PDF（大文件，按需调整）=====
 # 如需版本管理论文，取消下行注释
 # papers/pdfs/
@@ -45,7 +39,7 @@ Thumbs.db
 .DS_Store
 desktop.ini
 
-# ===== ����������Կ�ļ�������ʵ��Կ���ϣ��Ͻ���⣩=====
-# �״ο�¡���� appsettings.Development.json.example ��������д
+# ===== 开发配置（含真实密钥，严禁入库）=====
+# 首次克隆后从 appsettings.Development.json.example 复制后填写
 src/src/BankingAgent.Host/appsettings.Development.json
 src/mock-bank/MockBank.Api/appsettings.Development.json

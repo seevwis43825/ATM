@@ -57,7 +57,7 @@
 | ADR-004 | 事件总线 MediatR → Kafka | 🟡 | 自研 `InMemoryEventBus` | 未用 MediatR。进程内，不跨实例。迁移路径见下 |
 | ADR-005 | PostgreSQL 16 + pgvector | 🟡 | 默认 SQLite，PG 可配置切换 | 未装 pgvector（无向量检索需求）。切换见 `00-quick-start.md` §8 |
 | ADR-006 | 插件化机制 | ✅ | 可回收 `AssemblyLoadContext` | 一致，且额外实现了程序集卸载 |
-| ADR-007 | LLM Qwen3 + DeepSeek | ❌ | 关键词规则 `DetectIntent` | 未接 LLM。理由：无 API Key。替换点：`Host/Program.cs` |
+| ADR-007 | LLM 意图分类（OpenAI 兼容） | 🟡 | 规则表打底 + 可选模型判定 | 接入点与降级已实现：`Base/Ai/LlmIntentClassifier.cs`；未配置 `Ai:ApiKey` 时运行时走规则表 |
 | ADR-008 | HITL 强制规则 | ✅ | `PendingApproval` + `/api/chat/confirm` | 一致，端到端测试已验证 |
 | ADR-009 | 审计不可篡改 | 🟡 | HMAC 链式签名 + JSONL 文件 + 独立审计库表 | 已落独立审计库；未做异地 WORM 归档 |
 | ADR-010 | FeatureFlag 体系 | 🟡 | Manifest 声明了开关名 | **未在运行时强制**。新代码无 FeatureFlag 包裹 |
@@ -173,14 +173,15 @@
 | 插件数据分区 | ✅ | `plugin_transfer` |
 | 插件脚手架 | ✅ | `dotnet new banking-plugin`（`src/templates/banking-plugin`） |
 | 插件契约校验 | ✅ | `PluginValidator` 反射校验，已接入 CI 阻断门禁 |
-| 新插件意图接入 | ✅ | 规则表未命中时按 Agent 自报 `SupportedIntents` 反查兜底 |
+| 新插件意图接入 | ✅ | 规则兜底与 LLM 候选意图都从 Agent 自报的 `SupportedIntents` + `TriggerKeywords` 生成 |
 | **插件热加载（不重启进程）** | ❌ | 需重启宿主 |
 
 > 「随时增加功能」目前指**重启后加载**。真正的运行时热加载需要：文件监听 + DI 容器重建 + 请求排空。生产若需要，应引入插件进程隔离（sidecar 模式）而非进程内 ALC。
 >
 > **已修掉的接入缺口**：此前新装的插件虽然注册了 Agent、也能在 `/api/plugins/agents` 看到，
 > 但**永远收不到请求** —— 意图识别是 Host 里的硬编码关键词表，插件新增场景不在表内，请求会被判为 `unknown`。
-> 现在规则表未命中时会按已注册 Agent 自报的 `SupportedIntents` 反查兜底，模板生成的插件已能从 `NO_AGENT` 正常路由。
+> 现在两级识别都不再依赖宿主的业务词：规则兜底按 Agent 自报的 `TriggerKeywords` 反查，
+> 接入大模型时同一批意图与关键词直接作为候选喂给模型，模板生成的插件已能从 `NO_AGENT` 正常路由。
 
 ---
 
@@ -190,7 +191,7 @@
 |------|------|------|
 | Agent 抽象与基类 | ✅ | 自动计时/审计/异常兜底 |
 | 意图路由 | ✅ | 最长前缀优先 |
-| 意图识别 | 🟡 | 关键词规则为主；规则未命中时按 Agent 自报 `SupportedIntents` 兜底；**非 LLM** |
+| 意图识别 | ✅ | 规则表（Agent 自报 `TriggerKeywords`）打底；配 `Ai:ApiKey` 后由大模型判定，超时/输出越界自动降级；候选意图由插件自报生成 |
 | 事件总线 | ✅ | 精确匹配 + 通配 + 死信队列 |
 | 跨插件联动 | ✅ | 转账事件被账单插件订阅（测试验证） |
 | **多 Agent 协作链** | ❌ | 实际是单 Agent 路由，非多 Agent 协商 |
@@ -232,7 +233,7 @@
 | 3 | EF Core Migration（替代 `EnsureCreated`） | `Base/Data` | ✅ 已完成（基线迁移 + 设计时插件发现 + 自动建 Schema） |
 | 4 | 审计落独立库表 + 异地归档 | `Base/Security/Audit` | 🟡 落库已完成；异地 WORM 归档待做 |
 | 5 | 合规规则补 P0 4 条（高频/日累计/黑名单/制裁） | `Base/Security/Compliance` | ❌ 待做 |
-| 6 | 接 LLM 意图分类（替换 `DetectIntent`） | `Host/Program.cs` | ❌ 待做 |
+| 6 | 接 LLM 意图分类 | `Base/Ai/LlmIntentClassifier.cs` | ✅ 已完成（意图）；槽位抽取与编排规划仍为规则 |
 | 7 | FeatureFlag 运行时强制 | `Base` 新增服务 | ❌ 待做 |
 | 8 | 敏感字段加密 + KMS | `Base/Data` | 🟡 加密机制已通（尚无字段标注）；KMS 待做 |
 | 9 | 用户权利响应接口（个保法 §46-47） | 新增插件 | ❌ 待做 |
@@ -396,7 +397,7 @@
 | **并发正确性** | ✅ 已实测（200 并发审计链、20 并发转账、30 并发对话），累计修复 12 处缺陷 |
 | **安全性** | ✅ JWT + RBAC + 越权防护 + 速率限制 + 脱敏 + 审计链（含落库）；3 个 P0 漏洞已修复；MockBank 故障注入已加环境门禁；开发密钥已从仓库移除 |
 | **数据库** | ✅ 迁移基建（基线迁移 + 设计时插件发现 + 自动建 Schema）、字段加密机制接通、多 Schema 隔离修复、审计独立库 |
-| **多 Agent 协同** | ✅ Supervisor 编排器 + 轨迹日志；🟡 缺 LLM 接入与 Spawn/Fork |
+| **多 Agent 协同** | ✅ Supervisor 编排器 + 轨迹日志；🟡 编排规划仍为规则策略，Spawn/Fork 未做 |
 | **插件开发体验** | ✅ `dotnet new banking-plugin` 脚手架 + `PluginValidator` 契约校验（已入 CI 门禁）；插件即插即用（意图可按 Agent 前缀推导） |
 | **演示价值** | ✅ 足以支撑答辩、评审、方案汇报 |
 | **5 人并行开发** | 🟡 本地安全网已就位，**推送到远程并替换 owner 占位符后闭环** |

@@ -422,7 +422,13 @@ public class AgentOrchestrator
         }
 
         stepSw.Stop();
-        var allOk = results.Count > 0 && results.Values.All(r => r.Success);
+        // 并行聚合是「尽力而为」：Optional 的 Parallel 步骤只要有 Agent 成功即视为完成。
+        // 否则一个不适用于该输入的 Agent（例如聚合查询里的资金操作 Agent 会返回
+        // 「未识别到转账金额」）会把整步判为失败，进而让整个编排返回失败 ——
+        // 而用户实际上已经拿到了其他 Agent 聚合出的结果。
+        var allOk = step.Kind == StepKind.Parallel && step.Optional
+            ? results.Values.Any(r => r.Success)
+            : results.Count > 0 && results.Values.All(r => r.Success);
 
         Append(sessionId, new TrajectoryEvent
         {

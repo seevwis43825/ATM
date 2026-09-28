@@ -25,6 +25,9 @@ public abstract class BankingAgentBase(
     /// <inheritdoc />
     public virtual IReadOnlyList<string> SupportedIntents => [];
 
+    /// <inheritdoc />
+    public virtual IReadOnlyList<string> TriggerKeywords => [];
+
     /// <summary>执行具体业务逻辑，由子类实现。</summary>
     protected abstract Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct);
 

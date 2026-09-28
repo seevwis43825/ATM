@@ -90,7 +90,8 @@ public sealed class CoreBankClient(
             {
                 Success = true,
                 TransactionNo = ok?.TransactionNo ?? ok?.TxNo,
-                BalanceAfter = ok?.BalanceAfter ?? ok?.FromBalance ?? 0,
+                // 核心系统返回的字段名是 fromBalanceAfter，只认 balanceAfter 会让余额恒为 0
+                BalanceAfter = ok?.FromBalanceAfter ?? ok?.BalanceAfter ?? ok?.FromBalance ?? 0,
                 CompletedAt = DateTimeOffset.UtcNow
             };
         }
@@ -177,6 +178,24 @@ public sealed class CoreBankClient(
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<Beneficiary>> SearchBeneficiariesAsync(
+        string keyword, CancellationToken ct = default)
+    {
+        var resp = await httpClient.GetAsync(
+            Url($"/beneficiaries?keyword={Uri.EscapeDataString(keyword)}"), ct);
+        if (!resp.IsSuccessStatusCode) return [];
+
+        var list = await resp.Content.ReadFromJsonAsync<List<BeneficiaryDto>>(JsonOpts, ct) ?? [];
+        return list.Select(b => new Beneficiary
+        {
+            Name = b.Name,
+            AccountNo = b.AccountNo,
+            AccountType = b.AccountType,
+            BankName = b.BankName
+        }).ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<CardSnapshot?> UpdateCardStatusAsync(
         string cardNo, string newStatus, string reason, CancellationToken ct = default)
     {
@@ -214,7 +233,7 @@ public sealed class CoreBankClient(
             Type = p.Type,
             RiskLevel = p.RiskLevel,
             AnnualRate = p.AnnualRate,
-            MinInvestment = p.MinInvestment,
+            MinInvestment = p.MinAmount,
             TermDays = p.TermDays,
             Status = p.Status
         }).ToList();
@@ -332,6 +351,8 @@ internal sealed class TransferOkDto
     public string? TransactionNo { get; set; }
     public string? TxNo { get; set; }
     public decimal BalanceAfter { get; set; }
+    /// <summary>核心系统返回的「扣款后付款账户余额」字段。</summary>
+    public decimal? FromBalanceAfter { get; set; }
     public decimal? FromBalance { get; set; }
 }
 
@@ -353,9 +374,17 @@ internal sealed class ProductDto
     public string Type { get; set; } = "";
     public string RiskLevel { get; set; } = "";
     public decimal AnnualRate { get; set; }
-    public decimal MinInvestment { get; set; }
+    public decimal MinAmount { get; set; }
     public int TermDays { get; set; }
     public string Status { get; set; } = "在售";
+}
+
+internal sealed class BeneficiaryDto
+{
+    public string Name { get; set; } = "";
+    public string AccountNo { get; set; } = "";
+    public string AccountType { get; set; } = "储蓄账户";
+    public string BankName { get; set; } = "";
 }
 
 internal sealed class SubscriptionOkDto

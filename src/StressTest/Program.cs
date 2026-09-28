@@ -342,9 +342,18 @@ try
             "        $env:RateLimit__Enabled='false'  （然后重启宿主）");
     }
 
-    var cardCount = groups.GetValueOrDefault("card.list|True", 0);
-    var billCount = groups.GetValueOrDefault("bill.summary|True", 0);
-    var hitlCount = groups.GetValueOrDefault("transfer.execute|True", 0);
+    // 意图标识是「场景级」的（card / bill / transfer / wealth），
+    // 具体动作（card.list / transfer.completed…）由 Agent 内部判定并体现在 resultIntent 里。
+    // 本组断言关心的是「有没有路由到正确场景」，因此按前缀归类，
+    // 而不是把某个具体动作名硬编码进测试 —— 后者会因为标识粒度调整而假红。
+    int Routed(string prefix) => groups
+        .Where(g => g.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    && g.Key.EndsWith("|True", StringComparison.Ordinal))
+        .Sum(g => g.Value);
+
+    var cardCount = Routed("card");
+    var billCount = Routed("bill");
+    var hitlCount = Routed("transfer");
 
     // 断言只看「未被限流的请求是否路由正确」，限流数量单独报告。
     var routed = n - rateLimited;

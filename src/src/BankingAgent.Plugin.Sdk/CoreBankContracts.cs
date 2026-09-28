@@ -15,6 +15,13 @@ public interface ICoreBankClient
     Task<MonthlyStatement?> GetMonthlyStatementAsync(
         string accountNo, int year, int month, CancellationToken ct = default);
     Task<IReadOnlyList<CardSnapshot>> ListCardsAsync(string userId, CancellationToken ct = default);
+    /// <summary>
+    /// 按姓名或手机号检索行内收款人。
+    /// 转账场景下用户只会说「给李华转 500」，账号由银行侧解析，
+    /// 因此收款人检索属于核心系统能力，而不是插件的私有逻辑。
+    /// </summary>
+    Task<IReadOnlyList<Beneficiary>> SearchBeneficiariesAsync(
+        string keyword, CancellationToken ct = default);
     Task<CardSnapshot?> UpdateCardStatusAsync(
         string cardNo, string newStatus, string reason, CancellationToken ct = default);
     Task<IReadOnlyList<WealthProduct>> ListProductsAsync(
@@ -121,6 +128,15 @@ public sealed record CardSnapshot
     public string? BoundPhone { get; init; }
     public decimal DailyLimit { get; init; }
     public required string AccountNo { get; init; }
+}
+
+/// <summary>行内收款人：转账时可用的对手方账户。</summary>
+public sealed record Beneficiary
+{
+    public required string Name { get; init; }
+    public required string AccountNo { get; init; }
+    public string AccountType { get; init; } = "储蓄账户";
+    public string BankName { get; init; } = "";
 }
 
 /// <summary>理财产品。</summary>

@@ -358,7 +358,9 @@ HTTP 非 200 的场景**只有 6 种**：
 | 字段 | 类型 | 说明 | 约束 |
 |------|------|------|------|
 | `echo` | string | 回显原始输入 | 调试用 |
-| `intent` | string | `DetectIntent` 识别的意图 | `transfer.execute` / `bill.summary` / `card.list` / `account.balance` / `unknown` |
+| `intent` | string | 场景级意图（`IIntentClassifier` 判定：配了 `Ai:ApiKey` 走大模型，否则规则表） | `transfer` / `bill` / `card` / `wealth` / `unknown` |
+| `intentSource` | string | 意图判定来源 | `llm` / `rule` |
+| `resultIntent` | string | Agent 判定的具体动作 | `card.list` / `transfer.completed` / `bill.summary` |
 | `success` | bool | **业务是否成功** | ⚠️ 业务失败也是 HTTP 200 |
 | `content` | string | 自然语言回复 | 可直接展示给用户 |
 | `resultIntent` | string | Agent 产出的意图 | 如 `transfer.completed`、`card.list` |
@@ -926,7 +928,7 @@ MockBank 已有 OpenAPI 3.0 文档端点 `/openapi/v1.json`（`OpsEndpoints.cs:4
 | `POST /api/v1/transfers` | ❌ 未实现 | 走 `/api/chat` + `ICoreBankClient` 内部调用 |
 | `GET /api/v1/users/me/*` | ❌ 未实现 | 用户权利响应接口（可携带/查询个人信息）未做。**个保法下这是必需能力** |
 | 审计查询端点 | ❌ 未实现 | 只能读 `logs/audit-chain.log` 文件 |
-| LLM 意图分类 | ❌ 未实现 | `DetectIntent` 是硬编码关键词（`Program.cs:501-514`） |
+| LLM 意图分类 | ✅ 可选接入 | `IIntentClassifier`（`Base/Ai/LlmIntentClassifier.cs`）：配 `Ai:ApiKey` 走模型，否则/失败时降级规则表 |
 | 反洗钱报送 | ❌ 未实现 | `AmlThresholdRule` 只打标不外发 |
 | IM 推送确认卡片 | ❌ 未实现 | 客户端轮询或同步等待 |
 | FeatureFlag 强制 | ❌ 未实现 | 清单里声明但运行时无检查（[ADR-0010](../00-architecture/04-architecture-decisions.md#adr-0010) 仍"评审中"） |

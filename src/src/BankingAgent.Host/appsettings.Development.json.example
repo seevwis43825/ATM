@@ -40,6 +40,17 @@
     "SigningKey": ""
   },
 
+  // ===== 大模型接入（可选）=====
+  // 留空即走规则表，系统照常运行；填入密钥后意图识别改由大模型判定。
+  // 也可以完全不用本文件，直接用环境变量：Ai__ApiKey / Ai__Model / Ai__BaseUrl
+  // 注意：送模型前会对用户输入做强制脱敏（账号/手机号/身份证），见 LlmIntentClassifier。
+  "Ai": {
+    "Enabled": true,
+    "BaseUrl": "https://api.deepseek.com/v1",
+    "Model": "deepseek-chat",
+    "ApiKey": ""
+  },
+
   "SecurityGate": {
     "Enabled": false,
     "Environment": "Development",

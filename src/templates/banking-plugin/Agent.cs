@@ -41,6 +41,13 @@ public sealed class __PLUGIN_NAME__Agent : BankingAgentBase
     /// </summary>
     public override IReadOnlyList<string> SupportedIntents => ["__INTENT_PREFIX__"];
 
+    /// <summary>
+    /// 自然语言触发关键词。宿主规则表未命中时用它们从用户原话反推意图，
+    /// 没有它，插件虽然加载了，用户说中文时却永远路由不到本 Agent。
+    /// 请按真实说法补充（示例：["理财", "基金", "产品"]）。
+    /// </summary>
+    public override IReadOnlyList<string> TriggerKeywords => ["__SCENARIO__"];
+
     /// <inheritdoc />
     protected override async Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct)
     {

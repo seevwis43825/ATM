@@ -130,6 +130,9 @@ public interface ITransferIntentParser
 
     /// <summary>从自然语言中抽取收款账户。</summary>
     string? ExtractTargetAccount(string input);
+
+    /// <summary>从自然语言中抽取收款人姓名，用于按姓名解析收款账户。</summary>
+    string? ExtractTargetName(string input);
 }
 
 /// <summary>基于关键词与正则的意图解析器。生产环境可替换为 LLM 实现。</summary>
@@ -144,6 +147,18 @@ public sealed class KeywordTransferIntentParser : ITransferIntentParser
 
     private static readonly System.Text.RegularExpressions.Regex AccountPattern =
         new(@"(?<account>\d{12,19})", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>「给/转给/付给…」之后的 2-4 个汉字视为收款人姓名。</summary>
+    private static readonly System.Text.RegularExpressions.Regex NamePattern =
+        new(@"(?:转给|付给|汇给|打给|给)\s*(?<name>[\u4e00-\u9fa5]{2,4})",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// 姓名可能被动词粘连（「给张三转500」会匹配到「张三转」），
+    /// 这些字出现在末尾时属于动词而非姓名的一部分。
+    /// </summary>
+    private static readonly char[] NameTrailingVerbs =
+        ['转', '汇', '付', '打', '账', '钱', '的', '块', '元'];
 
     /// <inheritdoc />
     public bool IsTransferIntent(string input) =>
@@ -169,5 +184,15 @@ public sealed class KeywordTransferIntentParser : ITransferIntentParser
     {
         var match = AccountPattern.Match(input);
         return match.Success ? match.Groups["account"].Value : null;
+    }
+
+    /// <inheritdoc />
+    public string? ExtractTargetName(string input)
+    {
+        var match = NamePattern.Match(input);
+        if (!match.Success) return null;
+
+        var name = match.Groups["name"].Value.TrimEnd(NameTrailingVerbs);
+        return name.Length >= 2 ? name : null;
     }
 }

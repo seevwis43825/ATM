@@ -78,6 +78,3 @@
 /docs/03-deploy/                         @backend
 /docs/04-security/                       @compliance
 /docs/05-video/                          @ai
-
-# ===== 早期 Node/TypeScript 版（历史参考，非交付主线）=====
-/apps/                                   @backend

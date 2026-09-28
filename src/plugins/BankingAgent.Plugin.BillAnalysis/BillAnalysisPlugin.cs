@@ -63,6 +63,10 @@ public sealed class BillAnalysisAgent : BankingAgentBase
     public override IReadOnlyList<string> SupportedIntents => ["bill", "bill.summary"];
 
     /// <inheritdoc />
+    public override IReadOnlyList<string> TriggerKeywords =>
+        ["账单", "消费", "花了", "支出", "开销", "流水"];
+
+    /// <inheritdoc />
     protected override async Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct)
     {
         var accountNo = SlotReader.String(request, "account_no");

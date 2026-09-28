@@ -4,6 +4,7 @@
 
 using BankingAgent.Base;
 using BankingAgent.Base.Agents;
+using BankingAgent.Base.Ai;
 using BankingAgent.Base.Data;
 using BankingAgent.Base.Events;
 using BankingAgent.Base.Plugins;
@@ -99,6 +100,12 @@ foreach (var plugin in registry.LoadedPlugins)
 // ===== 安全响应头（必须在最前）=====
 app.UseMiddleware<SecurityHeadersMiddleware>();
 
+// ===== 演示用对话页面（wwwroot，单文件，无需构建）=====
+// 必须放在认证中间件之前：页面本身是公开资源，登录与鉴权由页面内的
+// /api/auth/token 调用完成，不能因为缺令牌而把首页也挡成 401。
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 // ===== HTTPS 重定向 + HSTS =====
 if (!app.Environment.IsDevelopment())
 {
@@ -149,7 +156,7 @@ app.Use(async (ctx, next) =>
 // 原实现无论数据库是否可用都返回 200 + healthy，K8s 就绪探针与运维告警
 // 会被彻底欺骗 —— 一个"永远绿灯"的探针等于没有探针。
 // 现在真正执行 SELECT 1 并检查迁移状态；不健康返回 503，让编排系统能摘流量。
-app.MapGet("/health", async (DatabaseInitializer initializer, CancellationToken ct) =>
+app.MapGet("/health", async (DatabaseInitializer initializer, ILlmClient llm, CancellationToken ct) =>
 {
     var db = await initializer.CheckHealthAsync(ct);
 
@@ -157,6 +164,12 @@ app.MapGet("/health", async (DatabaseInitializer initializer, CancellationToken 
     {
         status = db.IsHealthy ? "healthy" : "unhealthy",
         plugins = registry.LoadedPlugins.Count,
+        // 意图识别当前由谁提供：配了密钥走模型，否则规则表兜底
+        ai = new
+        {
+            intentRecognition = llm.IsAvailable ? "llm+rule" : "rule",
+            model = llm.IsAvailable ? llm.Model : null
+        },
         database = new
         {
             healthy = db.IsHealthy,
@@ -265,7 +278,8 @@ app.MapGet("/api/plugins/agents", () =>
         id = a.Id.Value,
         name = a.Name,
         role = a.Role.ToString(),
-        intents = a.SupportedIntents
+        intents = a.SupportedIntents,
+        keywords = a.TriggerKeywords
     }));
 });
 
@@ -276,7 +290,8 @@ app.MapPost("/api/orchestrate", async (ChatRequest req, HttpContext ctx, Cancell
     var principal = (CurrentPrincipal?)ctx.Items["Principal"];
     if (principal is null) return Results.Unauthorized();
 
-    var intent = DetectIntent(req.Message);
+    var intent = (await app.Services.GetRequiredService<IIntentClassifier>()
+        .ClassifyAsync(req.Message, ct)).Intent;
     var request = new AgentRequest
     {
         UserInput = req.Message,
@@ -415,20 +430,12 @@ app.MapPost("/api/chat", async (ChatRequest req, HttpContext ctx, CancellationTo
         return Results.Unauthorized();
     }
 
-    // 一级：规则式意图识别（关键词表，快）
-    var intent = DetectIntent(req.Message);
-
-    // 二级兜底：规则表认不出时，用已注册 Agent 自报的意图前缀反查。
-    // 没有这一步，插件新增的场景虽然注册了 Agent，却永远收不到请求。
-    if (intent == "unknown")
-    {
-        var inferred = router.InferIntentFromInput(req.Message);
-        if (inferred is not null)
-        {
-            intent = inferred;
-            app.Logger.LogDebug("规则表未命中，由 Agent 前缀推导意图: {Intent}", inferred);
-        }
-    }
+    // 意图识别：LLM 优先（需配置 Ai:ApiKey），规则表兜底。
+    // 候选意图由已注册 Agent（插件）自报的意图前缀与触发关键词生成，
+    // 因此新增插件零改动即可被识别 —— 这两级识别都内聚在 IIntentClassifier 里。
+    var decision = await app.Services.GetRequiredService<IIntentClassifier>()
+        .ClassifyAsync(req.Message, ct);
+    var intent = decision.Intent;
 
     // 越权防护：userId 一律取自已验证的令牌，忽略请求体中的任何 userId
     var effectiveUserId = principal.UserId;
@@ -491,7 +498,8 @@ app.MapPost("/api/chat", async (ChatRequest req, HttpContext ctx, CancellationTo
         req.Message, intent, result.Success, result.Content, result.Intent,
         result.RequiresHumanInLoop, result.SideEffectCommitted,
         result.ErrorCode, result.ErrorMessage, result.Data,
-        result.Confidence, Math.Round(result.Elapsed.TotalMilliseconds, 1)));
+        result.Confidence, Math.Round(result.Elapsed.TotalMilliseconds, 1),
+        decision.Source));
 });
 
 // ===== 人工回环确认 =====
@@ -551,6 +559,18 @@ app.MapPost("/api/chat/confirm", async (ConfirmRequest req, HttpContext ctx, Can
 });
 
 app.Logger.LogInformation("AI Banking Agent 宿主就绪，插件数 {Count}", registry.LoadedPlugins.Count);
+
+// 明确告知意图识别当前走哪条路，避免"以为接了模型其实没接"
+var llmClient = app.Services.GetRequiredService<ILlmClient>();
+if (llmClient.IsAvailable)
+{
+    app.Logger.LogInformation("意图识别：大模型 {Model}（失败自动降级规则表）", llmClient.Model);
+}
+else
+{
+    app.Logger.LogInformation("意图识别：规则表（未配置 Ai:ApiKey；接入方式见 README「接入大模型」）");
+}
+
 await app.RunAsync();
 
 // ===== 辅助函数 =====
@@ -578,20 +598,11 @@ static ActorRole ParseRole(string role) => role switch
     _ => ActorRole.User
 };
 
-// 极简意图识别。生产环境应替换为 LLM 分类器。
-static string DetectIntent(string message)
-{
-    if (message.Contains("转账") || message.Contains("汇款")
-        || message.Contains("打钱") || message.Contains("转给"))
-        return "transfer.execute";
-    if (message.Contains("账单") || message.Contains("花了多少") || message.Contains("消费"))
-        return "bill.summary";
-    if (message.Contains("卡") || message.Contains("挂失") || message.Contains("冻结"))
-        return "card.list";
-    if (message.Contains("余额"))
-        return "account.balance";
-    return "unknown";
-}
+// 意图识别已内聚到 IIntentClassifier：
+//   - 配置了 Ai:ApiKey 时由大模型判定（候选意图来自插件自报的意图与关键词）；
+//   - 未配置或模型不可用时自动降级到 AgentRouter.InferIntentFromInput 的规则表。
+// 宿主因此不再持有任何业务关键词 —— 新增场景只要在 Agent 上声明
+// TriggerKeywords，即可被规则与模型同时认识。
 
 // ===== 类型定义 =====
 
@@ -607,7 +618,9 @@ public sealed record TokenRequest(string UserId, string Password, string? Role =
 public sealed record ChatResponse(
     string Echo, string Intent, bool Success, string? Content, string? ResultIntent,
     bool RequiresHumanInLoop, bool SideEffectCommitted, string? ErrorCode, string? ErrorMessage,
-    IReadOnlyDictionary<string, object?> Data, double Confidence, double ElapsedMs);
+    IReadOnlyDictionary<string, object?> Data, double Confidence, double ElapsedMs,
+    /// <summary>意图来源：llm（大模型判定）或 rule（规则表兜底）。</summary>
+    string IntentSource = "rule");
 
 /// <summary>人工确认请求。</summary>
 public sealed record ConfirmRequest(

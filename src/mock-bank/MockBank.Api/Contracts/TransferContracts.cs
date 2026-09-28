@@ -38,6 +38,17 @@ public sealed record TransferResponse(
     DateTimeOffset CompletedAt,
     string Message = "转账成功");
 
+/// <summary>行内收款人响应体。</summary>
+/// <param name="Name">收款人姓名。</param>
+/// <param name="AccountNo">可用于收款的账号。</param>
+/// <param name="AccountType">账户类型中文名。</param>
+/// <param name="BankName">开户网点。</param>
+public sealed record BeneficiaryResponse(
+    string Name,
+    string AccountNo,
+    string AccountType,
+    string BankName);
+
 /// <summary>转账服务统一返回值，由端点层翻译为 HTTP 响应。</summary>
 /// <param name="IsSuccess">是否成功。</param>
 /// <param name="StatusCode">对应的 HTTP 状态码。</param>

@@ -24,9 +24,9 @@ public sealed class 理财PluginEntryPoint : IPluginEntryPoint
         // 全局唯一，反向域名风格。改名会影响审计与路由，发布后不要随意变更。
         Id = new PluginId("banking.wealth"),
         Name = "理财",
-        Description = "请补充一句话描述该插件提供的业务能力",
+        Description = "理财产品查询与推荐、账户余额查询（只读场景，认购属后续迭代）",
         Version = PluginVersion.Parse("1.0.0"),
-        Author = "请填写负责人",
+        Author = "业务开发组",
         Scenarios = ["wealth"],
 
         // 功能开关名。注意：当前版本仅作声明，运行时强制尚未实现，
@@ -35,7 +35,7 @@ public sealed class 理财PluginEntryPoint : IPluginEntryPoint
 
         // 该插件处理的数据最高敏感级别，会参与合规校验。
         // L1 公开 / L2 内部 / L3 机密（账户、余额）/ L4 绝密（密码、CVV）
-        MaxDataClassification = DataClassification.L2,
+        MaxDataClassification = DataClassification.L3,
 
         // 需要依赖其他插件时声明（宿主会做拓扑排序与版本校验）。
         // 注意：只能通过事件通信，禁止直接引用其他插件程序集。

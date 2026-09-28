@@ -5,6 +5,7 @@
 namespace BankingAgent.Base;
 
 using BankingAgent.Base.Agents;
+using BankingAgent.Base.Ai;
 using BankingAgent.Base.CoreBank;
 using BankingAgent.Base.Data;
 using BankingAgent.Base.Events;
@@ -64,6 +65,57 @@ public static class BankingCoreServiceCollectionExtensions
 
         // ===== 6. 插件系统 =====
         services.AddSingleton<PluginRegistry>();
+
+        // ===== 7. 大模型接入（可选增强，未配密钥即自动降级）=====
+        services.AddBankingAi(configuration);
+
+        return services;
+    }
+
+    /// <summary>
+    /// 注册大模型接入与意图识别。
+    ///
+    /// 未配置 <c>Ai:ApiKey</c> 时 <see cref="ILlmClient.IsAvailable"/> 为 false，
+    /// 意图识别自动走规则表 —— 系统不依赖模型也能完整运行（这是刻意的设计，
+    /// 银行入口不能因为上游模型抖动或欠费而整体不可用）。
+    /// </summary>
+    /// <param name="services">服务集合。</param>
+    /// <param name="configuration">配置根，读取 Ai 节。</param>
+    public static IServiceCollection AddBankingAi(
+        this IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<LlmOptions>(configuration.GetSection("Ai"));
+
+        services.AddHttpClient<ILlmClient, OpenAiCompatibleLlmClient>((sp, client) =>
+        {
+            var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<LlmOptions>>().Value;
+
+            // 配置来自外部，缺省值在这里兜底，避免空串让 Uri 构造直接抛异常
+            var baseUrl = string.IsNullOrWhiteSpace(options.BaseUrl)
+                ? "https://api.deepseek.com/v1"
+                : options.BaseUrl;
+            // 必须以 "/" 结尾，才能与相对路径 "chat/completions" 正确拼接
+            client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(Math.Max(1, options.TimeoutSeconds));
+        })
+        .ConfigurePrimaryHttpMessageHandler(sp =>
+        {
+            // 连接阶段单独设更短的上限：端点不可达时不该让用户等满整个生成超时
+            // 才拿到降级结果。模型生成慢仍由 client.Timeout 控制。
+            var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<LlmOptions>>().Value;
+            var connectSeconds = Math.Clamp(options.TimeoutSeconds / 2, 1, 3);
+            return new SocketsHttpHandler
+            {
+                ConnectTimeout = TimeSpan.FromSeconds(connectSeconds),
+                // 长时间持有的客户端也能感知 DNS / 端点变更
+                PooledConnectionLifetime = TimeSpan.FromMinutes(2)
+            };
+        });
+
+        // 分类器是无状态的，但持有 HttpClient 的 ILlmClient 由工厂按请求创建，
+        // 因此这里用 Transient 让处理器轮换（DNS 变更感知）继续生效。
+        services.TryAddSingleton<AgentRouter>();
+        services.AddTransient<IIntentClassifier, LlmIntentClassifier>();
 
         return services;
     }

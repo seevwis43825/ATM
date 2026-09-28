@@ -72,6 +72,10 @@ public sealed class CardManagementAgent : BankingAgentBase
     public override IReadOnlyList<string> SupportedIntents => ["card", "card.status"];
 
     /// <inheritdoc />
+    public override IReadOnlyList<string> TriggerKeywords =>
+        ["银行卡", "卡片", "挂失", "解挂", "冻结", "限额", "卡"];
+
+    /// <inheritdoc />
     protected override async Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct)
     {
         // ===== 只读：查询卡片列表 =====
