@@ -45,6 +45,12 @@ public sealed class DatabaseInitializer(
             logger.LogWarning(
                 "数据库已用 EnsureCreated {Action}（无迁移历史，仅限开发环境）。生产请改用 Migrate 模式。",
                 created ? "创建" : "校验");
+
+            // 审计库是**独立的 DbContext**（物理隔离），EnsureCreated 只作用于
+            // 被调用的那个上下文。若不一并初始化，audit_events 表根本不存在，
+            // 审计落库会持续失败 —— 而且失败被 catch 吞掉，只留一条 Critical 日志，
+            // 表面上看系统一切正常。这类"静默失效"必须在这里堵死。
+            await EnsureAuditStoreAsync(scope.ServiceProvider, ct);
             return;
         }
 
@@ -65,10 +71,52 @@ public sealed class DatabaseInitializer(
         await db.Database.MigrateAsync(ct);
         sw.Stop();
 
+        // 审计库同样需要初始化（独立上下文，迁移不会自动覆盖它）
+        await EnsureAuditStoreAsync(scope.ServiceProvider, ct);
+
         var applied = (await db.Database.GetAppliedMigrationsAsync(ct)).ToList();
         logger.LogInformation(
             "数据库迁移完成，耗时 {Elapsed}ms。已应用 {Count} 个迁移，当前 Provider={Provider}",
             sw.ElapsedMilliseconds, applied.Count, options.Provider);
+    }
+
+    /// <summary>
+    /// 确保审计库（独立 DbContext）已建表。
+    ///
+    /// 为什么单独处理：审计库与业务库是两个 DbContext，
+    /// EnsureCreated / Migrate 都只作用于被调用的那一个。
+    /// 漏掉审计库的后果是 audit_events 表不存在，
+    /// 而审计写入失败会被 catch 吞成一条日志 —— 系统表面完全正常，
+    /// 实际合规证据缺失。必须在启动阶段就显式建好。
+    /// </summary>
+    private async Task EnsureAuditStoreAsync(IServiceProvider scopedProvider, CancellationToken ct)
+    {
+        try
+        {
+            var auditFactory = scopedProvider.GetService<IDbContextFactory<AuditDbContext>>();
+            if (auditFactory is null)
+            {
+                logger.LogWarning("未注册 AuditDbContext 工厂，跳过审计库初始化");
+                return;
+            }
+
+            await using var auditDb = await auditFactory.CreateDbContextAsync(ct);
+
+            // PostgreSQL 下审计表在独立 schema 中，必须先把 schema 建出来
+            if (auditDb.Database.IsNpgsql())
+            {
+                await auditDb.Database.ExecuteSqlRawAsync(
+                    "CREATE SCHEMA IF NOT EXISTS \"audit\";", ct);
+            }
+
+            var created = await auditDb.Database.EnsureCreatedAsync(ct);
+            logger.LogInformation("审计库初始化完成（{Action}）", created ? "已建表" : "已存在");
+        }
+        catch (Exception ex)
+        {
+            // 审计库建不出来属于合规风险，必须显式告警，不能静默
+            logger.LogError(ex, "审计库初始化失败，审计记录将无法落库");
+        }
     }
 
     /// <summary>

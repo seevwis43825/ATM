@@ -39,10 +39,24 @@ public static class DatabaseServiceCollectionExtensions
             sp.GetRequiredService<IDbContextFactory<BankingDbContext>>().CreateDbContext());
 
         // ===== 3. 审计库上下文（物理隔离）=====
+        // 独立库：见 DatabaseOptions.AuditConnectionString 的说明 ——
+        // EnsureCreatedAsync 是按整库判断的，两个上下文共用同一 SQLite 文件
+        // 会导致后建的那个建不出表。
         services.AddDbContextFactory<AuditDbContext>((sp, options) =>
-            DatabaseConfigurator.Configure(options, sp.GetRequiredService<DatabaseOptions>()));
+        {
+            var baseOptions = sp.GetRequiredService<DatabaseOptions>();
+            DatabaseConfigurator.Configure(options,
+                baseOptions.WithConnectionString(
+                    DatabaseConfigurator.ResolveAuditConnectionString(baseOptions)));
+        });
 
-        services.AddScoped<IAuditRepository, EfAuditRepository>();
+        // 单例，而不是 Scoped。
+        // 原因：IAuditLogger 是单例（审计链尾签名必须全局唯一），
+        // 它需要写审计库。若仓储是 Scoped，容器在启动校验阶段就会抛
+        // "Cannot consume scoped service from singleton" 并拒绝启动。
+        // EfAuditRepository 本身无状态，每次调用通过 IDbContextFactory
+        // 新建 DbContext，因此是线程安全且适合单例的。
+        services.AddSingleton<IAuditRepository, EfAuditRepository>();
 
         // ===== 4. 工作单元与初始化器 =====
         services.AddScoped<UnitOfWork>();

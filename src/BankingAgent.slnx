@@ -14,15 +14,22 @@
     <Project Path="plugins/BankingAgent.Plugin.Wealth/BankingAgent.Plugin.Wealth.csproj" />
   </Folder>
   <!--
-    娴嬭瘯椤圭洰蹇呴』杩涜В鍐虫柟妗堬細
-    CI 涔嬪墠寮曠敤瀹冧滑鍋?dotnet test锛屼絾瀹冧滑涓嶅湪 slnx 閲岋紝
-    瀵艰嚧銆屾湰鍦拌兘杩囥€丆I 浠庢潵娴嬩笉鍒般€嶃€侲2ETest 涓?StressTest 闇€瑕佽繍琛屼腑鐨?    Mock Bank(:5200) 涓庡涓?:5243)锛岀敱 CI 鐨?integration 浣滀笟鍗曠嫭鍚姩鍚庤皟鐢紝
-    鍥犳鍚屾牱绾冲叆缂栬瘧鑼冨洿锛屼繚璇佺鍚嶅彉鍖栨椂涓嶄細婕忔敼銆?  -->
+    测试项目必须进解决方案：
+    CI 之前引用它们做 dotnet test，但它们不在 slnx 里，
+    导致「本地能过、CI 从来测不到」。
+    E2ETest / StressTest / LoadTest 需要运行中的 Mock Bank(:5200) 与
+    宿主(:5243)，由 CI 的 integration 作业单独启动后调用，
+    因此这里只保证它们参与编译，签名变化时不会漏改。
+  -->
   <Folder Name="/tests/">
     <Project Path="UnitTests/UnitTests.csproj" />
     <Project Path="E2ETest/E2ETest.csproj" />
     <Project Path="StressTest/StressTest.csproj" />
     <Project Path="LoadTest/LoadTest.csproj" />
     <Project Path="CryptoSelfTest/CryptoSelfTest.csproj" />
+  </Folder>
+  <!-- 插件契约校验器：CI 门禁用，防止不合规的插件被合并 -->
+  <Folder Name="/tools/">
+    <Project Path="PluginValidator/PluginValidator.csproj" />
   </Folder>
 </Solution>

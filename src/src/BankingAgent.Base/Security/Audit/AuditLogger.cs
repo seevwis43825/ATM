@@ -9,6 +9,7 @@ namespace BankingAgent.Base.Security.Audit;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using BankingAgent.Base.Data;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -65,7 +66,8 @@ public sealed record AuditChainVerification(bool IsValid, int TotalRecords, IRea
 /// <summary>内存审计日志实现。配合数据库审计仓储使用。</summary>
 public partial class AuditLogger(
     IOptions<AuditOptions> options,
-    ILogger<AuditLogger> logger) : IAuditLogger
+    ILogger<AuditLogger> logger,
+    IAuditRepository? repository = null) : IAuditLogger
 {
     private readonly AuditOptions _options = options.Value;
     private readonly object _gate = new();
@@ -88,7 +90,56 @@ public partial class AuditLogger(
             signed.Decision, signed.Signature[..Math.Min(12, signed.Signature.Length)]);
 
         await AppendToFileAsync(signed, ct);
+
+        // 同时落库：文件是离线证据，数据库提供可检索能力。
+        // 《反洗钱法》第 30 条要求交易记录"可供查验"，只有文件是无法按
+        // 操作者/时间/场景检索的。仓储实现只提供 Append，不提供改删。
+        await AppendToRepositoryAsync(signed, ct);
     }
+
+    /// <summary>
+    /// 写入审计仓储。失败不阻断主流程，但必须显式告警 ——
+    /// 审计丢失属于合规事故，不允许静默。
+    /// </summary>
+    private async Task AppendToRepositoryAsync(AuditEvent evt, CancellationToken ct)
+    {
+        if (repository is null) return;
+
+        try
+        {
+            await repository.AppendAsync(ToEntity(evt), ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex,
+                "审计落库失败（文件链已写入，但数据库缺失该条）。AuditId={AuditId}", evt.AuditId);
+        }
+    }
+
+    /// <summary>把领域审计事件映射为审计库实体。</summary>
+    private static AuditEventEntity ToEntity(AuditEvent evt) => new()
+    {
+        Id = Guid.NewGuid(),
+        AuditId = evt.AuditId,
+        Timestamp = evt.Timestamp,
+        ActorType = evt.ActorType,
+        // 与文件保持一致：库内同样只存哈希，避免明文用户标识扩散
+        ActorHash = HashActor(evt.ActorId),
+        Operation = evt.Operation,
+        Scenario = evt.Scenario,
+        Intent = evt.Intent,
+        Decision = evt.Decision,
+        DecisionReason = evt.DecisionReason,
+        // 领域模型叫 ComplianceRule，审计表列名是 RuleId，这里做一次显式映射
+        RuleId = evt.ComplianceRule ?? evt.RuleId,
+        Amount = evt.Amount,
+        RiskScore = evt.RiskScore,
+        RequestId = evt.RequestId,
+        TraceId = evt.TraceId,
+        ElapsedMs = evt.ElapsedMs,
+        Signature = evt.Signature,
+        PreviousSignature = evt.PreviousSignature
+    };
 
     /// <summary>
     /// 计算签名并原子推进链尾。

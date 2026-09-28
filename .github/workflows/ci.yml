@@ -69,6 +69,25 @@ jobs:
             --no-build
           echo "迁移与模型一致"
 
+      # ============================================================
+      # 插件契约门禁（阻断式）
+      #
+      # 校验每个插件是否满足接入契约：入口唯一、命名符合扫描约定、
+      # 不引用宿主、不直接引用其他插件、暴露 Agent、分区名结构正确。
+      #
+      # 为什么必须静态校验：插件是"动态发现 + 反射加载"的，
+      # 上面任何一条违规都不会导致编译失败，只表现为
+      # 「插件没加载」或运行期行为异常，排查成本很高。
+      #
+      # 注意传入的是宿主输出目录（同时含 SDK/Base 与 plugins/），
+      # 只传 plugins/ 会因为解析不到契约程序集而被明确拒绝。
+      # ============================================================
+      - name: 校验插件契约
+        run: |
+          dotnet run --project src/PluginValidator/PluginValidator.csproj \
+            --configuration Release --no-build \
+            -- src/src/BankingAgent.Host/bin/Release/net8.0/plugins
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:

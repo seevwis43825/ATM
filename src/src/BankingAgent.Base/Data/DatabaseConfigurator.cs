@@ -44,6 +44,20 @@ public sealed class DatabaseOptions
     /// <summary>连接字符串。生产环境必须从环境变量注入，禁止入库。</summary>
     public string ConnectionString { get; set; } = "Data Source=bankingagent.db";
 
+    /// <summary>
+    /// 审计库连接字符串。为空时自动派生一个独立的库。
+    ///
+    /// 为什么必须独立：审计库与业务库是两个 DbContext，
+    /// 而 EF Core 的 <c>EnsureCreatedAsync()</c> 是**按整个数据库**判断的 ——
+    /// 只要库里已有任何表就整体跳过，不建自己模型的表。
+    /// 两个上下文共用同一个 SQLite 文件时，后建的那个永远建不出表
+    /// （实测：先建业务库再建审计库，最终只剩 audit_events，业务表反而没了）。
+    ///
+    /// 审计与业务数据物理隔离本就是合规要求，各自独立成库
+    /// 既满足隔离，也回避了这个陷阱。
+    /// </summary>
+    public string? AuditConnectionString { get; set; }
+
     /// <summary>初始化模式。</summary>
     public DatabaseInitMode InitMode { get; set; } = DatabaseInitMode.EnsureCreated;
 
@@ -76,6 +90,29 @@ public sealed class DatabaseOptions
 
     /// <summary>是否启用敏感数据日志。生产必须为 false（会打印 PII 与参数值）。</summary>
     public bool EnableSensitiveDataLogging { get; set; }
+
+    /// <summary>
+    /// 复制一份配置并替换连接字符串。
+    /// 用集中方法而不是在各处手写属性拷贝 —— 新增配置项时不会漏掉，
+    /// 否则审计库会静默用上默认值（例如连接池/超时与业务库不一致）。
+    /// </summary>
+    public DatabaseOptions WithConnectionString(string connectionString) => new()
+    {
+        Provider = Provider,
+        ConnectionString = connectionString,
+        AuditConnectionString = AuditConnectionString,
+        InitMode = InitMode,
+        CommandTimeoutSeconds = CommandTimeoutSeconds,
+        EnablePooling = EnablePooling,
+        MaxPoolSize = MaxPoolSize,
+        MinPoolSize = MinPoolSize,
+        ConnectionIdleLifetimeSeconds = ConnectionIdleLifetimeSeconds,
+        ConnectionLifetimeSeconds = ConnectionLifetimeSeconds,
+        MaxRetryCount = MaxRetryCount,
+        RetryBaseDelayMs = RetryBaseDelayMs,
+        SlowQueryThresholdMs = SlowQueryThresholdMs,
+        EnableSensitiveDataLogging = EnableSensitiveDataLogging
+    };
 }
 
 /// <summary>数据库健康状态。</summary>
@@ -100,6 +137,74 @@ public sealed record DatabaseHealth
 /// </summary>
 public static class DatabaseConfigurator
 {
+    /// <summary>
+    /// 解析审计库连接字符串。未显式配置时从业务库连接串派生一个独立库：
+    /// <list type="bullet">
+    /// <item>PostgreSQL：<c>Database=banking</c> → <c>Database=banking_audit</c></item>
+    /// <item>SQLite：<c>Data Source=bankingagent.db</c> → <c>Data Source=bankingagent.audit.db</c></item>
+    /// <item>其他：无法安全派生时退回原串，并由调用方保证该 Provider 下
+    /// 审计模型与业务模型不同库（PostgreSQL 走独立 Schema，不受此限）。</item>
+    /// </list>
+    /// </summary>
+    public static string ResolveAuditConnectionString(DatabaseOptions config)
+    {
+        if (!string.IsNullOrWhiteSpace(config.AuditConnectionString))
+        {
+            return config.AuditConnectionString!;
+        }
+
+        // PostgreSQL / SQL Server：改库名即可，Schema 隔离由 AuditDbContext 负责
+        if (config.Provider is DatabaseProvider.PostgreSql)
+        {
+            try
+            {
+                var csb = new Npgsql.NpgsqlConnectionStringBuilder(config.ConnectionString);
+                csb.Database = string.IsNullOrEmpty(csb.Database) ? "banking_audit" : csb.Database + "_audit";
+                return csb.ConnectionString;
+            }
+            catch
+            {
+                return config.ConnectionString;
+            }
+        }
+
+        if (config.Provider is DatabaseProvider.SqlServer)
+        {
+            try
+            {
+                var csb = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(config.ConnectionString);
+                csb.InitialCatalog = string.IsNullOrEmpty(csb.InitialCatalog)
+                    ? "banking_audit"
+                    : csb.InitialCatalog + "_audit";
+                return csb.ConnectionString;
+            }
+            catch
+            {
+                return config.ConnectionString;
+            }
+        }
+
+        // SQLite：派生同名 .audit.db 文件，实现真正的物理隔离
+        try
+        {
+            var csb = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(config.ConnectionString);
+            var source = csb.DataSource;
+            if (string.IsNullOrWhiteSpace(source)) return config.ConnectionString;
+
+            var dir = Path.GetDirectoryName(source);
+            var name = Path.GetFileNameWithoutExtension(source);
+            var ext = Path.GetExtension(source);
+            var auditName = $"{name}.audit{ext}";
+
+            csb.DataSource = string.IsNullOrEmpty(dir) ? auditName : Path.Combine(dir, auditName);
+            return csb.ConnectionString;
+        }
+        catch
+        {
+            return config.ConnectionString;
+        }
+    }
+
     /// <summary>配置 DbContext（泛型版）。</summary>
     public static void Configure<TContext>(
         DbContextOptionsBuilder<TContext> options,
