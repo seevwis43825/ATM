@@ -240,11 +240,26 @@ jobs:
 
       - name: 打印插件加载情况
         run: |
+          # 注意：/api/plugins 与 /api/plugins/agents 都在认证中间件之后
+          # （公开白名单只有 /health 与 /api/auth/token），无令牌访问返回 401。
+          # 原先直接 `curl -sf` 会因 -f 把 401 变成非零退出码，导致本作业在
+          # 「诊断步骤」上就失败，E2E 与压测根本没机会运行，真正的原因反被掩盖。
+          # 因此这里先取令牌，并且**任何失败都不阻断作业**（诊断步骤不应拥有门禁权力）。
+          TOKEN=$(curl -s -X POST http://localhost:5243/api/auth/token \
+            -H "Content-Type: application/json" \
+            -d '{"userId":"admin_01","password":"admin1234"}' \
+            | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::未取得访问令牌，跳过插件清单打印（不影响门禁）"
+            exit 0
+          fi
+
           echo "=== 插件清单 ==="
-          curl -sf http://localhost:5243/api/plugins | head -c 2000
+          curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:5243/api/plugins | head -c 2000
           echo ""
           echo "=== Agent 路由表 ==="
-          curl -sf http://localhost:5243/api/plugins/agents
+          curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:5243/api/plugins/agents
 
       - name: 运行端到端测试
         working-directory: src
