@@ -1,7 +1,10 @@
 # 快速运行指南（Run Guide）
 
-> **环境**：.NET 8 SDK（本机 .NET 10.0.400 可编译 net8.0 目标）
-> **验证状态**：端到端测试 30/30 全部通过
+> **环境**：.NET SDK 9.0.200+（解决方案是 `.slnx` 格式；各项目本身目标 `net8.0`）
+> **验证状态**：单元测试 135/135、端到端 38/38、并发压测 30/30 全部通过
+>
+> **写插件看这里** → [`01-plugin-onboarding-guide.md`](01-plugin-onboarding-guide.md)
+> 提供 `dotnet new banking-plugin` 脚手架与 `PluginValidator` 契约校验器（已入 CI 门禁）。
 
 ---
 
@@ -21,7 +24,7 @@
 │  ├─ BankingDbContext 审计字段 + 插件分区              │
 │  └─ ComplianceGuard / AuditLogger / DataMasker       │
 ├──────────────────────────────────────────────────────┤
-│  plugins/  3 个插件 DLL（独立编译、独立部署）         │
+│  plugins/  4 个插件 DLL（独立编译、独立部署）         │
 │  ├─ banking.transfer  转账（L3，HITL 强校验）         │
 │  ├─ banking.bill      账单（只读，脱敏）              │
 │  └─ banking.card      卡片（写操作，依赖声明）         │
@@ -64,9 +67,9 @@ dotnet run
 
 ```
 Bootstrap  扫描插件目录: ...\plugins
-Bootstrap  已加载 3 个插件: banking.transfer, banking.bill, banking.card
+Bootstrap  已加载 4 个插件: banking.transfer, banking.bill, banking.card, banking.wealth
 DatabaseInitializer  数据库初始化完成。Provider=...Sqlite, 分区=[plugin_transfer]
-BankingAgent.Host  AI Banking Agent 宿主就绪，插件数 3
+BankingAgent.Host  AI Banking Agent 宿主就绪，插件数 4
 Now listening on: http://localhost:5243
 ```
 
@@ -74,7 +77,7 @@ Now listening on: http://localhost:5243
 
 ```powershell
 Invoke-RestMethod http://localhost:5243/health
-# => status: healthy, plugins: 3
+# => status: healthy, plugins: 4
 ```
 
 ### 2.5 获取访问令牌
@@ -138,7 +141,7 @@ dotnet run --project E2ETest
 dotnet run --project StressTest
 ```
 
-覆盖 6 个场景，29 项断言，详见 [`03-implementation-status.md`](03-implementation-status.md)。
+覆盖 6 个场景，30 项断言，详见 [`03-implementation-status.md`](03-implementation-status.md)。
 
 ### 3.4 重跑前置
 
