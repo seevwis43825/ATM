@@ -1,0 +1,55 @@
+{
+  // ===== 开发环境配置模板 =====
+  //
+  // 用法：
+  //   copy appsettings.Development.json.example appsettings.Development.json
+  //
+  // 为什么 appsettings.Development.json 不入库：
+  //   它存放开发用密钥材料。曾经把真实 AES-256 密钥提交进仓库，
+  //   等于把数据加密主密钥公开 —— 这类泄漏无法靠"以后删掉"补救，
+  //   必须从第一次提交起就不入库。
+  //
+  // 密钥可以全部留空：
+  //   留空时宿主在 Development 下会派生一个确定性的开发密钥并打印警告，
+  //   保证 clone 下来即可运行（见 BankingCoreServiceCollectionExtensions）。
+  //   生产环境不会走这条兜底路径，SecurityGate 会拦截缺少密钥的启动。
+
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+
+  // AES-256-GCM 主密钥，必须是 32 字节的 Base64。
+  // 生成方式（PowerShell）：
+  //   [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+  "Crypto": {
+    "Mode": "Hybrid",
+    "DataEncryptionKey": "",
+    "KeyId": "dev-k1"
+  },
+
+  // HS256 要求至少 32 字节，否则 TokenService 构造即失败
+  "Jwt": {
+    "SigningKey": ""
+  },
+
+  // 审计链 HMAC 密钥
+  "Audit": {
+    "SigningKey": ""
+  },
+
+  "SecurityGate": {
+    "Enabled": false,
+    "Environment": "Development",
+    "RequireHttps": false,
+    "EnableHsts": false,
+    "DisableDeveloperExceptionPage": true
+  },
+
+  "PluginSignature": {
+    "Environment": "Development",
+    "AllowUnsignedInDevelopment": true
+  }
+}

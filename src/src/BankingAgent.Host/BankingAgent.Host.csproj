@@ -35,6 +35,7 @@
     <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.Transfer\bin\$(Configuration)\net8.0\BankingAgent.Plugin.Transfer.dll" />
     <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.BillAnalysis\bin\$(Configuration)\net8.0\BankingAgent.Plugin.BillAnalysis.dll" />
     <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.CardManagement\bin\$(Configuration)\net8.0\BankingAgent.Plugin.CardManagement.dll" />
+    <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.Wealth\bin\$(Configuration)\net8.0\BankingAgent.Plugin.Wealth.dll" />
   </ItemGroup>
 
   <Target Name="CopyPluginsToOutput" AfterTargets="Build">

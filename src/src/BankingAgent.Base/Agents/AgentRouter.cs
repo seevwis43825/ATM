@@ -43,6 +43,30 @@ public class AgentRouter
         _agents.Where(a => a.SupportedIntents
             .Any(p => p.StartsWith(scenario, StringComparison.OrdinalIgnoreCase))).ToList();
 
+    /// <summary>
+    /// 用已注册 Agent 声明的前缀反查意图，作为规则式意图识别的兜底。
+    ///
+    /// 为什么需要它：路由表是插件自动注册的，但意图识别在宿主里是硬编码关键词表。
+    /// 新插件装进来后能出现在 /api/plugins/agents 里，却永远拿不到请求 ——
+    /// 「加功能只需加插件」这条设计承诺实际不成立。
+    /// 这里让兜底逻辑从 Agent 自报的前缀推导意图，插件即插即用。
+    /// </summary>
+    /// <param name="userInput">用户原始输入。</param>
+    /// <returns>匹配到的意图前缀；无法匹配时返回 null。</returns>
+    public string? InferIntentFromInput(string? userInput)
+    {
+        if (string.IsNullOrWhiteSpace(userInput)) return null;
+
+        // 最长前缀优先，保证具体意图不被宽泛意图抢占
+        return _agents
+            .SelectMany(a => a.SupportedIntents)
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(p => userInput.Contains(p, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(p => p.Length)
+            .FirstOrDefault();
+    }
+
     /// <summary>执行请求并返回结果。找不到处理者时返回兜底结果。</summary>
     public async Task<AgentResult> RouteAsync(AgentRequest request, CancellationToken ct = default)
     {

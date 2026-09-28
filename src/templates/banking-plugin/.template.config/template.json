@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "AI Banking Agent Team",
+  "classifications": [ "BankingAgent", "Plugin" ],
+  "identity": "BankingAgent.Plugin.Template",
+  "name": "AI Banking Agent 插件",
+  "shortName": "banking-plugin",
+  "description": "生成一个符合 BankingAgent 插件契约的场景插件（入口 + Agent + 可选数据分区）。",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "BankingAgent.Plugin.Template",
+  "preferNameDirectory": true,
+  "symbols": {
+    "pluginId": {
+      "type": "parameter",
+      "datatype": "string",
+      "defaultValue": "banking.myfeature",
+      "replaces": "__PLUGIN_ID__",
+      "description": "插件唯一标识，反向域名风格，例如 banking.wealth"
+    },
+    "pluginName": {
+      "type": "parameter",
+      "datatype": "string",
+      "defaultValue": "我的场景",
+      "replaces": "__PLUGIN_NAME__",
+      "description": "插件显示名称（中文）"
+    },
+    "scenario": {
+      "type": "parameter",
+      "datatype": "string",
+      "defaultValue": "myfeature",
+      "replaces": "__SCENARIO__",
+      "description": "业务场景标识，用于意图路由前缀，例如 wealth"
+    },
+    "intentPrefix": {
+      "type": "parameter",
+      "datatype": "string",
+      "defaultValue": "myfeature",
+      "replaces": "__INTENT_PREFIX__",
+      "description": "该 Agent 处理的意图前缀，例如 wealth"
+    },
+    "withPersistence": {
+      "type": "parameter",
+      "datatype": "bool",
+      "defaultValue": "false",
+      "description": "是否生成独立数据分区（需要落库时勾选）"
+    }
+  },
+  "sources": [
+    {
+      "modifiers": [
+        {
+          "condition": "(!withPersistence)",
+          "exclude": [ "Persistence.cs" ]
+        }
+      ]
+    }
+  ]
+}

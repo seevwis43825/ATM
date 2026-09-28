@@ -21,13 +21,40 @@ var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 int passed = 0, failed = 0;
 
-// 认证令牌
-var tokenResp = await http.PostAsync($"{hostBase}/api/auth/token",
-    new StringContent("""{"userId":"u_demo01","password":"demo1234"}""", Encoding.UTF8, "application/json"));
-var token = tokenResp.IsSuccessStatusCode
-    ? JsonDocument.Parse(await tokenResp.Content.ReadAsStringAsync())
-        .RootElement.GetProperty("token").GetString() ?? ""
-    : "";
+// 认证令牌。
+// 注意：/api/auth/token 属 Strict 档位（默认 5 次/分钟）。若在 60 秒内连续
+// 跑多轮测试，令牌桶尚未回填就会拿到 429。这里按 Retry-After 退避重试，
+// 既不改动安全阈值，也不让压测因为"跑得太勤"而整体假红。
+var token = "";
+for (var attempt = 0; attempt < 8 && token.Length == 0; attempt++)
+{
+    var resp = await http.PostAsync($"{hostBase}/api/auth/token",
+        new StringContent("""{"userId":"u_demo01","password":"demo1234"}""",
+            Encoding.UTF8, "application/json"));
+
+    if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+    {
+        var wait = resp.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(12);
+        if (wait < TimeSpan.FromSeconds(1)) wait = TimeSpan.FromSeconds(1);
+        Console.WriteLine($"  [限流] 取令牌被拒（429），{wait.TotalSeconds:F0}s 后重试…");
+        await Task.Delay(wait);
+        continue;
+    }
+
+    if (resp.IsSuccessStatusCode)
+    {
+        token = JsonDocument.Parse(await resp.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("token").GetString() ?? "";
+    }
+}
+
+if (token.Length == 0)
+{
+    Console.WriteLine();
+    Console.WriteLine("  [致命] 无法获取认证令牌，后续需要鉴权的用例将整体失败。");
+    Console.WriteLine("  常见原因：60 秒内已跑过多轮测试，鉴权档位令牌桶尚未回填。");
+    Console.WriteLine("  处理方式：等待 1 分钟后重跑，或重启宿主。");
+}
 
 void Section(string t)
 {

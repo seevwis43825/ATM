@@ -44,3 +44,8 @@ yarn-error.log*
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# ===== 开发环境密钥文件（含真实密钥材料，严禁入库）=====
+# 首次克隆后复制 appsettings.Development.json.example 并按需填写
+src/src/BankingAgent.Host/appsettings.Development.json
+src/mock-bank/MockBank.Api/appsettings.Development.json

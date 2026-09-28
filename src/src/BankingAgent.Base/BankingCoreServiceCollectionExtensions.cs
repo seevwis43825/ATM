@@ -23,6 +23,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using System.Text;
 
 /// <summary>框架装配扩展。</summary>
 public static class BankingCoreServiceCollectionExtensions
@@ -89,17 +90,57 @@ public static class BankingCoreServiceCollectionExtensions
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<JwtOptions>>().Value);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<RateLimitOptions>>().Value);
 
-        // 密码敏捷服务：缺少密钥时构造即抛异常，生产环境启动必失败
+        // 密码敏捷服务。
+        //
+        // 密钥来源优先级：配置/环境变量 > 开发环境派生密钥 > 启动失败。
+        // 为什么要有"开发环境派生密钥"这一层：
+        //   原先开发密钥写在 appsettings.Development.json 里并被 git 跟踪，
+        //   等于把 AES 主密钥提交进仓库。现在该文件不再入库，
+        //   若不给开发环境兜底，任何人 clone 下来都会因缺少密钥而无法启动。
+        //   因此仅在 Development 下用固定材料派生一个**确定性**开发密钥
+        //   （确定性是为了重启后仍能解密之前写入的数据），并打印显著警告。
+        // 生产环境绝不走这条路：SecurityGate 会先一步拦截缺少密钥的启动。
         services.AddSingleton<ICryptoService>(sp =>
         {
             var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<CryptoOptions>>().Value;
+            var log = sp.GetRequiredService<ILogger<CryptoService>>();
+
+            if (string.IsNullOrWhiteSpace(opts.DataEncryptionKey) && IsDevelopment(sp))
+            {
+                opts.DataEncryptionKey = DeriveDevelopmentKey("crypto:" + opts.KeyId);
+                log.LogWarning(
+                    "未配置 Crypto:DataEncryptionKey，已启用开发环境派生密钥（KeyId={KeyId}）。" +
+                    "该密钥仅用于本地开发，禁止用于任何真实数据；" +
+                    "生产环境请通过环境变量 Crypto__DataEncryptionKey 注入。",
+                    opts.KeyId);
+            }
+
             return new CryptoService(
-                Microsoft.Extensions.Options.Options.Create(opts),
-                sp.GetRequiredService<ILogger<CryptoService>>());
+                Microsoft.Extensions.Options.Options.Create(opts), log);
         });
 
         services.AddSingleton<IAuditLogger, AuditLogger>();
-        services.AddSingleton<ITokenService, TokenService>();
+
+        // 令牌服务同 CryptoService：缺少密钥时构造即抛异常。
+        // 而认证中间件对**每个请求**都要解析 ITokenService，一旦抛异常，
+        // 连 /health 都会变成 500（并且开发环境下回显完整堆栈）。
+        // 因此这里同样只在 Development 下兜底，生产保持"缺密钥即启动失败"。
+        services.AddSingleton<ITokenService>(sp =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<JwtOptions>>().Value;
+            var log = sp.GetRequiredService<ILogger<TokenService>>();
+
+            if (Encoding.UTF8.GetByteCount(opts.SigningKey ?? "") < 32 && IsDevelopment(sp))
+            {
+                opts.SigningKey = DeriveDevelopmentKey("jwt-hs256");
+                log.LogWarning(
+                    "未配置有效的 Jwt:SigningKey，已启用开发环境派生密钥。" +
+                    "生产环境必须通过环境变量 Jwt__SigningKey 注入至少 32 字节的密钥。");
+            }
+
+            return new TokenService(Microsoft.Extensions.Options.Options.Create(opts), log);
+        });
+
         services.AddSingleton<RateLimiter>();
 
         // 安全门：生产环境配置不合规时阻止启动
@@ -117,6 +158,31 @@ public static class BankingCoreServiceCollectionExtensions
         services.AddSingleton<ComplianceGuard>();
 
         return services;
+    }
+
+    /// <summary>
+    /// 派生开发环境专用密钥。
+    /// 用固定材料经 SHA-256 得到 32 字节，保证：
+    ///   1) 不同开发者机器上一致（团队复现问题不需要交换密钥）
+    ///   2) 重启后不变（此前写入的密文仍可解密）
+    /// 代价是它公开可推导 —— 因此只能用于本地开发，生产由 SecurityGate 拦截。
+    /// </summary>
+    /// <param name="purpose">用途标识，不同用途派生不同密钥，避免一钥多用。</param>
+    private static string DeriveDevelopmentKey(string purpose)
+    {
+        var material = Encoding.UTF8.GetBytes(
+            $"AI-Banking-Agent/development-only-key/{purpose}");
+        return Convert.ToBase64String(
+            System.Security.Cryptography.SHA256.HashData(material));
+    }
+
+    /// <summary>判断当前是否运行在 Development 环境。</summary>
+    private static bool IsDevelopment(IServiceProvider sp)
+    {
+        // 直接比较环境名，避免依赖 Hosting 的 IsDevelopment 扩展方法
+        var env = sp.GetService<Microsoft.Extensions.Hosting.IHostEnvironment>();
+        return env is not null &&
+               env.EnvironmentName.Equals("Development", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>注册插件提供的 Agent（宿主在构建容器后调用）。</summary>

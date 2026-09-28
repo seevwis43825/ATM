@@ -88,13 +88,44 @@ public sealed class RateLimitingMiddleware(RequestDelegate next, ILogger<RateLim
         return RateLimitTier.Relaxed;
     }
 
+    /// <summary>
+    /// 计算某档位的配额 (每分钟许可数, 令牌桶容量)。
+    ///
+    /// 关键约束：**桶容量绝不允许超过该档位每分钟的许可数**。
+    /// 令牌桶按 permitsPerMinute/60 每秒回填，若容量大于每分钟许可数，
+    /// 桶就变成一个"蓄水池"：攒够之后可以一次性全部放行，
+    /// 且重新攒满需要远超一分钟 —— 限流形同虚设。
+    ///
+    /// 之前 Strict 档用 Math.Max(3, BurstCapacity / 10) 从**全局**突发放大系数
+    /// 推导，全局值一调大（为缓解普通接口的突发），登录接口的防爆破能力
+    /// 会被同步削弱（实测：10 次连续取令牌全部放行）。因此改为各档位显式给出，
+    /// 全局 BurstCapacity 只作为"上限"参与 min，不再能放大严格档位。
+    /// </summary>
     private static (int Permits, int Burst) ResolveQuota(RateLimitTier tier, RateLimitOptions o) => tier switch
     {
-        RateLimitTier.Strict => (o.AuthPermitsPerMinute, Math.Max(3, o.BurstCapacity / 10)),
-        RateLimitTier.Standard => (o.TransferPermitsPerMinute, o.BurstCapacity / 2),
-        RateLimitTier.ReadOnly => (o.ReadPermitsPerMinute, o.BurstCapacity * 2),
-        _ => (o.ApiPermitsPerMinute, o.BurstCapacity)
+        // 认证：防口令爆破，桶容量必须等于每分钟许可数（默认 5）
+        RateLimitTier.Strict => Quota(o.AuthPermitsPerMinute, o),
+
+        // 资金操作：允许一定突发，但不超过每分钟许可数
+        RateLimitTier.Standard => Quota(o.TransferPermitsPerMinute, o),
+
+        // 只读：读多写少，突发上限即每分钟许可数
+        RateLimitTier.ReadOnly => Quota(o.ReadPermitsPerMinute, o),
+
+        // 普通业务
+        _ => Quota(o.ApiPermitsPerMinute, o)
     };
+
+    /// <summary>
+    /// 组装单个档位的配额：桶容量的上限是「该档位每分钟许可数」，
+    /// 再与全局 BurstCapacity 取小。这样全局参数只能收紧、不能放宽严格档位。
+    /// </summary>
+    private static (int Permits, int Burst) Quota(int permitsPerMinute, RateLimitOptions o)
+    {
+        var permits = Math.Max(1, permitsPerMinute);
+        var burst = Math.Min(Math.Max(1, o.BurstCapacity), permits);
+        return (permits, burst);
+    }
 
     /// <summary>解析客户端 IP。生产部署在反向代理后需配置可信代理白名单。</summary>
     private static string ResolveClientIp(HttpContext context)

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    插件项目骨架。
+    约束（与 docs/plugin/01-plugin-onboarding-guide.md 一致）：
+      * 只引用 SDK + Base，禁止引用其他插件，禁止引用 Host
+      * 目标框架保持 net8.0，与宿主一致
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\BankingAgent.Plugin.Sdk\BankingAgent.Plugin.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\BankingAgent.Base\BankingAgent.Base.csproj" />
+  </ItemGroup>
+
+</Project>

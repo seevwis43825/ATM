@@ -376,7 +376,20 @@ app.MapPost("/api/chat", async (ChatRequest req, HttpContext ctx, CancellationTo
         return Results.Unauthorized();
     }
 
+    // 一级：规则式意图识别（关键词表，快）
     var intent = DetectIntent(req.Message);
+
+    // 二级兜底：规则表认不出时，用已注册 Agent 自报的意图前缀反查。
+    // 没有这一步，插件新增的场景虽然注册了 Agent，却永远收不到请求。
+    if (intent == "unknown")
+    {
+        var inferred = router.InferIntentFromInput(req.Message);
+        if (inferred is not null)
+        {
+            intent = inferred;
+            app.Logger.LogDebug("规则表未命中，由 Agent 前缀推导意图: {Intent}", inferred);
+        }
+    }
 
     // 越权防护：userId 一律取自已验证的令牌，忽略请求体中的任何 userId
     var effectiveUserId = principal.UserId;
