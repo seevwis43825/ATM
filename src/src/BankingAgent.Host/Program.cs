@@ -14,9 +14,7 @@ using BankingAgent.Base.Security.Compliance;
 using BankingAgent.PluginSdk;
 using BankingAgent.Base.Plugins.Security;
 using BankingAgent.Base.Security.Hardening;
-using BankingAgent.Base.Security.RateLimit;
 using BankingAgent.Host.Middleware;
-using Microsoft.Extensions.DependencyInjection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -619,7 +617,8 @@ public sealed record ChatResponse(
     string Echo, string Intent, bool Success, string? Content, string? ResultIntent,
     bool RequiresHumanInLoop, bool SideEffectCommitted, string? ErrorCode, string? ErrorMessage,
     IReadOnlyDictionary<string, object?> Data, double Confidence, double ElapsedMs,
-    /// <summary>意图来源：llm（大模型判定）或 rule（规则表兜底）。</summary>
+    // 意图来源：llm（大模型判定）或 rule（规则表兜底）。
+    // 不能用 /// 文档注释：记录类型的位置参数不支持 XML 注释（会触发 CS1587）。
     string IntentSource = "rule");
 
 /// <summary>人工确认请求。</summary>
