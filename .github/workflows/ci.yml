@@ -231,6 +231,25 @@ jobs:
       - name: 编译
         run: dotnet build src/BankingAgent.slnx -c Release
 
+      - name: 校验插件产物完整
+        run: |
+          # 宿主的插件复制目标带 Exists 条件（宿主被单独构建时插件 DLL 允许不存在，
+          # 属于合法场景），一旦构建顺序异常会静默跳过复制，最终表现为启动时抛出
+          # 「插件 banking.card 依赖的 banking.transfer 未找到」这类难以定位的运行期错误。
+          # 这里显式校验，让问题在启动之前就带着原因暴露。
+          DIR=src/src/BankingAgent.Host/bin/Release/net8.0/plugins
+          MISSING=0
+          for p in BankingAgent.Plugin.Transfer BankingAgent.Plugin.BillAnalysis \
+                   BankingAgent.Plugin.CardManagement BankingAgent.Plugin.Wealth; do
+            if [ ! -f "$DIR/$p.dll" ]; then
+              echo "::error::缺少插件产物 $p.dll（目录：$DIR）"
+              MISSING=1
+            fi
+          done
+          echo "--- plugins 目录内容 ---"
+          ls -1 "$DIR" || true
+          exit $MISSING
+
       - name: 启动 Mock Bank
         working-directory: src/mock-bank/MockBank.Api
         run: |
