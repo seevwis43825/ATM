@@ -8,7 +8,7 @@ namespace BankingAgent.Base.Plugins;
 
 using System.Reflection;
 using System.Runtime.Loader;
-using BankingAgent.PluginSdk;
+using BankingAgent.Base.Plugins.Security;
 using BankingAgent.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -74,6 +74,7 @@ public sealed class PluginRegistry
 {
     private readonly IServiceProvider _rootServices;
     private readonly ILogger<PluginRegistry> _logger;
+    private readonly PluginSignatureVerifier _verifier;
     private readonly ILoggerFactory _loggerFactory;
     private readonly Dictionary<string, PluginLoadResult> _plugins = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PluginLoadContext> _loadContexts = new(StringComparer.OrdinalIgnoreCase);
@@ -86,11 +87,13 @@ public sealed class PluginRegistry
     public PluginRegistry(
         IServiceProvider rootServices,
         ILogger<PluginRegistry> logger,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        PluginSignatureVerifier verifier)
     {
         _rootServices = rootServices;
         _logger = logger;
         _loggerFactory = loggerFactory;
+        _verifier = verifier;
     }
 
     /// <summary>当前已加载插件。</summary>
@@ -123,6 +126,18 @@ public sealed class PluginRegistry
 
             try
             {
+                // ===== 安全门：加载前验证插件签名 =====
+                // 任何人只要能写入 plugins/ 目录就能替换业务逻辑，
+                // 恶意插件可在转账 Agent 里窃取身份或绕过合规检查。
+                var verification = _verifier.Verify(dll);
+                if (!verification.Allowed)
+                {
+                    _logger.LogError(
+                        "插件被安全门拒绝加载: {Plugin} — {Reason}",
+                        fileName, verification.Reason);
+                    continue;
+                }
+
                 var result = await LoadAsync(dll, ct);
                 if (result is not null) loaded.Add(result);
             }

@@ -31,6 +31,7 @@ public class BankingDbContext : DbContext
     private readonly IReadOnlyDictionary<string, IEntitySetContributor> _contributors;
     private readonly ICurrentUserAccessor _currentUser;
     private readonly DateTimeOffsetProvider _clock;
+    private readonly BankingAgent.Base.Cryptography.ICryptoService? _crypto;
 
     /// <summary>
     /// 主构造函数。DbContext 由 DI 容器构造时会注入插件贡献器、当前用户与时钟。
@@ -39,11 +40,13 @@ public class BankingDbContext : DbContext
         DbContextOptions<BankingDbContext> options,
         IEnumerable<IEntitySetContributor> contributors,
         ICurrentUserAccessor currentUser,
-        DateTimeOffsetProvider clock) : base(options)
+        DateTimeOffsetProvider clock,
+        BankingAgent.Base.Cryptography.ICryptoService? crypto = null) : base(options)
     {
         _contributors = contributors.ToDictionary(c => c.PartitionName, StringComparer.OrdinalIgnoreCase);
         _currentUser = currentUser;
         _clock = clock;
+        _crypto = crypto;
     }
 
     /// <summary>
@@ -73,6 +76,30 @@ public class BankingDbContext : DbContext
                 modelBuilder.HasDefaultSchema(contributor.PartitionName);
             }
             contributor.ConfigureModel(modelBuilder);
+        }
+
+        ApplyFieldEncryption(modelBuilder);
+    }
+
+    /// <summary>
+    /// 扫描所有标记了 [Encrypted] 的字符串属性，自动装配加密转换器。
+    /// 自动扫描的意义：新增敏感字段时只要加上特性就会被加密，不会漏。
+    /// </summary>
+    private void ApplyFieldEncryption(ModelBuilder modelBuilder)
+    {
+        if (_crypto is null) return;
+
+        var converter = new BankingAgent.Base.Data.Encryption.FieldCipher(_crypto)
+            .CreateConverter();
+
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            foreach (var property in entityType.GetProperties())
+            {
+                if (property.ClrType != typeof(string)) continue;
+                if (property.FindAnnotation("Encrypted") is null) continue;
+                property.SetValueConverter(converter);
+            }
         }
     }
 

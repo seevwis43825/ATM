@@ -25,6 +25,7 @@
 | **接口有哪些、怎么调？** | **[`plugin/02-api-reference.md`](plugin/02-api-reference.md)** |
 | **哪些做了、哪些没做？** | **[`plugin/03-implementation-status.md`](plugin/03-implementation-status.md)** |
 | **密码能抗量子吗？安全吗？** | **[`10-security/01-cryptography-and-hardening.md`](10-security/01-cryptography-and-hardening.md)** |
+| **抗量子怎么落地的？** | **[`10-security/02-hardening-report.md`](10-security/02-hardening-report.md)** |
 | **系统能扛多少 QPS？** | **[`11-performance/01-capacity-test-report.md`](11-performance/01-capacity-test-report.md)** |
 | **多 Agent 怎么协同？** | **[`12-multi-agent/01-orchestration-design.md`](12-multi-agent/01-orchestration-design.md)** |
 | **看架构图 / UML / 数据模型** | **[`09-uml/`](09-uml/)** |
@@ -115,7 +116,8 @@ docs/
 │   └── 04-data-model.md                    数据模型（ER 图/字段/索引/迁移）
 │
 ├── 10-security/                            ← 安全与密码学
-│   └── 01-cryptography-and-hardening.md    抗量子分析 + 安全能力盘点 + 风险矩阵
+│   ├── 01-cryptography-and-hardening.md    抗量子分析 + 安全能力盘点 + 风险矩阵
+│   └── 02-hardening-report.md              **安全加固实施报告（PQC 落地 + 实测证据）**
 │
 ├── 11-performance/                         ← 性能
 │   └── 01-capacity-test-report.md          容量压测（296 QPS 实测 + 瓶颈分析）

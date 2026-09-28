@@ -12,6 +12,9 @@ using BankingAgent.Base.Plugins;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.Base.Security.Auth;
 using BankingAgent.Base.Security.Compliance;
+using BankingAgent.Base.Cryptography;
+using BankingAgent.Base.Plugins.Security;
+using BankingAgent.Base.Security.Hardening;
 using BankingAgent.Base.Security.RateLimit;
 using BankingAgent.PluginSdk;
 using Microsoft.EntityFrameworkCore;
@@ -129,15 +132,32 @@ public static class BankingCoreServiceCollectionExtensions
         services.Configure<ComplianceOptions>(configuration.GetSection("Compliance"));
         services.Configure<JwtOptions>(configuration.GetSection("Jwt"));
         services.Configure<RateLimitOptions>(configuration.GetSection("RateLimit"));
+        services.Configure<CryptoOptions>(configuration.GetSection("Crypto"));
 
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AuditOptions>>().Value);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<ComplianceOptions>>().Value);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<JwtOptions>>().Value);
         services.AddSingleton(sp => sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<RateLimitOptions>>().Value);
 
+        // 密码敏捷服务：缺少密钥时构造即抛异常，生产环境启动必失败
+        services.AddSingleton<ICryptoService>(sp =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<CryptoOptions>>().Value;
+            return new CryptoService(
+                Microsoft.Extensions.Options.Options.Create(opts),
+                sp.GetRequiredService<ILogger<CryptoService>>());
+        });
+
         services.AddSingleton<IAuditLogger, AuditLogger>();
         services.AddSingleton<ITokenService, TokenService>();
         services.AddSingleton<RateLimiter>();
+
+        // 安全门：生产环境配置不合规时阻止启动
+        services.AddSingleton<SecurityGate>();
+
+        // 插件签名验证：防供应链投毒
+        services.Configure<PluginSignatureOptions>(configuration.GetSection("PluginSignature"));
+        services.AddSingleton<PluginSignatureVerifier>();
 
         // 内置合规规则。插件可追加自定义规则。
         services.AddSingleton<IComplianceRule, TransferAmountRule>();

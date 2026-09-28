@@ -11,6 +11,8 @@ using BankingAgent.Base.Security.Audit;
 using BankingAgent.Base.Security.Auth;
 using BankingAgent.Base.Security.Compliance;
 using BankingAgent.PluginSdk;
+using BankingAgent.Base.Plugins.Security;
+using BankingAgent.Base.Security.Hardening;
 using BankingAgent.Base.Security.RateLimit;
 using BankingAgent.Host.Middleware;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,11 +36,20 @@ var bootstrap = builder.Services.BuildServiceProvider();
 var loggerFactory = bootstrap.GetRequiredService<ILoggerFactory>();
 var bootLogger = loggerFactory.CreateLogger("Bootstrap");
 
-var registry = new PluginRegistry(bootstrap, loggerFactory.CreateLogger<PluginRegistry>(), loggerFactory);
-var configuredPluginDir = builder.Configuration["Plugins:Directory"];
-var pluginDir = string.IsNullOrWhiteSpace(configuredPluginDir)
+// ===== 安全门：生产配置不合规则阻止启动 =====
+var securityGate = new SecurityGate(
+    builder.Configuration,
+    loggerFactory.CreateLogger<SecurityGate>());
+securityGate.Enforce();
+
+var registry = new PluginRegistry(
+    bootstrap,
+    loggerFactory.CreateLogger<PluginRegistry>(),
+    loggerFactory,
+    bootstrap.GetRequiredService<PluginSignatureVerifier>());
+var pluginDir = string.IsNullOrWhiteSpace(builder.Configuration["Plugins:Directory"])
     ? Path.Combine(AppContext.BaseDirectory, "plugins")
-    : configuredPluginDir;
+    : builder.Configuration["Plugins:Directory"]!;
 
 bootLogger.LogInformation("扫描插件目录: {Dir}", pluginDir);
 var loaded = await registry.LoadFromDirectoryAsync(pluginDir);
@@ -79,11 +90,22 @@ foreach (var plugin in registry.LoadedPlugins)
 
 // ===== 5. API 端点 =====
 
+// ===== 安全响应头（必须在最前）=====
+app.UseMiddleware<SecurityHeadersMiddleware>();
+
+// ===== HTTPS 重定向 + HSTS =====
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
+// ===== 速率限制 =====
+app.UseMiddleware<RateLimitingMiddleware>();
+
 // ===== 认证中间件 =====
 // 修复越权漏洞：原实现 userId 由客户端传入，任何人可传别人的 userId。
 // 现在所有受保护端点必须携带合法 JWT，且 userId 一律从令牌提取。
-app.UseMiddleware<RateLimitingMiddleware>();
-
 app.Use(async (ctx, next) =>
 {
     var tokenService = ctx.RequestServices.GetRequiredService<ITokenService>();
