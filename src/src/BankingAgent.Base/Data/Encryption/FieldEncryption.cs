@@ -35,13 +35,24 @@ public sealed class FieldCipher(ICryptoService crypto)
     /// <summary>密文前缀，便于识别与调试。</summary>
     public const string Prefix = "enc:v1:";
 
+    /// <summary>
+    /// 该字段是否参与等值查询（决定用确定性还是随机加密）。
+    /// 由 <see cref="FieldCipher.CreateConverter"/> 依据特性设置。
+    /// </summary>
+    public bool Searchable { get; init; }
+
     /// <summary>加密明文。已是密文则原样返回（幂等）。</summary>
     public string Encrypt(string value)
     {
         if (string.IsNullOrEmpty(value)) return value;
         if (value.StartsWith(Prefix, StringComparison.Ordinal)) return value;
 
-        var payload = crypto.Encrypt(Encoding.UTF8.GetBytes(value));
+        // 参与等值查询/唯一索引的列必须确定性加密，否则
+        // `WHERE col = @v` 永远匹配不到，唯一索引也会失效。
+        var payload = Searchable
+            ? crypto.EncryptDeterministic(Encoding.UTF8.GetBytes(value))
+            : crypto.Encrypt(Encoding.UTF8.GetBytes(value));
+
         return Prefix + JsonSerializer.Serialize(payload);
     }
 

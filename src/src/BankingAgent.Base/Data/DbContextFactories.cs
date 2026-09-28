@@ -212,6 +212,21 @@ internal sealed class MigrationOnlyCrypto : ICryptoService
         };
     }
 
+    /// <summary>
+    /// 迁移阶段的确定性加密。
+    /// 设计时不需要真实密码学：列类型仍是 string，且迁移只关心表结构。
+    /// 保持"同输入同输出"即可，与运行期语义一致。
+    /// </summary>
+    public EncryptedPayload EncryptDeterministic(ReadOnlySpan<byte> plaintext, string? aad = null) =>
+        new()
+        {
+            CipherText = System.Text.Encoding.UTF8.GetString(plaintext),
+            Nonce = "",
+            AuthTag = "",
+            Algorithm = "PLAINTEXT-MIGRATION-DET",
+            KeyId = "migration"
+        };
+
     public byte[] Decrypt(EncryptedPayload payload, string? aad = null) =>
         System.Text.Encoding.UTF8.GetBytes(payload.CipherText);
 

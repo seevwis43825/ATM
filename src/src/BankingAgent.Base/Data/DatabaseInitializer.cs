@@ -186,6 +186,12 @@ public sealed class DatabaseInitializer(
             var pending = (await db.Database.GetPendingMigrationsAsync(ct)).ToList();
             var appliedCount = (await db.Database.GetAppliedMigrationsAsync(ct)).Count();
 
+            // EnsureCreated 模式下 schema 由模型直接建出，不写 __EFMigrationsHistory，
+            // 因此 GetPendingMigrations 会把基线迁移一直报成"待应用"。
+            // 那是假信号：环境其实是就绪的，只是走的不是迁移路径。
+            // 只在 Migrate 模式下把待应用迁移视为真实运维信号。
+            var usesMigrations = options.InitMode == DatabaseInitMode.Migrate;
+
             // 真实探活：SELECT 1 只能证明连接可用，取服务端版本用于运维定位
             var serverVersion = db.Database.ProviderName ?? options.Provider.ToString();
             await db.Database.ExecuteSqlRawAsync("SELECT 1", ct);
@@ -197,8 +203,8 @@ public sealed class DatabaseInitializer(
                 IsHealthy = true,
                 Provider = options.Provider.ToString(),
                 LatencyMs = sw.ElapsedMilliseconds,
-                PendingMigrations = pending,
-                AppliedMigrationCount = appliedCount,
+                PendingMigrations = usesMigrations ? pending : [],
+                AppliedMigrationCount = usesMigrations ? appliedCount : 0,
                 DatabaseName = db.Database.GetDbConnection().Database,
                 ServerVersion = serverVersion,
                 CheckedAt = DateTimeOffset.UtcNow

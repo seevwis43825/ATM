@@ -7,6 +7,7 @@
 //   * 需要落库时实现 IEntitySetContributor（见 Persistence.cs）
 
 using BankingAgent.Base.Agents;
+using BankingAgent.Base.Data;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
@@ -47,8 +48,12 @@ public sealed class 理财PluginEntryPoint : IPluginEntryPoint
         // Agent 无状态，注册为单例即可安全共享
         services.AddSingleton<IBankingAgent, 理财Agent>();
 
-        // 需要独立数据分区时，把 Persistence.cs 里的贡献器注册进来：
-        // services.AddSingleton<IEntitySetContributor, 理财PersistenceContributor>();
+        // 注册本插件的数据分区贡献器。
+        // 注意：实现了 IEntitySetContributor **还不够**，必须在这里注册，
+        // 否则宿主不会把该实体纳入模型 —— 表不会被创建，
+        // 而且不会报任何错（参见 03-implementation-status.md 的"静默失效"清单）。
+        // 这也是 [Encrypted] 字段级加密生效的前提：实体必须先进模型。
+        services.AddSingleton<IEntitySetContributor, 理财PersistenceContributor>();
 
         context.Logger.LogInformation(
             "理财 插件服务注册完成，数据分区: {Partition}", context.PartitionName);

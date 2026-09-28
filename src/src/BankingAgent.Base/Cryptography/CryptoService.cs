@@ -102,6 +102,19 @@ public interface ICryptoService
     string EncryptString(string plaintext, string? aad = null);
     string DecryptString(EncryptedPayload payload, string? aad = null);
 
+    /// <summary>
+    /// 确定性加密：相同明文 + 相同 AAD 必然产生相同密文。
+    ///
+    /// 用途：需要参与**等值查询或唯一索引**的列（例如幂等键）。
+    /// 普通 <see cref="Encrypt"/> 用随机 Nonce，同一明文每次密文都不同，
+    /// 一旦用于这类列，`WHERE col = @v` 将永远查不到、唯一索引也形同虚设。
+    ///
+    /// 安全代价：泄露"两个值是否相等"的信息，故只适用于低价值字段。
+    /// 实现上仍保证随机 Nonce 的安全性之外的部分：Nonce 由
+    /// HMAC(密钥, AAD‖明文) 派生，因此不同明文绝不会复用同一 Nonce。
+    /// </summary>
+    EncryptedPayload EncryptDeterministic(ReadOnlySpan<byte> plaintext, string? aad = null);
+
     /// <summary>生成混合密钥交换材料（含本地私钥，供对端完成交换）。</summary>
     HybridKeyExchange GenerateKeyExchange();
 
@@ -193,6 +206,20 @@ public sealed class CryptoService : ICryptoService
 
     // ===== 对称加密（AES-256-GCM）=====
 
+    /// <summary>随机 Nonce 的 AES-256-GCM（默认，抗相等性推断）。</summary>
+    public const string AlgorithmAesGcm = "AES-256-GCM";
+
+    /// <summary>确定性 Nonce 的 AES-256-GCM（可等值查询，代价是泄露相等性）。</summary>
+    public const string AlgorithmAesGcmDeterministic = "AES-256-GCM-DET";
+
+    /// <summary>
+    /// 解密允许的算法白名单。
+    /// 集中在一处，避免新增算法时漏改 Decrypt —— 那种疏漏会在
+    /// "写入成功、读取报错"时才暴露，且只在特定字段上出现。
+    /// </summary>
+    private static bool IsSupportedAlgorithm(string algorithm) =>
+        algorithm is AlgorithmAesGcm or AlgorithmAesGcmDeterministic;
+
     /// <inheritdoc />
     public EncryptedPayload Encrypt(ReadOnlySpan<byte> plaintext, string? aad = null)
     {
@@ -210,7 +237,41 @@ public sealed class CryptoService : ICryptoService
             CipherText = Convert.ToBase64String(cipher),
             Nonce = Convert.ToBase64String(nonce),
             AuthTag = Convert.ToBase64String(tag),
-            Algorithm = "AES-256-GCM",
+            Algorithm = AlgorithmAesGcm,
+            KeyId = _currentKeyId
+        };
+    }
+
+    /// <inheritdoc />
+    public EncryptedPayload EncryptDeterministic(ReadOnlySpan<byte> plaintext, string? aad = null)
+    {
+        var key = _keys[_currentKeyId].Key;
+        var aadBytes = aad is null ? [] : Encoding.UTF8.GetBytes(aad);
+
+        // Nonce 由 HMAC(key, AAD ‖ 明文) 派生：
+        //   * 确定性 —— 同明文同 AAD 必得同一 Nonce，从而同密文，可等值查询
+        //   * 不会跨明文复用 —— 不同明文得到不同 Nonce（GCM 的致命要求）
+        // 取前 12 字节（AES-GCM 标准 Nonce 长度）。
+        var macInput = new byte[aadBytes.Length + plaintext.Length];
+        aadBytes.CopyTo(macInput, 0);
+        plaintext.CopyTo(macInput.AsSpan(aadBytes.Length));
+
+        using var hmac = new HMACSHA256(key);
+        var derived = hmac.ComputeHash(macInput);
+        var nonce = derived.AsSpan(0, 12).ToArray();
+
+        var cipher = new byte[plaintext.Length];
+        var tag = new byte[16];
+
+        using var aes = new AesGcm(key, 16);
+        aes.Encrypt(nonce, plaintext, cipher, tag, aadBytes);
+
+        return new EncryptedPayload
+        {
+            CipherText = Convert.ToBase64String(cipher),
+            Nonce = Convert.ToBase64String(nonce),
+            AuthTag = Convert.ToBase64String(tag),
+            Algorithm = AlgorithmAesGcmDeterministic,
             KeyId = _currentKeyId
         };
     }
@@ -224,7 +285,7 @@ public sealed class CryptoService : ICryptoService
                 $"找不到密钥 {payload.KeyId}。数据可能由已吊销密钥加密，需走密钥恢复流程。");
         }
 
-        if (payload.Algorithm != "AES-256-GCM")
+        if (!IsSupportedAlgorithm(payload.Algorithm))
         {
             throw new CryptographicException($"不支持的算法：{payload.Algorithm}");
         }

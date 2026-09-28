@@ -7,6 +7,7 @@
 
 using BankingAgent.Base.Agents;
 using BankingAgent.Base.Data;
+using BankingAgent.Base.Data.Encryption;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.Base.Security.Compliance;
 using BankingAgent.PluginSdk;
@@ -49,18 +50,50 @@ public sealed class TransferPluginEntryPoint : IPluginEntryPoint
     }
 }
 
-/// <summary>转账领域实体。演示插件如何拥有自己的数据分区。</summary>
+/// <summary>
+/// 转账领域实体。演示插件如何拥有自己的数据分区。
+///
+/// 字段级加密原则（见 docs/09-uml/04-data-model.md §7.4）：
+/// L3 敏感字段落盘必须加密。是否可用 <c>Searchable = true</c> 取决于
+/// 该列是否需要等值查询或唯一索引 —— 确定性加密会泄露"两值是否相等"，
+/// 因此只对低价值字段开启。
+/// </summary>
 public class TransferRecord : BaseEntity
 {
+    /// <summary>
+    /// 发起客户号（L3）。
+    /// Searchable：列参与 (UserId, CreatedAt) 复合索引与按用户查询，
+    /// 必须是确定性密文，否则索引失效。
+    /// </summary>
+    [Encrypted(Searchable = true)]
     public required string UserId { get; set; }
+
+    /// <summary>付款账号（L3）。无等值查询，使用随机加密（最强）。</summary>
+    [Encrypted]
     public required string FromAccountNo { get; set; }
+
+    /// <summary>收款账号（L3）。无等值查询，使用随机加密。</summary>
+    [Encrypted]
     public required string ToAccountNo { get; set; }
+
     public decimal Amount { get; set; }
     public string Currency { get; set; } = "CNY";
     public string Status { get; set; } = "Pending";
     public string? TransactionNo { get; set; }
+
+    /// <summary>
+    /// 幂等键（L3）。
+    /// Searchable 是**必须**的：落库前要用它做等值查询判断是否重复提交
+    /// （见 TransferAgent 的 FirstOrDefaultAsync），且该列有唯一索引。
+    /// 若用随机加密，重复提交将查不到已有记录 —— 幂等保护直接失效。
+    /// </summary>
+    [Encrypted(Searchable = true)]
     public string? IdempotencyKey { get; set; }
+
+    /// <summary>用户输入的自然语言备注（含个人信息的风险，L3）。随机加密。</summary>
+    [Encrypted]
     public string? Remark { get; set; }
+
     public bool HumanApproved { get; set; }
 }
 

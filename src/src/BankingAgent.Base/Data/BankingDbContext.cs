@@ -145,8 +145,15 @@ public class BankingDbContext : DbContext
     {
         if (_crypto is null) return;
 
-        var converter = new BankingAgent.Base.Data.Encryption.FieldCipher(_crypto)
+        // 两种转换器：随机（默认，最安全）与确定性（可等值查询）。
+        // 必须按字段的 Searchable 分别装配 —— 用同一个随机转换器去加密
+        // 参与等值查询的列，会让该查询永远匹配不到，且不报任何错。
+        var randomized = new BankingAgent.Base.Data.Encryption.FieldCipher(_crypto)
             .CreateConverter();
+        var deterministic = new BankingAgent.Base.Data.Encryption.FieldCipher(_crypto)
+        {
+            Searchable = true
+        }.CreateConverter();
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {
@@ -156,14 +163,17 @@ public class BankingDbContext : DbContext
 
                 // EF Core 不会因为属性上贴了自定义特性就自动生成注解，
                 // 必须自己判断并把注解写进模型（下面的 SetAnnotation）。
-                var marked = property.PropertyInfo?
-                    .GetCustomAttributes(typeof(BankingAgent.Base.Data.Encryption.EncryptedAttribute), true)
-                    .Length > 0;
-                if (!marked) continue;
+                var attribute = property.PropertyInfo?
+                    .GetCustomAttributes(
+                        typeof(BankingAgent.Base.Data.Encryption.EncryptedAttribute), true)
+                    .OfType<BankingAgent.Base.Data.Encryption.EncryptedAttribute>()
+                    .FirstOrDefault();
+                if (attribute is null) continue;
 
                 // 注解本身也有用：EncryptedFieldLogGuard 与迁移审阅都依赖它识别敏感列
                 property.SetAnnotation(EncryptedAnnotation, true);
-                property.SetValueConverter(converter);
+                property.SetAnnotation(EncryptedSearchableAnnotation, attribute.Searchable);
+                property.SetValueConverter(attribute.Searchable ? deterministic : randomized);
             }
         }
     }
@@ -173,6 +183,9 @@ public class BankingDbContext : DbContext
     /// 公开为常量，避免各处再写裸字符串 "Encrypted" 造成不一致。
     /// </summary>
     public const string EncryptedAnnotation = "BankingAgent:Encrypted";
+
+    /// <summary>该加密列是否使用确定性加密（可等值查询）。</summary>
+    public const string EncryptedSearchableAnnotation = "BankingAgent:EncryptedSearchable";
 
     /// <inheritdoc />
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

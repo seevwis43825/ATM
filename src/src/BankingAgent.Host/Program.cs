@@ -144,12 +144,51 @@ app.Use(async (ctx, next) =>
     });
 });
 
-app.MapGet("/health", () => Results.Ok(new
+// ===== 健康检查 =====
+// 真实探活：不再无条件返回 "healthy"。
+// 原实现无论数据库是否可用都返回 200 + healthy，K8s 就绪探针与运维告警
+// 会被彻底欺骗 —— 一个"永远绿灯"的探针等于没有探针。
+// 现在真正执行 SELECT 1 并检查迁移状态；不健康返回 503，让编排系统能摘流量。
+app.MapGet("/health", async (DatabaseInitializer initializer, CancellationToken ct) =>
 {
-    status = "healthy",
-    plugins = registry.LoadedPlugins.Count,
-    timestamp = DateTimeOffset.UtcNow
-}));
+    var db = await initializer.CheckHealthAsync(ct);
+
+    var payload = new
+    {
+        status = db.IsHealthy ? "healthy" : "unhealthy",
+        plugins = registry.LoadedPlugins.Count,
+        database = new
+        {
+            healthy = db.IsHealthy,
+            provider = db.Provider,
+            database = db.DatabaseName,
+            latencyMs = db.LatencyMs,
+            appliedMigrations = db.AppliedMigrationCount,
+            pendingMigrations = db.PendingMigrations,
+            error = db.Error
+        },
+        timestamp = DateTimeOffset.UtcNow
+    };
+
+    return db.IsHealthy
+        ? Results.Ok(payload)
+        : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
+
+// 就绪探针：只回答"能否开始接流量"，不暴露数据库细节
+app.MapGet("/health/ready", async (DatabaseInitializer initializer, CancellationToken ct) =>
+{
+    var db = await initializer.CheckHealthAsync(ct);
+    return db.IsHealthy
+        ? Results.Ok(new { ready = true })
+        : Results.Json(new { ready = false, reason = db.Error ?? "database unavailable" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+});
+
+// 存活探针：进程活着即返回 200，不查数据库。
+// 与就绪探针分开是有意的：数据库短暂不可用不应该导致容器被反复重启，
+// 只应被摘掉流量。这是 K8s 里 liveness/readiness 的经典区别。
+app.MapGet("/health/live", () => Results.Ok(new { alive = true, timestamp = DateTimeOffset.UtcNow }));
 
 // ===== 认证端点（演示用；生产应接统一身份认证）=====
 app.MapPost("/api/auth/token", (TokenRequest req, ITokenService tokenService) =>
