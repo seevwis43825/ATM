@@ -32,9 +32,22 @@ jobs:
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
-          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
-          dotnet-version: 9.0.x
+          # 必须同时装两个 SDK：
+          #   * 9.0.x —— 编译：.slnx 解决方案格式只有 SDK 9.0.200+ 才支持；
+          #   * 8.0.x —— 运行：所有项目 TargetFramework 都是 net8.0，
+          #     dotnet test / dotnet run / dotnet ef 都需要 .NET 8 运行时。
+          #     dotnet-ef 工具锁定 8.0.10 且 rollForward=false，缺 8 运行时时
+          #     会直接启动失败（表现为 exit code 129，且没有任何编译报错）。
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: 环境诊断（SDK / 运行时）
+        run: |
+          # 把环境信息输出到 annotation（无需登录即可在 Actions 摘要看到），
+          # 排查 "net8.0 项目 + 只有 SDK 9 镜像" 这类"能编译、一运行就挂"的问题时，
+          # 一眼就能确认 .NET 8 运行时是否真的存在。
+          echo "::notice::SDK=$(dotnet --version) | runtimes=$(dotnet --list-runtimes | tr '\n' ' ')"
 
       - name: 还原依赖
         run: dotnet restore src/BankingAgent.slnx
@@ -110,9 +123,10 @@ jobs:
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
-          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
-          dotnet-version: 9.0.x
+          # 同 build 作业：9.0.x 用于编译，8.0.x 提供运行 net8.0 测试宿主所需的运行时
+          dotnet-version: |
+            8.0.x
+            9.0.x
 
       - name: 运行单元测试
         run: |
@@ -156,9 +170,10 @@ jobs:
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
-          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
-          dotnet-version: 9.0.x
+          # 同 build 作业：9.0.x 用于编译，8.0.x 提供运行 net8.0 目标所需的运行时
+          dotnet-version: |
+            8.0.x
+            9.0.x
 
       - name: 格式检查（dotnet format 验证）
         run: |
@@ -200,9 +215,11 @@ jobs:
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
-          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
-          dotnet-version: 9.0.x
+          # 本作业最依赖 8.0.x：MockBank / 宿主 / E2E / 压测都是 net8.0 程序，
+          # 只有 SDK 9 的镜像里没有 .NET 8 运行时，会全部启动失败
+          dotnet-version: |
+            8.0.x
+            9.0.x
 
       - name: 编译
         run: dotnet build src/BankingAgent.slnx -c Release
