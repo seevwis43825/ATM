@@ -2,29 +2,59 @@
 # 改这些路径会自动通知对应负责人，PR 合并前必须拿到 owner 批准。
 #
 # 角色定义见 docs/07-team/01-team-roles.md
+# 分工与插件对照见 docs/07-team/04-分工与插件对照表.md
 # 分册见 docs/07-team/by-role/
+#
+# ⚠️⚠️ 上线前必读 ⚠️⚠️
+# 下面所有 @architect / @backend / @ai / @platform / @compliance 都是**角色占位符**，
+# 不是真实 GitHub 用户名。只要文件里存在无法解析的 owner，GitHub 会**静默忽略整个
+# CODEOWNERS 文件** —— 表现为"PR 没有任何 reviewer 被自动请求"，且不给任何报错。
+#
+# 必做：把 5 个占位符全局替换成真实 GitHub 用户名，例如
+#   @architect  -> @zhangsan
+#   @backend    -> @lisi
+#   @ai         -> @wangwu
+#   @platform   -> @zhaoliu
+#   @compliance -> @sunqi
+# 替换后删掉本段注释，并在一个测试 PR 上确认 reviewer 被自动添加。
+#
+# 路径写法说明：CODEOWNERS 的路径**相对仓库根**，且 `/` 开头表示锚定根目录。
+# 本仓库的代码位于 `src/`，框架层又在 `src/src/` 下，务必不要漏掉层级。
+
+# ===== 插件契约（全队宪法）：改这里要 2 人同意 =====
+/src/src/BankingAgent.Plugin.Sdk/        @architect @backend
 
 # ===== 框架层：影响所有插件，必须架构师批准 =====
-/src/src/BankingAgent.Base/            @architect
-/src/src/BankingAgent.Plugin.Sdk/      @architect
-/src/src/BankingAgent.Host/            @architect
+/src/src/BankingAgent.Base/              @architect
+/src/src/BankingAgent.Host/              @architect
 
-# ===== 业务插件：业务开发主责 =====
+# ===== 安全合规：一票否决权（放在框架层规则之后，更具体因而优先）=====
+/src/src/BankingAgent.Base/Security/     @compliance @architect
+/src/src/BankingAgent.Base/Plugins/      @compliance @architect
+/src/src/BankingAgent.Base/Cryptography/ @compliance @architect
+/src/src/BankingAgent.Base/Data/Encryption/ @compliance @architect
+
+# ===== 业务插件：各自负责人 =====
 /src/plugins/BankingAgent.Plugin.Transfer/        @backend
-/src/plugins/BankingAgent.Plugin.BillAnalysis/    @backend
+/src/plugins/BankingAgent.Plugin.BillAnalysis/    @ai
 /src/plugins/BankingAgent.Plugin.CardManagement/  @backend
+/src/plugins/BankingAgent.Plugin.Wealth/          @backend
 
-# ===== 模拟银行：AI 数据 + 业务共同维护 =====
+# ===== 模拟银行：业务 + AI 共同维护 =====
 /src/mock-bank/                          @backend @ai
 
-# ===== 安全合规：一票否决权 =====
-/src/src/BankingAgent.Base/Security/    @compliance @architect
-/src/src/BankingAgent.Base/Plugins/     @compliance @architect
+# ===== 插件开发辅助工具：改这里会影响所有插件作者 =====
+/src/templates/                          @architect
+/src/PluginValidator/                    @architect @platform
 
-# ===== 测试与 CI：架构师 + 平台 =====
+# ===== 测试与 CI =====
 /src/UnitTests/                          @architect @platform
 /src/E2ETest/                            @architect @platform
 /src/StressTest/                         @architect @platform
+/src/LoadTest/                           @platform
+/src/CryptoSelfTest/                     @compliance
+/src/DbProbe/                            @platform
+/src/BankingAgent.slnx                   @architect
 /.github/                                @architect @platform
 
 # ===== 文档 =====
@@ -37,7 +67,17 @@
 /docs/06-product/                        @ai
 /docs/07-team/                           @architect
 /docs/08-frontend/                       @ai @backend
+/docs/09-uml/                            @architect
+/docs/10-security/                       @compliance
+/docs/11-performance/                    @platform
+/docs/12-multi-agent/                    @architect
+/docs/13-database/                       @platform @architect
 /docs/plugin/                            @architect @backend
+/docs/01-tech/                           @architect
+/docs/02-ppt/                            @ai
+/docs/03-deploy/                         @backend
+/docs/04-security/                       @compliance
+/docs/05-video/                          @ai
 
-# ===== 既有 TypeScript 项目 =====
+# ===== 早期 Node/TypeScript 版（历史参考，非交付主线）=====
 /apps/                                   @backend
