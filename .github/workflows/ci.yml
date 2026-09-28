@@ -186,6 +186,14 @@ jobs:
     name: 集成测试（端到端 + 并发压测）
     runs-on: ubuntu-latest
     needs: build
+    env:
+      # 必须以 Development 运行：
+      #   1) 故障注入（X-Mock-Scenario）默认只在 Development 生效 ——
+      #      压测的"故障注入返回 503"断言依赖它；
+      #   2) 缺失密钥时 Development 会走派生密钥兜底，CI 无需注入真实密钥。
+      # 这也顺带验证了"非开发环境默认关闭故障注入"这条安全边界没有被误开。
+      ASPNETCORE_ENVIRONMENT: Development
+      DOTNET_ENVIRONMENT: Development
     steps:
       - uses: actions/checkout@v4
 

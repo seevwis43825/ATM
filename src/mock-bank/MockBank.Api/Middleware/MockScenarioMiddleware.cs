@@ -9,14 +9,23 @@ namespace MockBank.Api.Middleware;
 /// <summary>
 /// 模拟故障注入中间件。仅在请求头 <c>X-Mock-Scenario</c> 命中已登记场景、
 /// 且请求为对转账或理财认购端点的 POST 时生效。
+///
+/// 安全边界：本中间件**默认只在 Development 环境启用**。
+/// 故障注入等于"凭一个请求头就能让转账全部失败或强制延迟 3 秒"，
+/// 在被他人访问到的环境里就是一个可被滥用的可用性攻击面。
+/// 非开发环境必须显式设置 <c>MockBank:EnableFaultInjection=true</c> 才开启。
 /// </summary>
 /// <param name="next">下一个中间件。</param>
 /// <param name="logger">日志记录器。</param>
 /// <param name="businessLog">业务日志写入器。</param>
+/// <param name="environment">宿主环境，用于判断是否允许注入。</param>
+/// <param name="configuration">配置，用于显式放行。</param>
 public sealed class MockScenarioMiddleware(
     RequestDelegate next,
     ILogger<MockScenarioMiddleware> logger,
-    BusinessLogWriter businessLog)
+    BusinessLogWriter businessLog,
+    IHostEnvironment environment,
+    IConfiguration configuration)
 {
     /// <summary>故障注入请求头名称。</summary>
     public const string HeaderName = "X-Mock-Scenario";
@@ -27,6 +36,15 @@ public sealed class MockScenarioMiddleware(
 
     /// <summary>timeout 场景模拟的下游响应时延（毫秒）。</summary>
     public const int TimeoutDelayMilliseconds = 3000;
+
+    /// <summary>
+    /// 是否允许故障注入。
+    /// 默认仅 Development 开启；其他环境需要显式配置放行，
+    /// 避免"演示用的开关"被无意带到公网环境。
+    /// </summary>
+    private bool FaultInjectionAllowed =>
+        environment.IsDevelopment()
+        || configuration.GetValue("MockBank:EnableFaultInjection", false);
 
     private const string TransferPath = "/api/corebank/v1/transfers";
     private const string SubscribePath = "/api/corebank/v1/wealth/subscribe";
@@ -45,6 +63,17 @@ public sealed class MockScenarioMiddleware(
             || string.Equals(scenario, "success", StringComparison.OrdinalIgnoreCase)
             || !IsControlledRequest(context.Request))
         {
+            await next(context).ConfigureAwait(false);
+            return;
+        }
+
+        // 非开发环境且未显式放行：忽略注入请求头，按正常流程处理。
+        // 选择"忽略"而不是"报错"，是为了让调用方无需感知环境差异。
+        if (!FaultInjectionAllowed)
+        {
+            logger.LogWarning(
+                "拒绝故障注入请求（当前环境 {Environment} 未启用）：scenario={Scenario} path={Path}",
+                environment.EnvironmentName, scenario, context.Request.Path);
             await next(context).ConfigureAwait(false);
             return;
         }
