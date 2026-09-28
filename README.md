@@ -133,8 +133,19 @@ curl http://localhost:5200/health
 curl http://localhost:5243/health        # 含真实数据库健康检查
 ```
 
-> **启动务必带 `-c Release`**。宿主的插件复制是“配置相关 + Exists 条件”的：
-> 用 Release 编译却用默认 Debug 启动，`plugins/` 输出目录会是空的 —— **不报错，只是什么插件都没加载**。
+> **插件目录为什么会"不完整"（两种成因，构建都不报错）**
+>
+> 1. **配置不一致**：插件复制是"配置相关"的 —— 用 Release 编译却用默认 Debug 启动，
+>    `plugins/` 会是空的。**启动务必带 `-c Release`**。
+> 2. **构建顺序竞态**：复制目标是 `AfterTargets="Build"` 且带 `Exists` 条件，
+>    而插件与宿主之间原先没有任何顺序依赖 —— 解决方案并行构建时宿主可能先完成、
+>    此时插件 DLL 还没生成，复制被**静默跳过**，于是"缺了某个插件"，
+>    直到启动才抛 `插件 banking.card 依赖的 banking.transfer 未找到`。
+>    （已在 `BankingAgent.Host.csproj` 用 `ProjectReference ReferenceOutputAssembly="false"`
+>    声明顺序依赖修掉；CI 另有一道"插件产物完整性"校验。）
+>
+> 两种情况的共同点：**构建期不报错，只在启动时暴露**。排查时先看
+> `bin/<配置>/net8.0/plugins/` 下 4 个 DLL 是否都在。
 
 ### 跑测试
 

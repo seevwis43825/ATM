@@ -38,6 +38,32 @@
     <PluginArtifact Include="..\..\plugins\BankingAgent.Plugin.Wealth\bin\$(Configuration)\net8.0\BankingAgent.Plugin.Wealth.dll" />
   </ItemGroup>
 
+  <!--
+    构建顺序依赖 —— 必须显式声明，否则宿主的插件目录会"随机"不完整。
+
+    原因：下面的 CopyPluginsToOutput 带 Exists 条件（宿主单独构建时插件 DLL
+    本就可以不存在，属于合法场景，不能改成硬报错），而上面仅凭 PluginArtifact
+    的文件路径**不会**让 MSBuild 建立任何顺序关系。解决方案级并行构建时，
+    宿主可能先构建完成 —— 此时插件 DLL 还没生成，复制被静默跳过，
+    plugins 目录于是缺文件；启动时表现为
+      「插件 banking.card 依赖的 banking.transfer 未找到」（本地因构建顺序
+    恰好合适而难以复现，属于典型的竞态）。
+
+    ReferenceOutputAssembly=false：只声明"插件要先构建"，不建立任何编译期
+    引用 —— 宿主仍然不认识插件的任何类型，运行时依旧是扫描 plugins 目录
+    动态加载，插件的独立编译与独立部署能力不受影响。
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\plugins\BankingAgent.Plugin.Transfer\BankingAgent.Plugin.Transfer.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\..\plugins\BankingAgent.Plugin.BillAnalysis\BankingAgent.Plugin.BillAnalysis.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\..\plugins\BankingAgent.Plugin.CardManagement\BankingAgent.Plugin.CardManagement.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+    <ProjectReference Include="..\..\plugins\BankingAgent.Plugin.Wealth\BankingAgent.Plugin.Wealth.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
+  </ItemGroup>
+
   <Target Name="CopyPluginsToOutput" AfterTargets="Build">
     <Copy SourceFiles="@(PluginArtifact)"
           DestinationFolder="$(OutDir)plugins"

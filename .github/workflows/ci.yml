@@ -32,21 +32,21 @@ jobs:
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          # 必须同时装两个 SDK：
-          #   * 9.0.x —— 编译：.slnx 解决方案格式只有 SDK 9.0.200+ 才支持；
+          # 需要两个 SDK：
+          #   * 9.0.x —— 编译：.slnx 解决方案格式只被 SDK 9.0.200+ 支持；
           #   * 8.0.x —— 运行：所有项目 TargetFramework 都是 net8.0，
-          #     dotnet test / dotnet run / dotnet ef 都需要 .NET 8 运行时。
-          #     dotnet-ef 工具锁定 8.0.10 且 rollForward=false，缺 8 运行时时
-          #     会直接启动失败（表现为 exit code 129，且没有任何编译报错）。
+          #     dotnet test / dotnet run / dotnet ef 都要能解析到 .NET 8 运行时。
+          #     GitHub 镜像通常已预装（见下方「环境诊断」的输出），
+          #     但显式安装更稳妥，不依赖镜像内容。
           dotnet-version: |
             8.0.x
             9.0.x
 
       - name: 环境诊断（SDK / 运行时）
         run: |
-          # 把环境信息输出到 annotation（无需登录即可在 Actions 摘要看到），
-          # 排查 "net8.0 项目 + 只有 SDK 9 镜像" 这类"能编译、一运行就挂"的问题时，
-          # 一眼就能确认 .NET 8 运行时是否真的存在。
+          # 输出到 annotation（无需登录即可在 Actions 摘要看到）。
+          # 排查"能编译、一运行就挂"这类问题时，一眼就能确认
+          # 实际使用的 SDK 版本与可用运行时列表。
           echo "::notice::SDK=$(dotnet --version) | runtimes=$(dotnet --list-runtimes | tr '\n' ' ')"
 
       - name: 还原依赖
@@ -75,10 +75,17 @@ jobs:
       - name: 校验迁移与模型一致性
         working-directory: src
         run: |
+          # 必须显式指定 --configuration Release。
+          # --no-build 会按「配置」定位输出目录，不指定则默认 Debug，
+          # 而本作业只构建了 Release —— 结果是
+          #   The specified deps.json [.../bin/Debug/net8.0/BankingAgent.Host.deps.json] does not exist
+          # 在 CI 上表现为 Process completed with exit code 129，且没有任何编译诊断，
+          # 极易被误判为运行时/环境缺失。
           dotnet ef migrations has-pending-model-changes \
             --project src/BankingAgent.Base/BankingAgent.Base.csproj \
             --startup-project src/BankingAgent.Host/BankingAgent.Host.csproj \
             --context BankingDbContext \
+            --configuration Release \
             --no-build
           echo "迁移与模型一致"
 
@@ -223,6 +230,25 @@ jobs:
 
       - name: 编译
         run: dotnet build src/BankingAgent.slnx -c Release
+
+      - name: 校验插件产物完整
+        run: |
+          # 宿主的插件复制目标带 Exists 条件（宿主被单独构建时插件 DLL 允许不存在，
+          # 属于合法场景），一旦构建顺序异常会静默跳过复制，最终表现为启动时抛出
+          # 「插件 banking.card 依赖的 banking.transfer 未找到」这类难以定位的运行期错误。
+          # 这里显式校验，让问题在启动之前就带着原因暴露。
+          DIR=src/src/BankingAgent.Host/bin/Release/net8.0/plugins
+          MISSING=0
+          for p in BankingAgent.Plugin.Transfer BankingAgent.Plugin.BillAnalysis \
+                   BankingAgent.Plugin.CardManagement BankingAgent.Plugin.Wealth; do
+            if [ ! -f "$DIR/$p.dll" ]; then
+              echo "::error::缺少插件产物 $p.dll（目录：$DIR）"
+              MISSING=1
+            fi
+          done
+          echo "--- plugins 目录内容 ---"
+          ls -1 "$DIR" || true
+          exit $MISSING
 
       - name: 启动 Mock Bank
         working-directory: src/mock-bank/MockBank.Api
