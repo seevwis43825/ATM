@@ -88,7 +88,7 @@ public sealed class EncryptedFieldLogGuard(
             if (entry.State is not (EntityState.Added or EntityState.Modified)) continue;
 
             var fields = entry.Properties
-                .Where(p => p.Metadata.FindAnnotation("Encrypted") is not null)
+                .Where(p => p.Metadata.FindAnnotation(BankingDbContext.EncryptedAnnotation) is not null)
                 .Select(p => p.Metadata.Name)
                 .ToList();
 

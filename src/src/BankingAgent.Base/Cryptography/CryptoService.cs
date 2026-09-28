@@ -349,8 +349,14 @@ public sealed class CryptoService : ICryptoService
         }
 
         // 用本地 ML-KEM 私钥解封对端公钥封装出的密文
+        // 私钥只会由 GenerateKeyExchange() 写入；未先调用它属于调用方错误，
+        // 这里显式报错，而不是把 null 传进 BouncyCastle 触发难懂的 NullReferenceException。
+        var secretKey = _pqcSecretKey
+            ?? throw new InvalidOperationException(
+                "尚未生成本地密钥对，无法完成密钥交换。请先调用 GenerateKeyExchange()。");
+
         var recovered = MlKem.Decapsulate(
-            peer.SharedSecret, _pqcSecretKey, _options.KemParameterSet);
+            peer.SharedSecret, secretKey, _options.KemParameterSet);
 
         return Kdf(Combine(recovered), "pqc-kem");
     }

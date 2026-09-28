@@ -14,18 +14,51 @@ var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
 var jsonOpts = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 int passed = 0, failed = 0;
 
+// sessionId 同时充当转账幂等键，且会落库持久化。
+// 如果用固定的 "e2e-small"，第二次运行就会命中幂等拦截，
+// 转账被跳过 → 余额断言、事件断言连锁失败。
+// 因此每次运行生成唯一前缀；而"幂等性"场景改为复用本次运行的同一个 ID，
+// 语义与真实客户端重试完全一致。
+var runId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+string Sess(string name) => $"e2e-{runId}-{name}";
+
 // 认证令牌：所有受保护端点必须携带 JWT
 string token = "";
 
 async Task<string> GetTokenAsync(string userId = "u_demo01", string password = "demo1234")
 {
-    var content = new StringContent(
-        JsonSerializer.Serialize(new { userId, password }, jsonOpts),
-        Encoding.UTF8, "application/json");
-    var resp = await http.PostAsync($"{hostBase}/api/auth/token", content);
-    if (!resp.IsSuccessStatusCode) return "";
-    using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-    return doc.RootElement.GetProperty("token").GetString() ?? "";
+    // /api/auth/token 有令牌桶限流（默认 5 次/分钟），而本套件需要为多个
+    // 角色各取一次令牌，连续运行时很容易撞上限流。
+    // 限流本身是必须保留的安全能力，所以这里做退避重试而不是放宽阈值。
+    for (var attempt = 0; attempt < 8; attempt++)
+    {
+        var content = new StringContent(
+            JsonSerializer.Serialize(new { userId, password }, jsonOpts),
+            Encoding.UTF8, "application/json");
+        var resp = await http.PostAsync($"{hostBase}/api/auth/token", content);
+
+        if (resp.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            // 必须尊重 Retry-After：令牌桶按 AuthPermitsPerMinute/BurstCapacity 匀速补充，
+            // 典型值是 12 秒一个令牌。早于该时间重试只会再拿到 429。
+            var wait = resp.Headers.RetryAfter?.Delta
+                       ?? (resp.Headers.RetryAfter?.Date - DateTimeOffset.UtcNow)
+                       ?? TimeSpan.FromSeconds(12);
+            if (wait < TimeSpan.FromSeconds(1)) wait = TimeSpan.FromSeconds(1);
+            if (wait > TimeSpan.FromSeconds(60)) wait = TimeSpan.FromSeconds(60);
+
+            Console.WriteLine($"  [限流] 取令牌被拒（429），{wait.TotalSeconds:F0}s 后重试…");
+            await Task.Delay(wait);
+            continue;
+        }
+
+        if (!resp.IsSuccessStatusCode) return "";
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("token").GetString() ?? "";
+    }
+
+    Console.WriteLine("  [限流] 取令牌重试次数耗尽，仍被限流");
+    return "";
 }
 
 void Section(string title)
@@ -144,7 +177,10 @@ Section("场景 0B: JWT 鉴权与越权防护");
     {
         var resp = await PostWithTokenAsync("/api/chat",
             new { message = "x", userId = "u_demo01" }, null);
-        Check("无令牌访问被拒（401）", (int)resp.StatusCode == 401, $"HTTP {(int)resp.StatusCode}");
+        // 断言的是「未认证请求必须被拒绝」，不是「必须返回 401」。
+        // 中间件顺序是 限流 → 认证，因此高频连跑时 IP 维度限流会先返回 429。
+        // 两者都是合法的拒绝，把 429 算作失败会造成假红。
+        Check("无令牌访问被拒（401/429）", (int)resp.StatusCode is 401 or 429, $"HTTP {(int)resp.StatusCode}");
     }
     catch (Exception ex) { Check("无令牌访问被拒", false, ex.Message); }
 
@@ -228,7 +264,10 @@ var balanceBefore = await http.GetStringAsync($"{bankBase}/api/corebank/v1/accou
 var beforeBal = decimal.Parse(System.Text.RegularExpressions.Regex.Match(balanceBefore, @"""balance"":([\d.]+)").Groups[1].Value);
 Console.WriteLine($"  转账前余额: {beforeBal:N2}");
 
-var r3 = await PostChat(TransferCtor + "6222020200000003\u8f6c\u8d26500\u5143", "u_demo01", "e2e-small",
+// 小额转账的 sessionId 要留给场景 8 复用（验证幂等）
+var smallSession = Sess("small");
+
+var r3 = await PostChat(TransferCtor + "6222020200000003\u8f6c\u8d26500\u5143", "u_demo01", smallSession,
     new Dictionary<string, object?> { ["to_account"] = "6222020200000003", ["amount"] = 800 });
 Console.WriteLine("  回复: " + S(r3, "content"));
 Check("执行成功", B(r3, "success"), S(r3, "errorMessage"));
@@ -244,7 +283,9 @@ Check("余额真实扣减 800 元", Math.Abs(beforeBal - afterBal - 800m) < 0.01
 // ===== 场景 4 =====
 Section("场景 4: 大额转账 30000 元 —— 超阈值，应触发人工回环且不扣款");
 var balBeforeLarge = afterBal;
-var r4 = await PostChat("\u5927\u989d\u8f6c\u8d26", "u_demo01", "e2e-large",
+// 场景 5 的确认必须带同一个 sessionId，才能续上这笔待审批转账
+var largeSession = Sess("large");
+var r4 = await PostChat("\u5927\u989d\u8f6c\u8d26", "u_demo01", largeSession,
     new Dictionary<string, object?> { ["to_account"] = "6222020200000003", ["amount"] = 30000 });
 Console.WriteLine("  回复: " + S(r4, "content"));
 Check("要求人工确认", B(r4, "requiresHumanInLoop"));
@@ -258,7 +299,7 @@ Check("等待确认期间余额未变", Math.Abs(balBeforeLarge - balDuringPendi
 
 // ===== 场景 5 =====
 Section("场景 5: 人工确认后执行 —— 验证 HITL 闭环");
-var r5 = await PostConfirm("u_demo01", "e2e-large", 30000, new Dictionary<string, object?>
+var r5 = await PostConfirm("u_demo01", largeSession, 30000, new Dictionary<string, object?>
 {
     ["to_account"] = "6222020200000003",
     ["amount"] = 30000,
@@ -277,7 +318,7 @@ Check("确认后扣款 30000 元", Math.Abs(balDuringPending - balAfterLarge - 3
 
 // ===== 场景 6 =====
 Section("场景 6: 合规拦截 —— 转给自己应被拒绝");
-var r6 = await PostChat("\u8f6c\u8d26\u7ed9\u81ea\u5df1", "u_demo01", "e2e-self",
+var r6 = await PostChat("\u8f6c\u8d26\u7ed9\u81ea\u5df1", "u_demo01", Sess("self"),
     new Dictionary<string, object?> { ["to_account"] = "6222020200000001", ["amount"] = 500 });
 Console.WriteLine("  错误: " + S(r6, "errorCode") + " / " + S(r6, "errorMessage"));
 Check("被合规规则拒绝", S(r6, "errorCode") == "COMPLIANCE_REJECTED", S(r6, "errorCode"));
@@ -285,7 +326,7 @@ Check("无副作用", !B(r6, "sideEffectCommitted"));
 
 // ===== 场景 7 =====
 Section("场景 7: 反洗钱阈值 —— 80000 元应要求人工复核");
-var r7 = await PostChat("\u8f6c\u8d26 80000 \u5143", "u_demo01", "e2e-aml",
+var r7 = await PostChat("\u8f6c\u8d26 80000 \u5143", "u_demo01", Sess("aml"),
     new Dictionary<string, object?> { ["to_account"] = "6222020200000003", ["amount"] = 80000 });
 Console.WriteLine("  回复: " + S(r7, "content"));
 Check("要求人工复核", B(r7, "requiresHumanInLoop"));
@@ -296,7 +337,7 @@ Section("场景 8: 幂等性 —— 重复提交同一 sessionId 不应重复扣
 var balBeforeDup = decimal.Parse(System.Text.RegularExpressions.Regex.Match(
     await http.GetStringAsync($"{bankBase}/api/corebank/v1/accounts/6222020200000001/balance"),
     @"""balance"":([\d.]+)").Groups[1].Value);
-var r8 = await PostChat("\u91cd\u590d\u8f6c\u8d26", "u_demo01", "e2e-small",
+var r8 = await PostChat("\u91cd\u590d\u8f6c\u8d26", "u_demo01", smallSession,
     new Dictionary<string, object?> { ["to_account"] = "6222020200000003", ["amount"] = 800 });
 Console.WriteLine("  回复: " + S(r8, "content"));
 var balAfterDup = decimal.Parse(System.Text.RegularExpressions.Regex.Match(

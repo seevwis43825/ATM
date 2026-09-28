@@ -14,6 +14,19 @@
   </ItemGroup>
 
   <!--
+    迁移工具链：`dotnet ef migrations add` 要求「启动项目」引用 Design 包，
+    即使迁移本身是由 Base 里的 IDesignTimeDbContextFactory 生成的。
+    缺少它时错误只会提示 startup project 不对，很难定位到真正原因。
+    PrivateAssets=all：仅设计时使用，不进入运行时输出。
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.10">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!--
     示例插件：以「构建后复制」方式输出到 plugins 目录。
     真实项目中插件由各自团队独立发布，放入 plugins 目录即可被扫描加载，
     宿主无需重新编译。

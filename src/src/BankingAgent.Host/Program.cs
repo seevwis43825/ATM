@@ -32,7 +32,13 @@ builder.Services.AddSingleton<IPluginStartupHook, PluginLifecycleBridge>();
 builder.Services.AddSingleton<IPluginShutdownHook, PluginLifecycleBridge>();
 
 // ===== 2. 加载插件（在 Build 之前，把插件服务并入主容器）=====
+// 两阶段容器是插件化的硬性要求：插件必须在主容器 Build 之前把自己的服务
+// 注册进 builder.Services，否则插件的 Agent/工具无法进入主容器。
+// bootstrap 容器只用于取 ILoggerFactory 与 PluginSignatureVerifier，用完即弃。
+// ASP0000 针对的是"从应用代码长期持有第二份单例"，此处不适用，故显式抑制。
+#pragma warning disable ASP0000
 var bootstrap = builder.Services.BuildServiceProvider();
+#pragma warning restore ASP0000
 var loggerFactory = bootstrap.GetRequiredService<ILoggerFactory>();
 var bootLogger = loggerFactory.CreateLogger("Bootstrap");
 
@@ -496,21 +502,21 @@ app.Logger.LogInformation("AI Banking Agent 宿主就绪，插件数 {Count}", r
 await app.RunAsync();
 
 // ===== 辅助函数 =====
+// 注意：顶层语句文件里的本地函数不支持 XML 文档注释（会触发 CS1587），
+// 因此这里统一用普通注释。
 
-/// <summary>
-/// 返回 403。自定义鉴权中间件下 Results.Forbid() 需要 ASP.NET Core
-/// 鉴权方案配合，否则会抛 InvalidOperationException，因此显式构造响应。
-/// </summary>
+// 返回 403。自定义鉴权中间件下 Results.Forbid() 需要 ASP.NET Core
+// 鉴权方案配合，否则会抛 InvalidOperationException，因此显式构造响应。
 static IResult Forbidden(string message) => Results.Json(
     new { code = "FORBIDDEN", message },
     statusCode: StatusCodes.Status403Forbidden);
 
-/// <summary>免认证端点白名单。</summary>
+// 免认证端点白名单。
 static bool IsPublic(string path) =>
     path.StartsWith("/health", StringComparison.OrdinalIgnoreCase)
     || path.StartsWith("/api/auth/token", StringComparison.OrdinalIgnoreCase);
 
-/// <summary>角色字符串转枚举。</summary>
+// 角色字符串转枚举。
 static ActorRole ParseRole(string role) => role switch
 {
     JwtRoles.Admin => ActorRole.Admin,
@@ -520,7 +526,7 @@ static ActorRole ParseRole(string role) => role switch
     _ => ActorRole.User
 };
 
-/// <summary>极简意图识别。生产环境应替换为 LLM 分类器。</summary>
+// 极简意图识别。生产环境应替换为 LLM 分类器。
 static string DetectIntent(string message)
 {
     if (message.Contains("转账") || message.Contains("汇款")

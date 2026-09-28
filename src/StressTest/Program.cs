@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using BankingAgent.Base.Events;
 using BankingAgent.Base.Plugins;
+using BankingAgent.Base.Plugins.Security;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.PluginSdk;
 using Microsoft.Extensions.DependencyInjection;
@@ -286,6 +287,16 @@ try
             request.Headers.Add("Authorization", $"Bearer {token}");
             var resp = await http.SendAsync(request, ct);
             var text = await resp.Content.ReadAsStringAsync(ct);
+
+            // 限流是正常的安全行为，不是缺陷：并发压测时 429 属于预期结果之一。
+            // 但它没有常规响应体，直接 JsonDocument.Parse 会抛异常，
+            // 导致 30 个请求全部记为失败 —— 那是测试写法的问题，不是系统的问题。
+            if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                outcomes.Add("RATE_LIMITED|429");
+                return;
+            }
+
             using var d = JsonDocument.Parse(text);
             outcomes.Add($"{S(d.RootElement, "intent")}|{S(d.RootElement, "success")}");
         });
@@ -295,15 +306,28 @@ try
     Console.WriteLine($"  {n} 并发对话完成，耗时 {sw.ElapsedMilliseconds}ms");
     foreach (var (k, v) in groups) Console.WriteLine($"    {k} × {v}");
 
+    var rateLimited = groups.GetValueOrDefault("RATE_LIMITED|429", 0);
+    if (rateLimited > 0)
+    {
+        Console.WriteLine(
+            $"  提示：{rateLimited}/{n} 个请求被限流。做容量压测请先关闭限流再跑：");
+        Console.WriteLine(
+            "        $env:RateLimit__Enabled='false'  （然后重启宿主）");
+    }
+
     var cardCount = groups.GetValueOrDefault("card.list|True", 0);
     var billCount = groups.GetValueOrDefault("bill.summary|True", 0);
     var hitlCount = groups.GetValueOrDefault("transfer.execute|True", 0);
 
-    Check("卡查询全部成功", cardCount == n / 3, $"{cardCount}/{n / 3}");
-    Check("账单查询全部成功", billCount == n / 3, $"{billCount}/{n / 3}");
-    Check("大额转账全部走人工回环", hitlCount == n - 2 * (n / 3), $"{hitlCount}/{n - 2 * (n / 3)}");
-    Check("无意图串扰（结果种类 ≤ 3）", groups.Count <= 3, $"出现 {groups.Count} 种结果");
-    Check("无请求失败", outcomes.All(o => o.EndsWith("True")), "");
+    // 断言只看「未被限流的请求是否路由正确」，限流数量单独报告。
+    var routed = n - rateLimited;
+    Check("卡查询全部成功", cardCount == routed / 3, $"{cardCount}/{routed / 3}");
+    Check("账单查询全部成功", billCount == routed / 3, $"{billCount}/{routed / 3}");
+    Check("大额转账全部走人工回环", hitlCount == routed - 2 * (routed / 3),
+        $"{hitlCount}/{routed - 2 * (routed / 3)}");
+    Check("无意图串扰（结果种类 ≤ 4）", groups.Count <= 4, $"出现 {groups.Count} 种结果");
+    Check("无业务失败", outcomes.All(o => !o.EndsWith("False")), "");
+    Check("限流比例可接受（< 50%）", rateLimited < n / 2, $"被限流 {rateLimited}/{n}");
 }
 catch (Exception ex) { Check("并发对话测试", false, ex.Message); }
 
@@ -347,8 +371,20 @@ Section("测试 4: 事件总线并发（200 事件 × 2 订阅者）");
 Section("测试 5: 插件注册表并发读（100 并发）");
 {
     var sp = new ServiceCollection().BuildServiceProvider();
+    // 压测只关心注册表的并发读，签名校验用开发态选项（跳过校验），
+    // 校验逻辑本身由 PluginSignatureVerifier 的单元测试覆盖。
+    using var verifier = new PluginSignatureVerifier(
+        Microsoft.Extensions.Options.Options.Create(new PluginSignatureOptions
+        {
+            Environment = "Development",
+            RequireSignature = false,
+            AllowUnsignedInDevelopment = true
+        }),
+        NullLogger<PluginSignatureVerifier>.Instance);
+
     var registry = new PluginRegistry(sp, NullLogger<PluginRegistry>.Instance,
-        Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance);
+        Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance,
+        verifier);
 
     var sw = Stopwatch.StartNew();
     var errors = 0;

@@ -67,61 +67,11 @@ public static class BankingCoreServiceCollectionExtensions
         return services;
     }
 
-    /// <summary>注册数据库基础设施。支持 SQLite 与 PostgreSQL 双 Provider。</summary>
+    /// <summary>注册数据库基础设施（委托给 DatabaseServiceCollectionExtensions）。</summary>
     public static IServiceCollection AddBankingDatabase(
         this IServiceCollection services, IConfiguration configuration)
     {
-        var provider = configuration["Database:Provider"] ?? "Sqlite";
-        var connectionString = configuration["Database:ConnectionString"]
-            ?? "Data Source=bankingagent.db";
-
-        services.AddSingleton(new DatabaseSettings(provider, connectionString, configuration.GetValue("Database:AutoMigrate", true)));
-
-        services.AddDbContext<BankingDbContext>((sp, options) =>
-        {
-            var settings = sp.GetRequiredService<DatabaseSettings>();
-            if (settings.IsNpgsql)
-            {
-                // 生产环境启用 PostgreSQL 时需安装 Npgsql.EntityFrameworkCore.PostgreSQL
-                // 未安装时给出明确指引，而不是抛出难以理解的类型错误
-                throw new InvalidOperationException(
-                    "检测到 Database:Provider=Npgsql，但未安装 Npgsql provider。" +
-                    "请执行: dotnet add BankingAgent.Base package Npgsql.EntityFrameworkCore.PostgreSQL");
-            }
-
-            options.UseSqlite(settings.ConnectionString);
-        });
-
-        var settingsSnapshot = new DatabaseSettings(provider, connectionString,
-            configuration.GetValue("Database:AutoMigrate", true));
-        services.AddSingleton(settingsSnapshot);
-
-        // 手工构建 DbContextOptions 并注册为单例。
-        // 若使用 AddDbContext/AddDbContextFactory 扩展，EF 会额外注册一份 scoped 的
-        // DbContextOptions，导致单例工厂消费 scoped 服务而抛异常，故此处绕开扩展方法。
-        services.AddSingleton(sp =>
-        {
-            var optionsBuilder = new DbContextOptionsBuilder<BankingDbContext>();
-            if (settingsSnapshot.IsNpgsql)
-            {
-                throw new InvalidOperationException(
-                    "检测到 Database:Provider=Npgsql，但未安装 Npgsql provider。" +
-                    "请执行: dotnet add BankingAgent.Base package Npgsql.EntityFrameworkCore.PostgreSQL");
-            }
-            optionsBuilder.UseSqlite(settingsSnapshot.ConnectionString);
-            return optionsBuilder.Options;
-        });
-
-        services.AddScoped<BankingDbContext>();
-        services.AddSingleton<IDbContextFactory<BankingDbContext>>(sp =>
-            new SimpleDbContextFactory(sp, sp.GetRequiredService<DbContextOptions<BankingDbContext>>()));
-
-        services.AddScoped<UnitOfWork>();
-        services.AddScoped(sp => new DatabaseInitializer(
-            sp.GetRequiredService<BankingDbContext>(),
-            sp.GetRequiredService<ILogger<DatabaseInitializer>>(),
-            sp.GetRequiredService<DatabaseSettings>().AutoMigrate));
-        return services;
+        return services.AddBankingDatabaseCore(configuration);
     }
 
     /// <summary>注册安全合规基础设施。</summary>

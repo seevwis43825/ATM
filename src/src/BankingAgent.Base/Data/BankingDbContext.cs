@@ -7,6 +7,7 @@
 
 namespace BankingAgent.Base.Data;
 
+using System.Reflection;
 using System.Text.Json;
 using BankingAgent.PluginSdk;
 using BankingAgent.Base.Security;
@@ -47,6 +48,28 @@ public class BankingDbContext : DbContext
         _currentUser = currentUser;
         _clock = clock;
         _crypto = crypto;
+
+        // 模型缓存键必须把「哪些贡献器」与「是否启用字段加密」算进去。
+        // 详见 ModelCacheKey 的注释：否则 EF 会把第一个建好的模型缓存起来，
+        // 后续完全不同的配置会静默复用那个模型。
+        ModelCacheKey = BuildModelCacheKey();
+    }
+
+    /// <summary>
+    /// 本实例的模型缓存键。
+    /// EF Core 默认只按 DbContext 类型缓存模型，对本项目是错的：
+    /// 同一个 BankingDbContext 类型在不同场景下的模型并不相同 ——
+    /// 装了哪些插件（贡献器集合）、有没有启用字段加密，都会改变模型。
+    /// 若不参与缓存键，先建好的模型会被后续实例复用，
+    /// 表现为"插件表不见了"或"敏感字段没加密"，且不报任何错。
+    /// </summary>
+    private string ModelCacheKey { get; set; } = "unresolved";
+
+    private string BuildModelCacheKey()
+    {
+        var partitions = string.Join(",", _contributors.Keys.OrderBy(k => k, StringComparer.Ordinal));
+        var cryptoKey = _crypto is null ? "nocrypto" : $"crypto:{_crypto.CurrentKeyId}";
+        return $"{partitions}|{cryptoKey}";
     }
 
     /// <summary>
@@ -58,24 +81,57 @@ public class BankingDbContext : DbContext
         _contributors = PluginContributorRegistry.Resolve();
         _currentUser = CurrentUserAccessor.Static;
         _clock = DateTimeOffsetProvider.Static;
+        // 这条路径拿不到 ICryptoService（工厂已改为显式构造并传 crypto），
+        // 因此缓存键按"无加密"计算，与工厂路径天然区分开。
+        ModelCacheKey = BuildModelCacheKey();
     }
 
     /// <summary>已注册的数据分区名。</summary>
     public IReadOnlyCollection<string> Partitions => _contributors.Keys.ToList();
+
+    /// <summary>
+    /// 参与 EF 模型缓存的键。由构造函数按贡献器集合与加密状态计算。
+    /// </summary>
+    internal string GetModelCacheKey() => ModelCacheKey;
+
+    /// <inheritdoc />
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        base.OnConfiguring(optionsBuilder);
+
+        // 在这里（而不是在建 options 的各处）替换缓存键工厂，
+        // 保证无论走工厂、DI 还是设计时路径都生效。
+        optionsBuilder.ReplaceService<IModelCacheKeyFactory, BankingModelCacheKeyFactory>();
+    }
 
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
+        // ===== 插件分区隔离 =====
+        // 关键点：HasDefaultSchema 是「全局」设置，在循环里调用只有最后一次生效。
+        // 若沿用旧写法，第二个插件起，所有插件的表都会被建到同一个 Schema。
+        // 正确做法是绕过贡献器，直接给「该贡献器注册的实体」逐个指定 Schema。
+        var isNpgsql = Database.IsNpgsql();
+
         foreach (var contributor in _contributors.Values)
         {
-            // SQLite 不支持真正的 Schema，PostgreSQL 下映射为独立 Schema。
-            if (Database.IsNpgsql())
-            {
-                modelBuilder.HasDefaultSchema(contributor.PartitionName);
-            }
+            var before = modelBuilder.Model.GetEntityTypes().Select(e => e.Name).ToHashSet();
+
             contributor.ConfigureModel(modelBuilder);
+
+            if (!isNpgsql) continue;   // SQLite 无 Schema 概念，退化用表名前缀隔离
+
+            var added = modelBuilder.Model.GetEntityTypes()
+                .Select(e => e.Name)
+                .Where(name => !before.Contains(name));
+
+            foreach (var typeName in added)
+            {
+                var entity = modelBuilder.Entity(typeName);
+                entity.ToTable(entity.Metadata.GetTableName()!, contributor.PartitionName);
+            }
         }
 
         ApplyFieldEncryption(modelBuilder);
@@ -97,11 +153,26 @@ public class BankingDbContext : DbContext
             foreach (var property in entityType.GetProperties())
             {
                 if (property.ClrType != typeof(string)) continue;
-                if (property.FindAnnotation("Encrypted") is null) continue;
+
+                // EF Core 不会因为属性上贴了自定义特性就自动生成注解，
+                // 必须自己判断并把注解写进模型（下面的 SetAnnotation）。
+                var marked = property.PropertyInfo?
+                    .GetCustomAttributes(typeof(BankingAgent.Base.Data.Encryption.EncryptedAttribute), true)
+                    .Length > 0;
+                if (!marked) continue;
+
+                // 注解本身也有用：EncryptedFieldLogGuard 与迁移审阅都依赖它识别敏感列
+                property.SetAnnotation(EncryptedAnnotation, true);
                 property.SetValueConverter(converter);
             }
         }
     }
+
+    /// <summary>
+    /// 字段级加密的模型注解名。
+    /// 公开为常量，避免各处再写裸字符串 "Encrypted" 造成不一致。
+    /// </summary>
+    public const string EncryptedAnnotation = "BankingAgent:Encrypted";
 
     /// <inheritdoc />
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
@@ -183,6 +254,28 @@ public class BankingDbContext : DbContext
     }
 }
 
+/// <summary>
+/// 按「贡献器集合 + 加密状态」区分模型缓存的缓存键工厂。
+///
+/// EF Core 默认把模型缓存在 <c>IMemoryCache</c> 里，键只包含 DbContext 类型。
+/// 本项目同一个 DbContext 类型在不同场景下的模型并不相同，因此必须扩展键，
+/// 否则先建好的模型会被后续实例复用 —— 插件表缺失或敏感字段未加密，
+/// 而且不抛异常、不打日志。
+/// </summary>
+internal sealed class BankingModelCacheKeyFactory : IModelCacheKeyFactory
+{
+    /// <inheritdoc />
+    public object Create(DbContext context, bool designTime)
+    {
+        if (context is BankingDbContext banking)
+        {
+            return (context.GetType(), banking.GetModelCacheKey(), designTime);
+        }
+
+        return (context.GetType(), designTime);
+    }
+}
+
 /// <summary>变更快照记录。</summary>
 public sealed record ChangeSnapshot(
     string EntityType, string EntityId, string Operation, string PayloadJson);
@@ -212,6 +305,15 @@ public static class PluginContributorRegistry
         {
             Items.Clear();
             Items.AddRange(contributors);
+        }
+    }
+
+    /// <summary>解析当前已注册的全部贡献器（快照）。</summary>
+    public static IReadOnlyList<IEntitySetContributor> ResolveAll()
+    {
+        lock (Gate)
+        {
+            return Items.ToList();
         }
     }
 

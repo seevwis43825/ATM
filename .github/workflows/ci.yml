@@ -1,11 +1,13 @@
 name: CI
 
 # 触发条件
+# 注意：本仓库的集成分支是 dev（见 docs/03-development/02-git-workflow.md），
+# 不是 develop。分支名写错会导致 CI 永不触发。
 on:
   push:
-    branches: [main, master, develop]
+    branches: [main, master, dev]
   pull_request:
-    branches: [main, master, develop]
+    branches: [main, master, dev]
 
 # 同一分支的新推送取消旧运行
 concurrency:
@@ -27,16 +29,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 .NET 8 SDK
+      - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
+          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
+          dotnet-version: 9.0.x
 
       - name: 还原依赖
         run: dotnet restore src/BankingAgent.slnx
 
       - name: 编译（警告视为错误）
         run: dotnet build src/BankingAgent.slnx --no-restore -c Release /warnaserror
+
+      # ============================================================
+      # 数据库迁移一致性门禁（阻断式）
+      #
+      # 目的：防止有人改了实体模型（或插件的 IEntitySetContributor）
+      # 却没生成迁移，导致各环境表结构悄悄分叉。
+      #
+      # 用 has-pending-model-changes 而不是"生成临时迁移再看有没有文件"：
+      # 后者必须把生成的快照编译进程序集才生效，用 --no-build 会误报，
+      # 不带 --no-build 又会真的往项目里写文件。
+      #
+      # 前置条件：必须已经 build 过 —— 命令会以设计时工厂重建模型，
+      # 而未构建的插件 DLL / 过期程序集都会让它误判。
+      # ============================================================
+      - name: 安装 EF Core 工具
+        run: dotnet tool restore
+        working-directory: src
+
+      - name: 校验迁移与模型一致性
+        working-directory: src
+        run: |
+          dotnet ef migrations has-pending-model-changes \
+            --project src/BankingAgent.Base/BankingAgent.Base.csproj \
+            --startup-project src/BankingAgent.Host/BankingAgent.Host.csproj \
+            --context BankingDbContext \
+            --no-build
+          echo "迁移与模型一致"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -57,10 +88,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 .NET 8 SDK
+      - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
+          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
+          dotnet-version: 9.0.x
 
       - name: 运行单元测试
         run: |
@@ -101,10 +134,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 安装 .NET 8 SDK
+      - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
+          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
+          dotnet-version: 9.0.x
 
       - name: 格式检查（dotnet format 验证）
         run: |
@@ -135,10 +170,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 .NET 8 SDK
+      - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          # 必须是 9.0.200+：.slnx 解决方案格式从这个版本才开始被 SDK 支持。
+          # 项目自身的 TargetFramework 仍是 net8.0，用 9.x SDK 编译 net8.0 目标没有问题。
+          dotnet-version: 9.0.x
 
       - name: 编译
         run: dotnet build src/BankingAgent.slnx -c Release

@@ -67,10 +67,22 @@ Console.WriteLine("| 并发 | 请求数 | 成功率 | QPS | P50 | P95 | P99 | �
 Console.WriteLine("|------|-------|--------|-----|-----|-----|-----|---------|");
 
 var results = new List<(int Concurrency, double Qps, double P95, double ErrorRate)>();
+// 累积全部阶段的样本，供末尾的失败归因使用（各阶段单独统计会丢失全局分布）
+var allSamples = new List<Sample>();
+
+// 把异常压成一行可读的归因标签。
+// 超时 / 连接被拒 / 服务端 5xx 三种情况的结论完全不同，必须区分。
+static string DescribeError(Exception ex) => ex switch
+{
+    TaskCanceledException or OperationCanceledException => "TIMEOUT",
+    HttpRequestException http => $"HTTP:{http.StatusCode?.ToString() ?? http.InnerException?.GetType().Name ?? "CONNECT"}",
+    _ => ex.GetType().Name
+};
 
 foreach (var (concurrency, duration, label) in stages)
 {
     var samples = await RunStageAsync(token, concurrency, duration, MsgCards, MsgBill);
+    allSamples.AddRange(samples);
     var wall = duration;
 
     var ok = samples.Count(s => s.Status == 200);
@@ -131,6 +143,31 @@ Console.WriteLine();
 Console.WriteLine(" 资源观察");
 Console.WriteLine($"  进程工作集      : {Environment.WorkingSet / 1024 / 1024:F0} MB（压测进程）");
 
+// 失败归因：只报错误率不足以定位瓶颈，必须给出失败类型分布
+Console.WriteLine();
+Console.WriteLine(" 失败归因（全部阶段合计）");
+var failedTotal = allSamples.Count(s => s.Status != 200);
+if (failedTotal == 0)
+{
+    Console.WriteLine("  无失败请求");
+}
+else
+{
+    var byReason = new Dictionary<string, int>(StringComparer.Ordinal);
+    foreach (var s in allSamples)
+    {
+        if (s.Status == 200) continue;
+        var key = s.Status == -1 ? s.Error ?? "UNKNOWN" : $"HTTP {s.Status}";
+        byReason[key] = byReason.TryGetValue(key, out var n) ? n + 1 : 1;
+    }
+
+    foreach (var kv in byReason.OrderByDescending(p => p.Value).ThenBy(p => p.Key).Take(8))
+    {
+        Console.WriteLine(
+            $"  {kv.Key,-22} {kv.Value,7} 次  ({kv.Value * 100.0 / allSamples.Count:F2}%)");
+    }
+}
+
 return 0;
 
 // ===== 压测阶段 =====
@@ -157,7 +194,9 @@ async Task<List<Sample>> RunStageAsync(
             catch (Exception ex)
             {
                 sw.Stop();
-                samples.Add(new Sample(-1, sw.Elapsed.TotalMilliseconds));
+                // 异常不能只记成 -1：连接被拒、超时、限流三种情况的结论完全不同，
+                // 丢掉异常类型会让压测报告无法归因。
+                samples.Add(new Sample(-1, sw.Elapsed.TotalMilliseconds, DescribeError(ex)));
             }
         }
     });
@@ -179,4 +218,4 @@ async Task<HttpResponseMessage> SendChatAsync(string bearer, string message, int
 }
 
 /// <summary>单次请求结果。</summary>
-record Sample(int Status, double Ms);
+record Sample(int Status, double Ms, string? Error = null);
