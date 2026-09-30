@@ -1,453 +1,235 @@
-# 数据库与 CI 协同方案
+# 数据库迁移与 CI 协作
 
-> **当前状态**：🔴 严重不足 —— 用 `EnsureCreated()`，**无迁移历史、无版本控制**
-> **风险**：表结构演进会失控，多人协作时互相覆盖
-> **目标**：EF Core Migration + CI 强制校验
+> 本文以当前仓库实现为准，区分已经落地的 **Current** 与后续建议的 **Target**。
+> 本地命令以 Windows PowerShell 为主；CI 片段保持 GitHub Actions 的 Linux shell 语法。
 
----
+## 1. Current：当前基线
 
-## 0. 问题陈述
+### 1.1 初始化模式与默认配置
 
-当前 `DatabaseInitializer` 用的是：
+`DatabaseInitializer` 已支持三种 `DatabaseInitMode`：
 
-```csharp
-await db.Database.EnsureCreatedAsync(ct);
+- `EnsureCreated`：直接按当前模型建空库，适合本地开发和演示；不会写入 `__EFMigrationsHistory`。
+- `Migrate`：先确保 PostgreSQL 插件 Schema 存在，再执行 `Database.MigrateAsync()`。
+- `None`：跳过初始化，由外部部署流程负责。
+
+宿主 `appsettings.json` 的当前默认值是：
+
+```json
+{
+  "Database": {
+    "Provider": "Sqlite",
+    "ConnectionString": "Data Source=bankingagent.db",
+    "InitMode": "EnsureCreated"
+  }
+}
 ```
 
-`EnsureCreated` 的问题：
+因此必须分清两件事：
 
-| 问题 | 后果 |
-|------|------|
-| **无迁移历史** | 不知道表结构怎么演进到现在的 |
-| **不能改已有表** | 加列、改类型、拆表全都不支持 |
-| **不能回滚** | 出问题只能手动改 SQL |
-| **不感知并发** | 两人同时改模型，后编译的覆盖前面的 |
-| **生产不可用** | 生产环境会直接改表结构，无审计 |
+1. **默认开发启动路径**是 SQLite + `EnsureCreated`；
+2. **迁移路径已经存在**，用于 PostgreSQL/生产化场景，并非“项目没有迁移”。
 
-**多人协作下这是致命的** —— 5 人各自改模型，A 加一列、B 改一列，合并后 `EnsureCreated` 谁都发现不了冲突。
+`EnsureCreated` 与 Migration 不应对同一个长期环境混用。用 `EnsureCreated` 建出的数据库没有迁移历史；需要切到 `Migrate` 时，应新建数据库或先完成受控的基线接管。
 
----
+### 1.2 迁移位置与设计时模型
 
-## 1. 目标架构
+迁移位于 Base 项目，而不是独立的 Migrations 项目：
 
-```
-模型变更 → 生成 Migration → 提交到 git → CI 校验 → 部署时按序应用
-   ↓              ↓              ↓            ↓
-EF Core       *.cs + Snapshot  版本控制     dotnet ef database update
+```text
+src/src/BankingAgent.Base/Data/Migrations/
+├── 20260928074506_InitialSchema.cs
+├── 20260928074506_InitialSchema.Designer.cs
+└── BankingDbContextModelSnapshot.cs
 ```
 
----
+`20260928074506_InitialSchema` 当前创建 PostgreSQL Schema `plugin_transfer`、表 `transfer_records` 及其索引。
 
-## 2. 实施步骤
+`DesignTimeFactory` 已实现 PostgreSQL 设计时支持：
 
-### 2.1 安装 EF Core 工具
+- 默认以 PostgreSQL 生成迁移，也可通过 `--provider` 或环境变量覆盖；
+- 从已构建的插件目录发现 `IEntitySetContributor`；
+- 将插件贡献的实体纳入设计时 EF 模型；
+- 使用迁移专用加密服务保留 `[Encrypted]` 字段的字符串列映射；
+- 将迁移程序集指向 `BankingAgent.Base`。
+
+因此生成迁移前必须先用 Release 配置构建，确保设计时发现到的是最新插件 DLL。
+
+### 1.3 PostgreSQL Schema 初始化
+
+`BankingDbContext` 在 PostgreSQL 下把每个贡献器新增的实体映射到该贡献器的 `PartitionName`。`DatabaseInitializer` 的 `Migrate` 路径会在应用迁移前：
+
+1. 校验 Schema 名只含合法标识符字符；
+2. 执行 `CREATE SCHEMA IF NOT EXISTS`；
+3. 调用 `Database.MigrateAsync()`。
+
+这意味着插件发现、模型 Schema 映射和运行时 Schema 初始化均已实现。迁移文件仍应显式审阅 `schema`、列类型和索引，不能只看迁移名称。
+
+### 1.4 审计库
+
+审计不是“仅规划”。当前已经有独立的 `AuditDbContext` 和 `IAuditRepository`：
+
+- 表名：`audit_events`；
+- PostgreSQL Schema：`audit`；
+- SQLite 下使用独立审计数据库；
+- `AuditLogger` 将同一审计事件写入 JSONL 文件和数据库；
+- 数据库仓储只暴露追加、查询、计数和链校验，不提供更新/删除接口。
+
+业务库的 Migration 只管理 `BankingDbContext`。审计库由 `DatabaseInitializer` 单独初始化；当前使用 `AuditDbContext.Database.EnsureCreatedAsync()`，不属于 `BankingDbContext` 的迁移历史。
+
+## 2. 本地迁移命令（Windows PowerShell）
+
+以下命令从仓库根目录执行，不依赖个人绝对路径。
+
+### 2.1 还原工具并构建
 
 ```powershell
-dotnet tool install --global dotnet-ef --version 8.0.10
+Set-Location .\src
+dotnet tool restore
+dotnet restore .\BankingAgent.slnx
+dotnet build .\BankingAgent.slnx --no-restore --configuration Release
 ```
 
-### 2.2 首次生成初始迁移
+仓库本地工具清单固定 `dotnet-ef` 为 `8.0.10`，优先使用 `dotnet tool restore`，不要要求每位开发者全局安装。
+
+### 2.2 检查模型是否有待生成迁移
 
 ```powershell
-cd G:\cunchu\大学\poject\ATM\src\src\BankingAgent.Base
-dotnet ef migrations add InitialSchema `
+dotnet ef migrations has-pending-model-changes `
+  --project .\src\BankingAgent.Base\BankingAgent.Base.csproj `
+  --startup-project .\src\BankingAgent.Host\BankingAgent.Host.csproj `
   --context BankingDbContext `
-  --output-dir Data/Migrations
-```
+  --configuration Release `
+  --no-build
 
-生成物：
-
-```
-Data/Migrations/
-├── 20260928000000_InitialSchema.cs
-├── 20260928000000_InitialSchema.Designer.cs
-└── BankingDbContextModelSnapshot.cs      ← 关键：模型快照
-```
-
-### 2.3 改造 DatabaseInitializer
-
-```csharp
-public class DatabaseInitializer(
-    IServiceScopeFactory scopeFactory,
-    ILogger<DatabaseInitializer> logger,
-    IOptions<DatabaseInitOptions> options)
-{
-    public async Task InitializeAsync(CancellationToken ct = default)
-    {
-        if (options.Value.Mode == DatabaseInitMode.EnsureCreated)
-        {
-            // 仅用于本地开发与单元测试
-            using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<BankingDbContext>();
-            await db.Database.EnsureCreatedAsync(ct);
-            logger.LogInformation("数据库已创建（EnsureCreated 模式，无迁移历史）");
-            return;
-        }
-
-        // 生产/CI：应用迁移
-        logger.LogInformation("开始应用数据库迁移...");
-        var pending = await GetPendingMigrationsAsync(ct);
-
-        if (pending.Any())
-        {
-            logger.LogWarning("待应用迁移: {Migrations}", string.Join(", ", pending));
-        }
-
-        await using var migrationScope = scopeFactory.CreateAsyncScope();
-        var migrator = migrationScope.ServiceProvider
-            .GetRequiredService<IMigrator>();
-        await migrator.MigrateAsync(ct);
-
-        logger.LogInformation("数据库迁移完成");
-    }
-
-    private async Task<List<string>> GetPendingMigrationsAsync(CancellationToken ct)
-    {
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<BankingDbContext>();
-        return (await db.Database.GetPendingMigrationsAsync(ct)).ToList();
-    }
+if ($LASTEXITCODE -ne 0) {
+    throw "模型与迁移快照不一致，请生成并审阅迁移。"
 }
 ```
 
-### 2.4 配置区分环境
+`--configuration Release` 不可省略：此前一步只构建 Release，`--no-build` 若按默认 Debug 查找输出，会找不到宿主的 `.deps.json`。
 
-```json
-{
-  "Database": {
-    "Provider": "PostgreSql",
-    "ConnectionString": "Host=...;Database=banking",
-    "InitMode": "Migrate"          // 开发用 EnsureCreated，生产用 Migrate
-  }
-}
+### 2.3 生成迁移
+
+```powershell
+dotnet ef migrations add AddMeaningfulChange `
+  --project .\src\BankingAgent.Base\BankingAgent.Base.csproj `
+  --startup-project .\src\BankingAgent.Host\BankingAgent.Host.csproj `
+  --context BankingDbContext `
+  --output-dir Data\Migrations `
+  --configuration Release `
+  --no-build `
+  -- --provider PostgreSql
 ```
 
-```json
-{
-  "Database": {
-    "InitMode": "EnsureCreated"    // appsettings.Development.json
-  }
-}
+迁移名称应描述结构变化，例如 `AddTransferStatusIndex`。不要使用 `FixStuff`、`Temp` 或 `Initial2`。
+
+生成后至少审阅：
+
+- 新迁移的 `Up` / `Down`；
+- `BankingDbContextModelSnapshot`；
+- 表是否进入正确插件 Schema；
+- `[Encrypted]` 字段是否仍映射为预期字符串列；
+- 是否出现意外的删表、改列类型或索引重建。
+
+### 2.4 列出迁移
+
+```powershell
+dotnet ef migrations list `
+  --project .\src\BankingAgent.Base\BankingAgent.Base.csproj `
+  --startup-project .\src\BankingAgent.Host\BankingAgent.Host.csproj `
+  --context BankingDbContext `
+  --configuration Release `
+  --no-build `
+  -- --provider PostgreSql
 ```
 
----
+### 2.5 在 PostgreSQL 测试库应用迁移
 
-## 3. CI 集成
+```powershell
+$env:BANKING_DB_PROVIDER = "PostgreSql"
+$env:BANKING_DB_POSTGRES = "Host=localhost;Database=banking_migration_test;Username=postgres;Password=postgres"
 
-### 3.1 迁移一致性校验（阻断式）
-
-**这是最重要的一条**：确保模型与迁移历史一致，防止「有人改了模型但忘了生成迁移」。
-
-```yaml
-# .github/workflows/ci.yml（追加到 build 作业）
-- name: 校验迁移与模型一致性
-  run: |
-    dotnet tool install --global dotnet-ef --version 8.0.10
-
-    # 生成一个临时迁移，若有差异说明模型改了但没生成迁移
-    dotnet ef migrations add MigrationConsistencyCheck \
-      --context BankingDbContext \
-      --output-dir /tmp/consistency-check \
-      --project src/src/BankingAgent.Base \
-      --startup-project src/src/BankingAgent.Host \
-      --no-build
-
-    if [ -n "$(find /tmp/consistency-check -name '*.cs' 2>/dev/null)" ]; then
-      echo "::error::模型已变更但未生成迁移。请运行: dotnet ef migrations add <Name>"
-      exit 1
-    fi
-    echo "迁移与模型一致"
+dotnet ef database update `
+  --project .\src\BankingAgent.Base\BankingAgent.Base.csproj `
+  --startup-project .\src\BankingAgent.Host\BankingAgent.Host.csproj `
+  --context BankingDbContext `
+  --configuration Release `
+  --no-build `
+  -- --provider PostgreSql
 ```
 
-### 3.2 迁移可应用性验证
+测试完成后可用 `Remove-Item Env:BANKING_DB_PROVIDER, Env:BANKING_DB_POSTGRES` 清理本次 PowerShell 会话中的变量。不要把真实凭据写入文档、脚本或仓库配置。
 
-```yaml
-- name: 验证迁移可从零应用
-  run: |
-    docker run -d --name test-pg \
-      -e POSTGRES_PASSWORD=test \
-      -e POSTGRES_DB=banking_test \
-      -p 5432:5432 postgres:16-alpine
+## 3. Current：CI 门禁
 
-    sleep 10
+当前 `.github/workflows/ci.yml` 在 **build job** 中执行：
 
-    dotnet ef database update \
-      --context BankingDbContext \
-      --project src/src/BankingAgent.Base \
-      --startup-project src/src/BankingAgent.Host \
-      --connection "Host=localhost;Database=banking_test;Username=postgres;Password=test"
+1. 安装 .NET 8 与 .NET 9 SDK；
+2. `dotnet restore`；
+3. `dotnet build ... -c Release /warnaserror`；
+4. 在 `src` 目录执行 `dotnet tool restore`，恢复 `dotnet-ef 8.0.10`；
+5. 执行以下阻断式检查：
 
-    dotnet ef migrations has-pending-model-changes \
-      --context BankingDbContext \
-      --project src/src/BankingAgent.Base \
-      --startup-project src/src/BankingAgent.Host \
-      && echo "✅ 迁移完整" || (echo "::error::存在未应用的迁移" && exit 1)
+```bash
+dotnet ef migrations has-pending-model-changes \
+  --project src/BankingAgent.Base/BankingAgent.Base.csproj \
+  --startup-project src/BankingAgent.Host/BankingAgent.Host.csproj \
+  --context BankingDbContext \
+  --configuration Release \
+  --no-build
 ```
 
-### 3.3 迁移回滚验证
+该命令检查的是“当前设计时模型是否超前于迁移快照”。它不连接数据库，也不等价于“数据库是否存在未应用迁移”。失败时，开发者应在本地生成并审阅迁移，而不是修改 CI 绕过门禁。
 
-```yaml
-- name: 验证迁移可回滚
-  run: |
-    # 回滚到上一个迁移
-    dotnet ef database update 0 \
-      --context BankingDbContext \
-      --project src/src/BankingAgent.Base \
-      --startup-project src/src/BankingAgent.Host
+## 4. 迁移协作规则
 
-    # 再正向应用，验证 Down 逻辑正确
-    dotnet ef database update \
-      --context BankingDbContext \
-      --project src/src/BankingAgent.Base \
-      --startup-project src/src/BankingAgent.Host
+1. **模型与迁移同一 PR**：实体、映射、索引或插件贡献器改变时，同步提交迁移和快照。
+2. **迁移存放在 Base 项目**：当前路径为 `BankingAgent.Base/Data/Migrations`；不要另建 Migrations 项目。
+3. **禁止改写已合并且已部署的迁移**：新增修正迁移，避免不同环境的迁移历史分叉。
+4. **先构建，再生成/检查**：设计时插件发现依赖最新 Release 插件产物。
+5. **一个迁移聚焦一个主题**：减少冲突并便于回滚审阅；一个 PR 可以因同一功能包含多个有序迁移。
+6. **合并冲突后重新生成判断**：不要手工拼接 Snapshot 后直接提交，必须再次运行 `has-pending-model-changes`。
+7. **破坏性变更分阶段**：先新增兼容列并完成回填/双写，再切换读取，最后在后续版本删除旧列。
+8. **生产优先回滚应用**：数据库 Down 可能丢数据；只有确认数据影响并完成备份后才回退数据库迁移。
 
-    echo "✅ 回滚与重放均成功"
+### 并行开发发生迁移冲突时
+
+```powershell
+Set-Location .\src
+git rebase origin/main
+dotnet build .\BankingAgent.slnx --configuration Release
+dotnet ef migrations has-pending-model-changes `
+  --project .\src\BankingAgent.Base\BankingAgent.Base.csproj `
+  --startup-project .\src\BankingAgent.Host\BankingAgent.Host.csproj `
+  --context BankingDbContext `
+  --configuration Release `
+  --no-build
 ```
 
-### 3.4 完整 CI 片段
+若本分支迁移尚未共享且需要重做，可先使用 `dotnet ef migrations remove` 删除本分支最后一个迁移，再基于最新快照重新生成。不得删除或重写已进入共享分支的迁移。
 
-```yaml
-  database:
-    name: 数据库迁移校验
-    runs-on: ubuntu-latest
-    needs: build
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: banking_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
+## 5. Target：后续增强
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
+以下均是目标，不应写成当前已完成：
 
-      - name: 安装 EF 工具
-        run: dotnet tool install --global dotnet-ef --version 8.0.10
+- 在 CI 增加临时 PostgreSQL 服务，从空库执行全部 Migration；
+- 对每个迁移验证关键 `Down`/重放路径，或采用前向修复策略并自动验证；
+- 为 `AuditDbContext` 建立独立迁移历史，替代当前审计库的 `EnsureCreated`；
+- 在部署流水线中把迁移作为显式阶段，并在多实例启动前只执行一次；
+- 保存迁移 SQL、已应用迁移列表和审批记录作为发布证据。
 
-      - name: 迁移一致性检查
-        env:
-          ConnectionStrings__Default: "Host=localhost;Database=banking_test;Username=postgres;Password=test"
-        run: |
-          dotnet ef migrations add _ConsistencyCheck \
-            --context BankingDbContext --output-dir /tmp/check \
-            --project src/src/BankingAgent.Base \
-            --startup-project src/src/BankingAgent.Host
-          if [ -n "$(find /tmp/check -name '*.cs' 2>/dev/null)" ]; then
-            echo "::error::模型变更未生成迁移"
-            exit 1
-          fi
+建议的生产顺序：
 
-      - name: 从零应用全部迁移
-        env:
-          ConnectionStrings__Default: "Host=localhost;Database=banking_test;Username=postgres;Password=test"
-        run: |
-          dotnet ef database update \
-            --context BankingDbContext \
-            --project src/src/BankingAgent.Base \
-            --startup-project src/src/BankingAgent.Host
-
-      - name: 回滚与重放
-        env:
-          ConnectionStrings__Default: "Host=localhost;Database=banking_test;Username=postgres;Password=test"
-        run: |
-          dotnet ef database update 0 \
-            --context BankingDbContext \
-            --project src/src/BankingAgent.Base \
-            --startup-project src/src/BankingAgent.Host
-          dotnet ef database update \
-            --context BankingDbContext \
-            --project src/src/BankingAgent.Base \
-            --startup-project src/src/BankingAgent.Host
-          echo "回滚与重放验证通过"
+```text
+备份/快照 → 审阅迁移 SQL → 单点应用迁移 → 验证健康与关键查询 → 部署应用 → 观察
 ```
 
----
+默认 SQLite + `EnsureCreated` 仍可服务本地演示，但它不是长期生产数据库升级方案。
 
-## 4. 多插件的迁移协调（关键难点）
+## 6. 关联资料
 
-### 4.1 问题
-
-每个插件有独立的 `IEntitySetContributor`，实体分散在不同插件程序集。迁移时如何收集全部插件的实体？
-
-**方案：迁移工厂 + 独立迁移项目**
-
-```
-src/
-├── src/
-│   ├── BankingAgent.Migrations/          ← 【新建】集中管理全部迁移
-│   │   ├── BankingAgent.Migrations.csproj
-│   │   ├── Migrations/                   # 所有迁移文件集中在这里
-│   │   └── DesignTimeDbContextFactory.cs
-│   ├── BankingAgent.Base/
-│   └── plugins/
-│       ├── Plugin.Transfer/              # 只保留实体与 contributor
-│       └── ...
-```
-
-`DesignTimeDbContextFactory` 负责在迁移时加载全部插件贡献器：
-
-```csharp
-public class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<BankingDbContext>
-{
-    public BankingDbContext CreateDbContext(string[] args)
-    {
-        var options = new DbContextOptionsBuilder<BankingDbContext>()
-            .UseNpgsql("Host=localhost;Database=banking;Username=postgres;Password=dev")
-            .Options;
-
-        // 手工收集全部插件贡献器
-        var contributors = new List<IEntitySetContributor>
-        {
-            new TransferPersistenceContributor(),
-            new BillPersistenceContributor(),
-            new CardPersistenceContributor()
-        };
-
-        PluginContributorRegistry.Register(contributors);
-
-        return new BankingDbContext(options, contributors,
-            new CurrentUserAccessor(), new DateTimeOffsetProvider());
-    }
-}
-```
-
-### 4.2 迁移命名规范
-
-```
-AddInitialSchema                 初始建表
-AddTransferRecords               转账表
-AddTransferAmountIndex          转账表加索引
-AddCardManagement                卡片管理表
-AddAuditLogPartition            审计表分区
-AddRiskScoringColumns           风控字段
-```
-
-**禁止** `InitialCreate2`、`FixStuff`、`TempChange` 这类无意义命名。
-
-### 4.3 多人协作规则
-
-| 规则 | 说明 |
-|------|------|
-| **一个 PR 一个迁移** | 便于 review 与回滚 |
-| **迁移文件必须进 git** | 否则 CI 校验失败 |
-| **禁止改已合并的迁移** | 会导致环境间历史不一致 |
-| **破坏性变更分两步** | 见下 |
-| **大表加列分批** | 避免锁表 |
-
-### 4.4 破坏性变更的两步走
-
-```csharp
-// 步骤 1：新增列（向后兼容）
-migrationBuilder.AddColumn<string>(
-    name: "new_column",
-    table: "transfer_records",
-    maxLength: 64,
-    nullable: true);   // 必须可空
-// 同时代码双写：写新旧两列，读旧列
-
-// 步骤 2（下一个版本）：删除旧列
-migrationBuilder.DropColumn(
-    name: "old_column",
-    table: "transfer_records");
-// 同时代码切到只读写新列
-```
-
-**绝不允许**在一次迁移里既删又加又改类型。
-
----
-
-## 5. 生产部署流程
-
-```yaml
-  deploy:
-    needs: [build, unit-test, database, integration]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 应用数据库迁移
-        env:
-          ConnectionStrings__Default: ${{ secrets.PROD_DB_CONNECTION }}
-        run: |
-          dotnet tool install --global dotnet-ef --version 8.0.10
-          dotnet ef database update \
-            --context BankingDbContext \
-            --project src/src/BankingAgent.Migrations \
-            --startup-project src/src/BankingAgent.Host \
-            --no-build
-
-      - name: 记录已应用迁移
-        run: |
-          dotnet ef migrations list \
-            --context BankingDbContext \
-            --project src/src/BankingAgent.Migrations \
-            --connection "${{ secrets.PROD_DB_CONNECTION }}" \
-            | tee migration-log.txt
-
-      - name: 部署应用
-        run: ./deploy.sh
-
-      - name: 健康检查
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf "${{ secrets.PROD_URL }}/health" > /dev/null; then
-              echo "部署成功"; exit 0
-            fi
-            sleep 5
-          done
-          echo "::error::健康检查失败，启动回滚"
-          exit 1
-```
-
-**关键顺序**：**先迁移，后部署应用**。因为迁移是向后兼容的（旧代码能跑在新 schema 上），反过来则不行。
-
----
-
-## 6. 回滚策略
-
-| 场景 | 处理 |
-|------|------|
-| 应用发布失败 | 回滚应用镜像（数据库不动） |
-| 迁移应用失败 | EF 自动回滚到上一个迁移（单次迁移内是事务） |
-| 迁移已应用但应用有问题 | 保留 schema，回滚应用；确认无数据影响后再 `database update <prev>` |
-| 数据错误 | `database update <prev>` + 数据修复脚本 |
-
-**重要**：生产回滚**优先回滚应用而非数据库**。因为数据库回滚可能丢数据。
-
----
-
-## 7. 落地清单
-
-| # | 事项 | 优先级 | 预估 |
-|---|------|-------|------|
-| 1 | 安装 dotnet-ef 工具 | P0 | 1 分钟 |
-| 2 | 创建 `BankingAgent.Migrations` 项目 | **P0** | 30 分钟 |
-| 3 | 实现 `DesignTimeDbContextFactory` | **P0** | 30 分钟 |
-| 4 | 生成初始迁移并提交 | **P0** | 20 分钟 |
-| 5 | 改造 `DatabaseInitializer` 支持 Migrate 模式 | **P0** | 20 分钟 |
-| 6 | CI 加迁移一致性校验 | **P0** | 30 分钟 |
-| 7 | CI 加迁移可应用性验证 | P1 | 30 分钟 |
-| 8 | CI 加回滚验证 | P1 | 20 分钟 |
-| 9 | 生产部署接入 `database update` | **P0** | 30 分钟 |
-| 10 | 编写迁移规范文档 | P1 | 30 分钟 |
-
-**总计约 4.5 小时**，是当前 P0 清单里性价比最高的一项。
-
----
-
-## 8. 相关文档
-
-- 数据模型：[`09-uml/04-data-model.md`](../09-uml/04-data-model.md)
-- CI 流水线：[`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
-- 实现状态：[`plugin/03-implementation-status.md`](../plugin/03-implementation-status.md)
-- EF Core 官方文档：https://learn.microsoft.com/ef/core/managing-schemas/migrations/
+- 数据模型：[`../09-uml/04-data-model.md`](../09-uml/04-data-model.md)
+- CI：[`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
+- 初始迁移：[`../../src/src/BankingAgent.Base/Data/Migrations/20260928074506_InitialSchema.cs`](../../src/src/BankingAgent.Base/Data/Migrations/20260928074506_InitialSchema.cs)
+- EF Core Migration：https://learn.microsoft.com/ef/core/managing-schemas/migrations/
