@@ -1,168 +1,189 @@
 # GitHub 上传说明
 
-> **仓库**：https://github.com/seevwis43825/ATM
-> **最后更新**：2026-09-28
+> **仓库**：<https://github.com/seevwis43825/ATM>
+> **远程地址**：`git@github.com:seevwis43825/ATM.git`
+> **最后核对**：2026-10-01
 
 ---
 
-## 1. 当前状态（已实测）
+## 1. 当前仓库事实
 
-| 项目 | 状态 |
+| 项目 | 当前状态 |
 |---|---|
-| 远程仓库 | `origin` = https://github.com/seevwis43825/ATM.git |
-| 已推送分支 | `feature/agent-core` @ `ef6920e`（与远程一致） |
-| 已推送标签 | `v1.0.0-rc1` |
-| `origin/main` | `7e17168`（**落后 13 个提交**，仍是早期骨架） |
-| `origin/dev` | `7e17168`（**落后 13 个提交**） |
+| 可靠基线 | `main` / `origin/main` @ `0efad10` |
+| `origin/dev` | `7e17168`，落后 `main` 23 个提交，无独有提交 |
+| 旧 `feature/agent-core` | 已进入 `main`，不是待合并工作 |
+| Pull Request | PR #1、PR #2 均已合并到 `main` |
+| 历史标签 | `v1.0.0-rc1` 已存在 |
 
-> `main` / `dev` 落后是**事实状态**，不是错误。本次工作全部落在
-> `feature/agent-core` 分支上，符合"不直接推 main"的协作铁律。
+**不要重新执行旧的 `feature/agent-core` 合并、推进 `dev` 或重打标签。** 当前团队尚未正式重新启用 `dev`，新工作统一从最新 `main` 开短期分支，PR 回 `main`。
 
----
+可用 PowerShell 复核：
 
-## 2. 上线前必做（人工，无法自动化）
-
-### 2.1 替换 CODEOWNERS 占位符（**P0，不做等于没有 CODEOWNERS**）
-
-`.github/CODEOWNERS` 里的 `@architect` / `@backend` / `@ai` / `@platform` / `@compliance`
-是**角色占位符，不是真实 GitHub 用户名**。
-
-GitHub 的行为：**只要文件里存在无法解析的 owner，就静默忽略整个文件** ——
-表现为 PR 不自动请求任何 reviewer，且不给任何报错。目前共 **49 处**占位符。
-
-```bash
-# 在仓库根目录，把 5 个占位符换成真实用户名
-sed -i 's/@architect/ @你的用户名/g' .github/CODEOWNERS
-# 其余同理：@backend / @ai / @platform / @compliance
-git add .github/CODEOWNERS && git commit -m "chore: 替换 CODEOWNERS 占位符为真实用户名"
+```powershell
+git remote -v
+git fetch origin --prune
+git rev-parse origin/main
+git rev-parse origin/dev
+git rev-list --count origin/dev..origin/main
+git rev-list --count origin/main..origin/dev
+git log --merges --oneline origin/main -5
 ```
 
-替换后**务必用一个测试 PR 验证** reviewer 被自动添加。
+## 2. 新改动上传流程
 
-### 2.2 配置分支保护
-
-GitHub → Settings → Branches → 对 `main` 添加规则：
-- Require a pull request before merging
-- Require status checks to pass（勾选 CI 的 `build` / `unit-test` / `integration`）
-- Require review from Code Owners
-
-### 2.3 确认 CI 真的会跑
-
-CI 触发分支为 `main` / `master` / `dev`（见 `.github/workflows/ci.yml`）。
-`feature/*` 分支的 push **不会**触发 —— 这是有意的（省额度），
-但意味着推 `feature/agent-core` 时没有 CI 反馈。
-
-要立即验证流水线，可手动触发或在 `dev` 上开 PR。
-
----
-
-## 3. 把集成分支推进到当前交付版本
-
-有两种做法，任选其一（**都需要你确认后再执行**）：
-
-### 方案 A：走 PR（推荐，符合协作铁律）
-
-在 GitHub 网页上：
-1. 打开 `feature/agent-core` → 点 "Contribute" → "Open pull request"
-2. base 选 `dev`（先把集成版本合进 dev），或直接选 `main`
-3. 等 CI 跑完 + 至少 1 人 review → 合并
-
-### 方案 B：命令行（仅在确认 `dev` 没有别人未合并的工作时使用）
-
-```bash
-# 先确认 dev 上没有别人的提交
+```powershell
 git fetch origin
-git log --oneline origin/dev -5
+git switch main
+git pull --ff-only origin main
+git switch -c docs/deploy-update
 
-# 若确认可安全推进（dev 仍停在里程碑起点）
-git checkout dev
-git merge --ff-only feature/agent-core
-git push origin dev
+# 修改并完成本地验证后，只暂存相关文件
+git add docs/03-deploy
+git commit -m "docs(deploy): 对齐部署与上传说明"
+git push -u origin docs/deploy-update
 ```
 
-> ⚠️ 不要对 `main` 直接强推。`main` 是保护分支，应通过 PR 合并。
+随后在 GitHub 创建 `docs/deploy-update` → `main` 的 PR。禁止直接 push `main`；至少 1 人 review 且 CI 全绿后才能合并。PR 中可以保留领域内原子 commit，并可使用 GitHub **Merge commit** 延续 PR #1、#2 的现有历史。
 
----
+`origin/dev` 暂时只保留，不删除、不作为分支起点，也不为此修改 CI。若未来恢复，必须先由管理员同步到当时的 `main` 并统一通知。
 
-## 4. 交付物③（源码 ZIP）打包说明
+## 3. 管理员上线前配置
 
-### 4.1 关键：不要把 papers/ 打进交付包
+### 3.1 CODEOWNERS
 
-| 目录 | 体积 | 是否入交付 ZIP |
-|---|---|---|
-| `src/` | ~1.5 MB | ✅ 必须 |
-| `docs/` | ~0.9 MB | ✅ 必须 |
-| `.github/`、`scripts/`、`README.md` | <0.1 MB | ✅ 必须 |
-| `apps/`（早期 Node/TS 版） | ~0.3 MB 源码 | 🟡 可选（不含 node_modules） |
-| `papers/`（参考文献 PDF） | **136 MB** | ❌ **不要**，与交付物无关且吃掉配额 |
-| `src/**/bin`、`obj`、`node_modules` | ~270 MB | ❌ 不要（已被 .gitignore 排除） |
+`.github/CODEOWNERS` 中的 `@architect`、`@backend`、`@ai`、`@platform`、`@compliance` 仍是角色占位符，不能视为有效 GitHub owner。
 
-**建议做法**：直接用 `git archive` 打包，天然排除所有未跟踪文件：
+管理员应：
 
-```bash
-cd <仓库根>
-git archive --format=zip -o AI-Banking-Agent-源码.zip \
-  --prefix=AI-Banking-Agent/ \
-  HEAD src docs .github scripts README.md banking-core
+1. 确认每个角色对应的真实 GitHub 用户名；
+2. 确认这些用户对仓库具有 **Write** 权限；
+3. 在独立分支中统一替换占位符并提交；
+4. 用测试 PR 验证自动请求 reviewer 和 Code Owner 审批是否生效。
+
+在验证完成前，每个 PR 由作者人工添加 reviewer。
+
+### 3.2 `main` 分支保护
+
+在 GitHub Settings 中为 `main` 配置 Branch protection rule 或 Ruleset：
+
+- Require a pull request before merging；
+- Required approvals 至少 1；
+- Require status checks to pass；
+- 禁止直接 push 和绕过门禁；
+- CODEOWNERS 验证有效后，再启用 Code Owner review 要求。
+
+这是管理员操作；文档规则本身不会自动保护分支。
+
+## 4. CI 验收
+
+`.github/workflows/ci.yml` 会在以 `main` 为 base 的 PR 上运行。合并前要求 CI 全绿，至少确认：
+
+- 编译及数据库迁移一致性门禁；
+- `PluginValidator` 插件契约门禁；
+- 单元测试；
+- 集成测试与并发压测；
+- 最终检查汇总。
+
+不要为了恢复 `dev` 修改 CI。当前工作流仍包含 `dev` 触发项，这不代表团队已重新启用 `dev`。
+
+## 5. 交付物③：源码 ZIP
+
+交付包只选择：
+
+- `src/`
+- `docs/`
+- `.github/`
+- `scripts/`
+- `README.md`
+- `执行手册.md`
+
+明确排除 `papers/`、任何 `bin/`、`obj/`、数据库文件和日志。`git archive` 只打包已提交内容，因此应在目标 PR 合并、`main` 更新且工作区干净后执行。
+
+### 5.1 Windows PowerShell 打包
+
+```powershell
+git fetch origin
+git switch main
+git pull --ff-only origin main
+git status --short
+
+git archive --format=zip `
+  --output="AI-Banking-Agent-源码.zip" `
+  --prefix="AI-Banking-Agent/" `
+  HEAD -- `
+  src docs .github scripts README.md "执行手册.md" `
+  ":(exclude)**/bin/**" `
+  ":(exclude)**/obj/**" `
+  ":(exclude)**/db/**" `
+  ":(exclude)**/*.db" `
+  ":(exclude)**/*.db-wal" `
+  ":(exclude)**/*.db-shm" `
+  ":(exclude)**/*.log" `
+  ":(exclude)**/logs/**"
 ```
 
-或用选择性排除：
+这里不包含 `papers/`，也不包含旧 `banking-core` 或已删除的 Node 应用。不要再使用 `/tmp`、`sed`、`unzip` 等 Unix 命令处理 Windows 交付包。
 
-```bash
-git archive --format=zip -o /tmp/all.zip HEAD
-# 再用 7z/zip 删掉 papers/ 目录后另存
+### 5.2 Windows PowerShell 验证
+
+```powershell
+$zip = Resolve-Path ".\AI-Banking-Agent-源码.zip"
+$verify = Join-Path $env:TEMP "AI-Banking-Agent-verify"
+
+if (Test-Path $verify) {
+  Remove-Item $verify -Recurse -Force
+}
+Expand-Archive -Path $zip -DestinationPath $verify
+
+$root = Join-Path $verify "AI-Banking-Agent"
+$required = @(
+  "src",
+  "docs",
+  ".github",
+  "scripts",
+  "README.md",
+  "执行手册.md"
+)
+$required | ForEach-Object {
+  $path = Join-Path $root $_
+  if (-not (Test-Path $path)) { throw "交付包缺少：$_" }
+}
+
+$forbidden = Get-ChildItem $root -Recurse -Force | Where-Object {
+  $_.FullName -match '\\(papers|bin|obj|db|logs?)(\\|$)' -or
+  $_.Name -match '\.(db|db-wal|db-shm|log)$'
+}
+if ($forbidden) {
+  $forbidden.FullName
+  throw "交付包包含禁止内容"
+}
+
+dotnet build (Join-Path $root "src\BankingAgent.slnx") -c Release
+Get-Item $zip | Select-Object FullName, Length, LastWriteTime
 ```
 
-打包后请核对体积远小于 300 MB，并解压验证能编译：
+最终还应人工打开 ZIP，确认目录层级正确、文件可读，并核对平台大小限制。
 
-```bash
-unzip -q AI-Banking-Agent-源码.zip -d /tmp/verify
-cd /tmp/verify/AI-Banking-Agent
-dotnet build src/BankingAgent.slnx -c Release
+## 6. 历史标签说明
+
+`v1.0.0-rc1` 是已经发布的历史点，只用于查看或复核当时内容：
+
+```powershell
+git fetch origin --tags
+git show --no-patch --decorate v1.0.0-rc1
 ```
 
-### 4.2 仓库整体体积
+**不要删除、移动或重新创建 `v1.0.0-rc1`。** 后续候选版本使用新标签，例如 `v1.0.0-rc2`，并且只在目标 `main` commit 已通过验收后由负责人创建。
 
-- 跟踪文件：**298 个 / 138 MB**（其中 `papers/` 占 136 MB）
-- 最大单文件：16.7 MB（`papers/pdfs/64_...pdf`）—— 未触及 GitHub 100 MB 单文件硬限制
-- `.git` 目录：约 144 MB
+## 7. 最终检查
 
-> 若希望仓库更轻，可把 `papers/` 移出仓库或改用 Git LFS。
-> `.gitignore` 里已留有 `# papers/pdfs/` 的注释开关，取消注释即可停止跟踪
-> （需另做 `git rm -r --cached papers/pdfs`）。
-
----
-
-## 5. 上传后的验收清单
-
-- [ ] `feature/agent-core` 与本地一致（`git rev-parse feature/agent-core` == `git rev-parse origin/feature/agent-core`）
-- [ ] `v1.0.0-rc1` 标签已上传
-- [ ] CODEOWNERS 5 个占位符已替换为真实用户名，且测试 PR 能自动请求 reviewer
-- [ ] `main` 分支保护已配置（PR + 状态检查 + Code Owner 审批）
-- [ ] 至少触发过一次 CI 并全绿
-- [ ] 交付物③ ZIP 已打包且**不含** `papers/`、`bin/`、`obj/`、`node_modules/`
-- [ ] 解压后的 ZIP 能通过 `dotnet build src/BankingAgent.slnx -c Release`
-
----
-
-## 6. 本地存档命令（已执行，留档备查）
-
-```bash
-# 完整性校验（只会有 dangling blob，属正常残留，不是损坏）
-git fsck --no-progress
-
-# 提交并打交付标签
-git add -A && git commit -m "..."
-git tag -a v1.0.0-rc1 -m "AI Banking Agent — 完整可运行基座"
-
-# 推送分支与标签
-git push origin feature/agent-core
-git push origin v1.0.0-rc1
-```
-
-### 恢复方式（万一需要回滚）
-
-```bash
-git checkout v1.0.0-rc1          # 查看该交付点
-git reset --hard v1.0.0-rc1      # 把当前分支回滚到该交付点（谨慎）
-```
+- [ ] `origin` 为 `git@github.com:seevwis43825/ATM.git`
+- [ ] 新改动从最新 `main` 开分支，PR base 为 `main`
+- [ ] 没有重新合并旧 `feature/agent-core`，没有自行推进 `dev`
+- [ ] 至少 1 人 review，CI 全绿
+- [ ] 管理员已配置 `main` 分支保护
+- [ ] CODEOWNERS 已替换为具有 Write 权限的真实用户，并经测试 PR 验证
+- [ ] ZIP 只含指定六项，不含 `papers/bin/obj/db/log`
+- [ ] 解压后 `dotnet build src/BankingAgent.slnx -c Release` 通过
+- [ ] `v1.0.0-rc1` 保持原历史点，未重打
