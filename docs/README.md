@@ -3,7 +3,26 @@
 > **项目**：AI Banking Agent System — 智能银行对话式 AI 系统
 > **架构**：模块化单体（Modular Monolith） + DDD + Clean Architecture + 事件驱动 + 插件化
 > **团队**：5 人
-> **最后更新**：2026-09-21
+> **最后更新**：2026-10-01
+
+## 文档类型与事实源
+
+本仓库同时保留当前实现、目标架构和历史方案。阅读时先看文档类型，避免把演进蓝图当成已经部署的能力。
+
+| 类型 | 含义 | 主要入口 |
+|------|------|----------|
+| **Current** | 已在当前 `src/` 主线实现，可用于运行、联调和开发 | 根 [`README.md`](../README.md)、[`plugin/`](plugin/)、[`09-uml/`](09-uml/)、[`13-database/`](13-database/) |
+| **Target** | 目标架构或生产化演进设计，可能包含尚未落地的 K8s、Redis、Kafka、独立前端等 | `00-architecture/`、`04-operations/`、`05-security-compliance/`、`06-product/` |
+| **Historical** | 早期 Node/TypeScript MVP 或阶段性计划，用于追溯决策，不作为当前运行指南 | 根 [`执行手册.md`](../执行手册.md) 及文内明确标记的历史段落 |
+
+发生冲突时，事实源优先级为：
+
+1. 当前代码、项目文件与 `.github/workflows/ci.yml`
+2. 根 `README.md` 与 `docs/plugin/`
+3. Current 类型的实现文档
+4. Target / Historical 文档
+
+> 当前唯一可运行主线是 `src/`：.NET 8、ASP.NET Core、SQLite 默认存储、进程内事件总线，以及宿主内置 `wwwroot` 控制台。Node/npm、Python AI Service、Docker Compose、K8s、Redis 和 Kafka 均不是本地运行的必需条件。
 
 ---
 
@@ -129,7 +148,7 @@ docs/
     └── 01-migration-and-ci.md               EF Migration + CI 协同方案
 ```
 
-> **代码位置**：`../src/`（54 个文件 / 6753 行）
+> **代码位置**：`../src/`（代码规模持续变化，不在文档中固定文件数与行数）
 > **代码索引**：[`../src/README.md`](../src/README.md)
 
 ---

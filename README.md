@@ -4,7 +4,7 @@
 >
 > 架构：**模块化单体 + 插件化扩展 + 领域驱动设计 + 事件驱动**
 > 技术栈：.NET 8（C#）、EF Core、SQLite / PostgreSQL、ASP.NET Core Minimal API
-> 当前状态：**可运行基座**。单元测试 143 / 端到端 38 / 并发压测 30 全部通过。
+> 当前状态：**可运行基座**。单元测试 149 项已实测通过；端到端与并发压测由 CI 持续验证。
 
 ---
 
@@ -62,7 +62,7 @@ plugins/  4 个插件 DLL（独立编译、独立部署）
   - banking.transfer  转账（L3，强制人工回环）
   - banking.bill      账单（只读，强制脱敏）
   - banking.card      卡片（写操作，依赖声明）
-  - banking.wealth    理财（模板生成的示例）
+  - banking.wealth    理财（只读：产品查询与推荐、余额查询）
 
 MockBank.Api :5200  模拟银行核心系统（独立进程）
   3 客户 / 6 账户 / 90+ 流水 / 理财产品 / 卡状态变更
@@ -85,9 +85,9 @@ ATM/
 │   ├── mock-bank/MockBank.Api/             模拟银行（:5200）
 │   ├── templates/banking-plugin/           [*] dotnet new 插件脚手架
 │   ├── PluginValidator/                    [*] 插件契约校验器（CI 门禁）
-│   ├── UnitTests/                          143 项单元测试
-│   ├── E2ETest/                            38 项端到端
-│   ├── StressTest/                         30 项并发压测
+│   ├── UnitTests/                          单元测试（当前 149 项）
+│   ├── E2ETest/                            端到端场景测试
+│   ├── StressTest/                         并发与稳定性压测
 │   ├── LoadTest/                           容量阶梯加压
 │   ├── CryptoSelfTest/                     密码学自检（ML-KEM/ML-DSA）
 │   ├── DbProbe/                            数据库诊断小工具
@@ -150,11 +150,11 @@ curl http://localhost:5243/health        # 含真实数据库健康检查
 ### 跑测试
 
 ```bash
-dotnet test src/UnitTests/UnitTests.csproj                    # 143 项单元测试
+dotnet test src/UnitTests/UnitTests.csproj                    # 当前 149 项单元测试
 
 # 以下需要两个服务已启动
-dotnet run --project src/E2ETest   -- http://localhost:5243 http://localhost:5200   # 38 项
-dotnet run --project src/StressTest -- http://localhost:5243 http://localhost:5200   # 30 项
+dotnet run --project src/E2ETest   -- http://localhost:5243 http://localhost:5200
+dotnet run --project src/StressTest -- http://localhost:5243 http://localhost:5200
 dotnet run --project src/LoadTest  -- http://localhost:5243 http://localhost:5200   # 容量阶梯
 
 # 插件契约校验（CI 阻断门禁）

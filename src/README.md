@@ -2,7 +2,9 @@
 
 > **对应设计文档**：[`../docs/00-architecture/00-overview.md`](../docs/00-architecture/00-overview.md)
 > **插件接入**：[`../docs/plugin/01-plugin-onboarding-guide.md`](../docs/plugin/01-plugin-onboarding-guide.md)
-> **代码规模**：54 个文件 / 6753 行
+> **代码规模**：持续变化；以当前仓库和编译结果为准，本文不再把行数作为事实源
+>
+> 下文表格中的行数是早期快照，仅用于理解各组件相对规模，不用于验收。
 
 ---
 
@@ -106,7 +108,7 @@
 
 ---
 
-### 2.3 BankingAgent.Host（宿主，256 行）
+### 2.3 BankingAgent.Host（宿主）
 
 | 职责 | 说明 |
 |------|------|
@@ -115,19 +117,20 @@
 | 注入插件服务 | 插件注册的服务并入主容器 |
 | 初始化数据库 | `DatabaseInitializer.InitializeAsync()` |
 | 启动插件 | 按依赖拓扑顺序 |
-| 暴露 API | 9 个端点 |
+| 暴露 API | 健康检查、鉴权、对话、编排、轨迹与插件管理端点 |
 
 **为什么分两步（bootstrap 容器 → 正式容器）**：插件需要在容器 Build 之前注册服务。bootstrap 容器只用来拿 `ILoggerFactory` 和 `PluginRegistry`，用完即弃。
 
 ---
 
-### 2.4 plugins/（示例插件，591 行）
+### 2.4 plugins/（4 个业务插件）
 
 | 插件 | 行数 | 演示重点 |
 |------|------|---------|
 | `BankingAgent.Plugin.Transfer` | 380 | 资金操作**完整范例**：槽位抽取 → 合规守卫 → 人工回环 → 幂等检查 → 调核心银行 → 落库 → 发事件 |
 | `BankingAgent.Plugin.BillAnalysis` | 165 | 只读场景 + **订阅他人事件**实现零耦合联动 |
 | `BankingAgent.Plugin.CardManagement` | 148 | 写操作但非资金 + **依赖声明** + L3 强制脱敏 |
+| `BankingAgent.Plugin.Wealth` | — | 只读理财场景：产品查询与推荐、账户余额查询；申购/赎回尚未实现 |
 
 ---
 
@@ -146,9 +149,9 @@
 
 ---
 
-### 2.6 E2ETest（端到端测试，211 行）
+### 2.6 E2ETest（端到端测试）
 
-30 项断言覆盖 10 个场景，详见 [`../docs/plugin/00-quick-start.md`](../docs/plugin/00-quick-start.md) §3。
+覆盖鉴权、路由、人工确认、资金副作用、幂等、事件和审计等场景；执行结果以测试程序最终输出与 CI 为准。详见 [`../docs/plugin/00-quick-start.md`](../docs/plugin/00-quick-start.md) §3。
 
 ---
 
@@ -169,7 +172,7 @@
 ```
 需要做什么？
 │
-├─ 新业务功能（转账、账单、理财…）→ 写插件，参考 BillingAgent.Plugin.Transfer
+├─ 新业务功能（转账、账单、理财…）→ 写插件，参考 BankingAgent.Plugin.Transfer
 │
 ├─ 新业务规则（限额、风控…）       → 实现 IComplianceRule，加到 Base
 │
@@ -196,7 +199,7 @@
 | `02-event-schema.md` | `SDK/EventContracts.cs` | ⚠️ 简化版（未用 CloudEvents 全字段） |
 | `02-api/01-rest-api-spec.md` | `Host/Program.cs` | ⚠️ 演示版端点 |
 | `03-data-classification.md` | `Base/Security/DataMasker.cs` | ✅ 已实现 |
-| `04-audit-logging.md` | `Base/Security/Audit/AuditLogger.cs` | ✅ 已实现（文件版，未落库） |
+| `04-audit-logging.md` | `Base/Security/Audit/AuditLogger.cs` | ✅ HMAC 链 + JSONL + 独立审计库双写 |
 | `02-compliance-matrix.md` | `Base/Security/Compliance/` | ⚠️ 4 条核心规则（设计中 14 条） |
 
 完整状态见 [`../docs/plugin/03-implementation-status.md`](../docs/plugin/03-implementation-status.md)。
@@ -206,17 +209,12 @@
 ## 6. 编译与运行
 
 ```powershell
-# 编译全部
-cd G:\cunchu\大学\poject\ATM\src
-dotnet build BankingAgent.slnx
+# 从仓库根目录编译全部项目
+dotnet build src/BankingAgent.slnx -c Release
 
-# 启动模拟银行 :5200
-cd mock-bank\MockBank.Api
-dotnet run --urls http://localhost:5200
-
-# 启动宿主 :5243（自动编译插件到 bin/plugins）
-cd ..\..\src\BankingAgent.Host
-dotnet run
+# 在两个独立终端启动
+dotnet run --project src/mock-bank/MockBank.Api -c Release
+dotnet run --project src/src/BankingAgent.Host -c Release
 ```
 
-宿主 csproj 里的 `CopyPluginsToOutput` 目标会在每次构建后把 3 个插件 DLL 复制到 `bin/Debug/net8.0/plugins/`。
+宿主 csproj 里的 `CopyPluginsToOutput` 目标会在构建后把 4 个插件 DLL 复制到与构建配置对应的 `bin/<配置>/net8.0/plugins/`。编译和启动必须使用相同配置。
