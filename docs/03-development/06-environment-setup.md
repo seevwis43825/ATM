@@ -1,374 +1,206 @@
-# 开发环境搭建（Environment Setup）
+# 开发环境搭建（当前 .NET 主线）
 
-> **状态**：已通过 · **所有者**：平台 · **版本**：v1.0
-> **最后更新**：2026-09-21
-
----
+> 当前唯一可运行主线是仓库根目录下的 `src/`。本文只描述已落地的本地开发与验证流程。
 
 ## 1. 环境要求
 
-### 1.1 硬件（推荐）
-- CPU：4 核+
-- 内存：16GB+
-- 磁盘：50GB+ SSD
-- 网络：稳定（拉镜像、调用 LLM）
+支持 Windows、macOS 和 Linux。
 
-### 1.2 软件
+必需：
 
-| 软件 | 版本 | 用途 |
-|------|------|------|
-| Docker Desktop | 4.x | 本地容器 |
-| Git | 2.30+ | 版本控制 |
-| VSCode / Rider / Visual Studio | 最新 | IDE |
-| Node.js | 20 LTS | 前端 |
-| Python | 3.11 | AI Service |
-| .NET SDK | 8.0 | 后端 |
-| PostgreSQL Client（psql） | 16 | 数据库调试 |
-| Redis Client（redis-cli） | 7 | 缓存调试 |
+- .NET SDK 9.0.200 或更高版本：用于读取 `src/BankingAgent.slnx`
+- .NET 8 Runtime 与 Targeting Pack：所有项目目标框架均为 `net8.0`
+- Git：仅获取代码和协作时需要
 
-### 1.3 IDE 推荐
+本机验证环境示例为 .NET SDK 9.0.305、.NET Runtime 8.0.20。它是已验证组合，不是全队必须精确锁定的版本。
 
-| 角色 | IDE |
-|------|-----|
-| 后端（C#） | JetBrains Rider / Visual Studio 2022 |
-| AI Service（Python） | VSCode + Python 扩展 / Cursor |
-| 前端（TypeScript） | VSCode / Cursor |
-| 通用 | JetBrains Fleet |
+默认本地运行不需要 PostgreSQL、Docker、Node.js、Python、Redis、Kafka 或 AI Key。数据使用 SQLite 文件保存；控制台由 `BankingAgent.Host/wwwroot` 内置提供，不需要单独构建前端。
 
----
+先确认环境：
 
-## 2. 快速开始（5 步）
-
-### 2.1 克隆仓库
-
-```bash
-git clone https://github.com/bank-agent/bank-agent.git
-cd bank-agent
+```powershell
+dotnet --version
+dotnet --list-sdks
+dotnet --list-runtimes
 ```
 
-### 2.2 启动本地基础设施
+`dotnet --version` 应不低于 9.0.200，运行时列表应包含 `Microsoft.NETCore.App 8.0.x` 和 `Microsoft.AspNetCore.App 8.0.x`。若无法编译 `net8.0`，请安装 .NET 8 SDK 或对应 Targeting Pack。
 
-```bash
-# 启动 PostgreSQL + Redis + Kafka（如需）
-cd deploy
-docker compose -f docker-compose.dev.yml up -d
+## 2. 编译
 
-# 验证
-docker compose -f docker-compose.dev.yml ps
+以下命令均从仓库根目录执行。插件复制与运行配置相关，必须统一使用 Release。
+
+```powershell
+dotnet restore src/BankingAgent.slnx
+dotnet build src/BankingAgent.slnx -c Release
 ```
 
-### 2.3 启动 Agent Core
+编译后检查四个插件 DLL：
 
-```bash
-cd src/Bootstrap
-dotnet restore
-dotnet run --project Bootstrap.csproj --launch-profile "Development"
-```
+```powershell
+$pluginDir = "src/src/BankingAgent.Host/bin/Release/net8.0/plugins"
+$required = @(
+  "BankingAgent.Plugin.Transfer.dll",
+  "BankingAgent.Plugin.BillAnalysis.dll",
+  "BankingAgent.Plugin.CardManagement.dll",
+  "BankingAgent.Plugin.Wealth.dll"
+)
 
-访问：
-- API: `http://localhost:5000`
-- Swagger: `http://localhost:5000/swagger`
-- Health: `http://localhost:5000/health`
-
-### 2.4 启动 AI Service
-
-```bash
-cd ai-service
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env，设置 LLM API Key
-
-# 启动
-uvicorn app.main:app --reload --port 8000
-```
-
-访问：`http://localhost:8000/docs`
-
-### 2.5 启动前端
-
-```bash
-cd web
-npm install
-npm run dev
-```
-
-访问：`http://localhost:3000`
-
----
-
-## 3. docker-compose.dev.yml
-
-```yaml
-version: '3.8'
-
-services:
-  postgres:
-    image: postgres:16
-    container_name: bank-agent-postgres
-    environment:
-      POSTGRES_USER: bank_agent
-      POSTGRES_PASSWORD: dev_password
-      POSTGRES_DB: bank_agent
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./init-scripts:/docker-entrypoint-initdb.d
-
-  pgvector:
-    image: pgvector/pgvector:pg16
-    # 与 postgres 共用数据卷
-
-  redis:
-    image: redis:7-alpine
-    container_name: bank-agent-redis
-    ports:
-      - "6379:6379"
-
-  kafka:
-    image: confluentinc/cp-kafka:7.5.0
-    container_name: bank-agent-kafka
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-    ports:
-      - "9092:9092"
-
-  # 用于 LLM mock（如未配置真实 API）
-  ollama:
-    image: ollama/ollama:latest
-    container_name: bank-agent-ollama
-    ports:
-      - "11434:11434"
-
-volumes:
-  postgres-data:
-```
-
----
-
-## 4. 环境变量
-
-### 4.1 Agent Core (`src/Bootstrap/appsettings.Development.json`)
-
-```json
-{
-  "Logging": {
-    "LogLevel": {
-      "Default": "Debug",
-      "Microsoft.AspNetCore": "Warning"
-    }
-  },
-  "ConnectionStrings": {
-    "Postgres": "Host=localhost;Port=5432;Database=bank_agent;Username=bank_agent;Password=dev_password",
-    "Redis": "localhost:6379"
-  },
-  "AIService": {
-    "Url": "http://localhost:8000",
-    "Timeout": 30000
-  },
-  "FeatureFlags": {
-    "feature.cross_scenario.enabled": false,
-    "feature.wealth.auto_recommend.enabled": true,
-    "feature.transfer.qrcode.enabled": false
-  },
-  "Jwt": {
-    "Issuer": "https://dev.bankagent.com",
-    "Audience": "bank-agent-dev",
-    "Key": "dev-only-secret-key-please-change-in-production"
-  }
+$required | ForEach-Object {
+  $path = Join-Path $pluginDir $_
+  if (-not (Test-Path $path)) { throw "缺少插件产物：$path" }
 }
+Get-ChildItem $pluginDir -Filter "*.dll"
 ```
 
-### 4.2 AI Service (`.env`)
+## 3. 启动
 
-```bash
-# LLM Provider
-OPENAI_API_KEY=sk-xxx
-DASHSCOPE_API_KEY=sk-xxx       # 通义千问
-DEFAULT_LLM_MODEL=qwen3-max
-FALLBACK_LLM_MODEL=gpt-4o
+打开两个 PowerShell 终端，均停留在仓库根目录。
 
-# Local Ollama（如使用）
-OLLAMA_BASE_URL=http://localhost:11434
+终端 1：启动模拟银行。
 
-# Vector DB
-PGVECTOR_URL=postgresql://bank_agent:dev_password@localhost:5432/bank_agent
-
-# Cache
-REDIS_URL=redis://localhost:6379
-
-# Tracing (Jaeger / Tempo)
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+```powershell
+dotnet run --project src/mock-bank/MockBank.Api -c Release
 ```
 
----
+终端 2：启动 Agent 宿主。
 
-## 5. IDE 配置
-
-### 5.1 VSCode `.vscode/settings.json`
-
-```json
-{
-  "python.defaultInterpreterPath": "./ai-service/venv/bin/python",
-  "python.testing.pytestEnabled": true,
-  "[python]": {
-    "editor.defaultFormatter": "charliermarsh.ruff",
-    "editor.formatOnSave": true
-  },
-  "[typescript]": {
-    "editor.defaultFormatter": "esbenp.prettier-vscode",
-    "editor.formatOnSave": true
-  },
-  "[csharp]": {
-    "editor.defaultFormatter": "ms-dotnettools.csharp",
-    "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-      "source.organizeImports": true
-    }
-  },
-  "files.exclude": {
-    "**/bin": true,
-    "**/obj": true,
-    "**/.next": true,
-    "**/node_modules": true
-  },
-  "csharp.test.testRunSettings": {
-    "TestingPlatformCaptureOutput": true
-  }
-}
+```powershell
+dotnet run --project src/src/BankingAgent.Host -c Release
 ```
 
-### 5.2 JetBrains Rider
+两个进程分别为：
 
-启用：
-- Editor → Inspections → C# → Roslyn Analyzers
-- Plugins → .NET Core CLI、Database
-- Settings → Version Control → Commit Template
+| 进程 | 地址 | 用途 |
+|---|---|---|
+| `MockBank.Api` | `http://localhost:5200` | 模拟银行核心系统 |
+| `BankingAgent.Host` | `http://localhost:5243` | Agent API 与内置 Web 控制台 |
 
----
+浏览器打开 <http://localhost:5243> 即可使用控制台。
 
-## 6. 数据库初始化
+## 4. 停止与重启
 
-### 6.1 自动执行
+前台运行时，在各自终端按 `Ctrl+C` 停止。若终端已关闭，可按监听端口定位进程：
 
-启动时自动：
-1. 连接 PostgreSQL
-2. 检查 Schema 是否创建
-3. 执行 pending migrations
+```powershell
+Get-NetTCPConnection -LocalPort 5200,5243 -State Listen |
+  Select-Object LocalPort, OwningProcess
 
-### 6.2 手动执行（如需）
-
-```bash
-# 初始化 Schema
-psql -h localhost -U bank_agent -d bank_agent -f init-scripts/01-init-schemas.sql
-
-# 执行 migration
-psql -h localhost -U bank_agent -d bank_agent -f src/Contexts/Transfer/Infrastructure/Migrations/V001__create_orders.sql
+# 确认 PID 后再停止；不要直接复制示例 PID
+Stop-Process -Id <PID>
 ```
 
----
+macOS/Linux 可用 `lsof -i :5200 -i :5243` 查找进程，再用 `kill <PID>` 停止。
 
-## 7. 测试运行
+## 5. 健康检查与验收
 
-### 7.1 后端单元测试
+PowerShell 7 可直接使用 `curl`；Windows PowerShell 建议使用 `Invoke-RestMethod`：
 
-```bash
-cd src
-dotnet test --logger "console;verbosity=normal"
+```powershell
+Invoke-RestMethod http://localhost:5200/health
+Invoke-RestMethod http://localhost:5243/health
 ```
 
-### 7.2 后端集成测试
+本地开发验收：
 
-```bash
-cd tests/IntegrationTests
-dotnet test
+1. `dotnet build src/BankingAgent.slnx -c Release` 成功。
+2. Release 输出目录存在四个插件 DLL。
+3. 5200 与 5243 两个端口均处于监听状态。
+4. 两个 `/health` 均成功返回。
+5. 打开 <http://localhost:5243>，可以登录、发送消息并看到确认卡片。
+
+## 6. 测试与工具
+
+```powershell
+# 单元测试
+dotnet test src/UnitTests/UnitTests.csproj -c Release
+
+# 两个服务已启动后执行
+dotnet run --project src/E2ETest -c Release -- http://localhost:5243 http://localhost:5200
+dotnet run --project src/StressTest -c Release -- http://localhost:5243 http://localhost:5200
+
+# 插件契约校验
+dotnet run --project src/PluginValidator -c Release -- `
+  src/src/BankingAgent.Host/bin/Release/net8.0/plugins
 ```
 
-### 7.3 AI Service 测试
+EF Core CLI 由 `src/.config/dotnet-tools.json` 锁定为 8.0.10：
 
-```bash
-cd ai-service
-pytest
+```powershell
+Push-Location src
+dotnet tool restore
+dotnet ef --version
+Pop-Location
 ```
 
-### 7.4 前端测试
+## 7. 可选增强
 
-```bash
-cd web
-npm test
+### 7.1 大模型意图识别
+
+默认规则引擎不需要 AI Key。需要增强意图识别时，可在当前终端临时注入：
+
+```powershell
+$env:Ai__ApiKey = "sk-xxx"
+dotnet run --project src/src/BankingAgent.Host -c Release
 ```
 
-### 7.5 E2E 测试
+不要把密钥写入仓库。模型不可用时会自动回退到规则表。
 
-```bash
-cd tests/E2E
-npx playwright test
+### 7.2 PostgreSQL
+
+当前本地默认且已验证的路径是 SQLite。代码具备 PostgreSQL Provider 配置能力，但 PostgreSQL 属于生产化演进选项，需要单独准备实例、连接字符串、迁移和密钥管理，不是本地启动前置条件。
+
+## 8. 常见故障
+
+### `.slnx` 无法识别
+
+原因通常是当前 SDK 低于 9.0.200。运行 `dotnet --version`，安装或切换到满足要求的 SDK。
+
+### 提示缺少 .NET 8 运行时或引用程序集
+
+SDK 9 可读取解决方案，但程序目标仍是 `net8.0`。安装 .NET 8 Runtime；编译缺少引用程序集时，再安装 .NET 8 SDK 或 Targeting Pack。
+
+### 插件缺失或依赖未找到
+
+最常见原因是 Release 编译后用默认 Debug 启动。重新执行：
+
+```powershell
+dotnet build src/BankingAgent.slnx -c Release
+dotnet run --project src/src/BankingAgent.Host -c Release
 ```
 
----
+再检查 `src/src/BankingAgent.Host/bin/Release/net8.0/plugins/` 是否包含四个 DLL。
 
-## 8. 常见问题
+### 5200 或 5243 端口被占用
 
-### 8.1 数据库连接失败
-
-```bash
-# 检查容器状态
-docker ps | grep postgres
-
-# 测试连接
-psql -h localhost -p 5432 -U bank_agent -d bank_agent
-
-# 检查 docker 网络
-docker network ls
+```powershell
+Get-NetTCPConnection -LocalPort 5200,5243 -State Listen |
+  Select-Object LocalAddress, LocalPort, OwningProcess
+Get-Process -Id <PID>
 ```
 
-### 8.2 LLM 调用超时
+确认是残留进程后停止它；本项目的默认联调地址固定使用 5200 和 5243，临时改端口时还需同步修改宿主的 `CoreBank:BaseUrl`。
 
-```bash
-# 检查 API Key
-echo $OPENAI_API_KEY
+### `/health` 失败
 
-# 测试 LLM（独立）
-curl -X POST https://api.openai.com/v1/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}'
+先确认 MockBank 已启动，再查看两个终端的启动日志。宿主健康检查包含真实数据库探活；SQLite 文件不可写、进程工作目录异常或数据库文件被占用都会导致失败。
 
-# 如超时，检查网络代理
-export https_proxy=http://proxy.example.com:8080
+### AI Key 配置后未生效
+
+```powershell
+Test-Path Env:Ai__ApiKey
+$env:Ai__ApiKey
 ```
 
-### 8.3 端口冲突
+环境变量会覆盖配置文件，包括空字符串。清除残留值后重启宿主：
 
-修改 `docker-compose.dev.yml` 中对应端口：
-```yaml
-ports:
-  - "5433:5432"  # 改为 5433 避免冲突
+```powershell
+Remove-Item Env:Ai__ApiKey
 ```
-
-### 8.4 数据库 migration 失败
-
-```bash
-# 查看已应用 migrations
-psql -c "SELECT * FROM core.migrations ORDER BY applied_at"
-
-# 回滚
-psql -c "DELETE FROM core.migrations WHERE version = 'V005'"
-```
-
----
 
 ## 9. 关联文档
 
-- **Git 工作流**：[`02-git-workflow.md`](02-git-workflow.md)
-- **测试策略**：[`04-testing-strategy.md`](04-testing-strategy.md)
-- **CI/CD**：[`05-ci-cd-pipeline.md`](05-ci-cd-pipeline.md)
-- **部署架构**：[`../04-operations/01-deployment-architecture.md`](../04-operations/01-deployment-architecture.md)
+- 快速运行与插件排查：[`../plugin/00-quick-start.md`](../plugin/00-quick-start.md)
+- CI：[`05-ci-cd-pipeline.md`](05-ci-cd-pipeline.md)
+- 部署说明：[`../03-deploy/部署说明.md`](../03-deploy/部署说明.md)
+- 版本清单：[`../03-deploy/运行环境与依赖版本清单.md`](../03-deploy/运行环境与依赖版本清单.md)
