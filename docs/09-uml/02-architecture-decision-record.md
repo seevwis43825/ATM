@@ -66,7 +66,7 @@
   同时保留一个最小构造函数供工厂路径使用，它从静态注册表回填贡献器：
 
   ```csharp
-  // SimpleDbContextFactory.cs:20-28
+  // SimpleDbContextFactory.cs
   public BankingDbContext CreateDbContext()
   {
       var contributors = rootProvider.GetServices<IEntitySetContributor>();
@@ -85,7 +85,7 @@
   | 方案 | 放弃原因 |
   |------|----------|
   | A. 把 `BankingDbContext` 改成只有单参构造，依赖全走静态访问 | 架构被测试倒逼：贡献器与当前用户变成全局可变状态，可测性与多租户隔离同时受损 |
-  | B. 放弃 `IDbContextFactory`，Agent 里直接注入 `BankingDbContext` | Agent 是**单例**（`TransferPlugin.cs:40`），无法消费 scoped DbContext；且失去"每次操作独立上下文"的隔离 |
+  | B. 放弃 `IDbContextFactory`，Agent 里直接注入 `BankingDbContext` | Agent 是**单例**（`TransferPlugin.cs`），无法消费 scoped DbContext；且失去"每次操作独立上下文"的隔离 |
   | C. 引入第三方工厂库（`EFCore.Factories` 等） | 引入未审计的依赖，且它同样解决不了 `IEnumerable<T>` 注入问题 |
   | D. 用 `IDbContextFactory` 但把贡献器合并进 `DbContextOptions` 自定义扩展 | 污染 EF 的扩展点，模型缓存与贡献器变更难以失效重建 |
 
@@ -94,10 +94,10 @@
   | 维度 | 内容 |
   |------|------|
   | ✅ 正面 | 插件数据分区与审计身份注入保持强类型、可测；`IDbContextFactory` 接口保持不变，未来换池化实现（`AddPooledDbContextFactory`）只需改 DI 注册 |
-  | ⚖️ 代价 | 多写了 20 行工厂代码；`BankingDbContext` 双构造函数对阅读者有认知成本（已在 `DbContext.cs:49-52` 注释说明） |
-  | ⚠️ 风险 | 单元测试必须复用同一工厂才能构造出正确的 DbContext，已在 `IdempotencyTests.cs:66-67` 注释提醒 |
+  | ⚖️ 代价 | 多写了 20 行工厂代码；`BankingDbContext` 双构造函数对阅读者有认知成本（已在 `DbContext.cs` 注释说明） |
+  | ⚠️ 风险 | 单元测试必须复用同一工厂才能构造出正确的 DbContext，已在 `IdempotencyTests.cs` 注释提醒 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Data/SimpleDbContextFactory.cs`、`src/src/BankingAgent.Base/Data/BankingDbContext.cs:38-58`、`src/src/BankingAgent.Base/BankingCoreServiceCollectionExtensions.cs:98-114`、`src/UnitTests/IdempotencyTests.cs:64-86`
+- **关联代码**：`src/src/BankingAgent.Base/Data/SimpleDbContextFactory.cs`、`src/src/BankingAgent.Base/Data/BankingDbContext.cs`、`src/src/BankingAgent.Base/BankingCoreServiceCollectionExtensions.cs`、`src/UnitTests/IdempotencyTests.cs`
 
 ---
 
@@ -127,12 +127,12 @@
   `DatabaseInitializer.InitializeAsync()` 之前写入：
 
   ```csharp
-  // Program.cs:65
+  // Program.cs
   PluginContributorRegistry.Register(app.Services.GetServices<IEntitySetContributor>());
   ```
 
-  `BankingDbContext` 的最小构造函数调用 `PluginContributorRegistry.Resolve()` 回填（`DbContext.cs:55`），
-  `SimpleDbContextFactory.CreateDbContext` 每次也先 `Register` 再构造（`SimpleDbContextFactory.cs:23`）。
+  `BankingDbContext` 的最小构造函数调用 `PluginContributorRegistry.Resolve()` 回填（`DbContext.cs`），
+  `SimpleDbContextFactory.CreateDbContext` 每次也先 `Register` 再构造（`SimpleDbContextFactory.cs`）。
 
   注册表内部用 `lock` 保证线程安全，`Register` 先 `Items.Clear()` 再 `AddRange`（幂等全量覆盖）。
 
@@ -153,7 +153,7 @@
   | ⚖️ 代价 | 进程级可变全局状态；单元测试之间有串扰风险（`Register` 是全量覆盖，测试需自行保证隔离） |
   | ⚠️ 风险 | `SimpleDbContextFactory.CreateDbContext` **每次调用都重写静态表**。当前是单例 Agent + 每次一个工厂，集合内容恒定，因此无实际竞态；但若未来有多租户动态插件集合，这个设计会失效 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Data/BankingDbContext.cs:172-198`、`src/src/BankingAgent.Base/Data/SimpleDbContextFactory.cs:22-23`、`src/src/BankingAgent.Host/Program.cs:65`
+- **关联代码**：`src/src/BankingAgent.Base/Data/BankingDbContext.cs`、`src/src/BankingAgent.Base/Data/SimpleDbContextFactory.cs`、`src/src/BankingAgent.Host/Program.cs`
 
 ---
 
@@ -163,7 +163,7 @@
 - **日期**：2026-09-27
 - **背景**
 
-  `AgentRequest.Slots` 的类型是 `IReadOnlyDictionary<string, object?>`（`SDK-Agent.cs:39-40`），
+  `AgentRequest.Slots` 的类型是 `IReadOnlyDictionary<string, object?>`（`SDK-Agent.cs`），
   它来自 Minimal API 对请求体 JSON 的反序列化。`System.Text.Json` 在反序列化成 `object` 时，
   **不会**产出 `string` / `int`，而是产出 `System.Text.Json.JsonElement`。
 
@@ -182,10 +182,10 @@
 
   | 方法 | 支持类型 | 位置 |
   |------|----------|------|
-  | `String(request, key)` | `string`、`JsonElement`（String/其他 ValueKind）、`ToString()` 兜底 | `SlotReader.cs:14-25` |
-  | `Decimal(request, key)` | `decimal`、`int`、`long`、`double`、数字字符串、`JsonElement` 数字 | `SlotReader.cs:45-59` |
-  | `Int(request, key)` | `int`、`long`、`decimal`、字符串、`JsonElement` | `SlotReader.cs:81-94` |
-  | `Bool(request, key)` | `bool`、字符串、`JsonElement` 的 True/False | `SlotReader.cs:115-126` |
+  | `String(request, key)` | `string`、`JsonElement`（String/其他 ValueKind）、`ToString()` 兜底 | `SlotReader.cs` |
+  | `Decimal(request, key)` | `decimal`、`int`、`long`、`double`、数字字符串、`JsonElement` 数字 | `SlotReader.cs` |
+  | `Int(request, key)` | `int`、`long`、`decimal`、字符串、`JsonElement` | `SlotReader.cs` |
+  | `Bool(request, key)` | `bool`、字符串、`JsonElement` 的 True/False | `SlotReader.cs` |
 
   每个 `JsonElement` 分支都用 `try/catch (ObjectDisposedException)` 包住，
   文档已释放时**降级返回 `null`**，让 Agent 走"槽位缺失"路径（例如触发正则兜底解析），而不是让整个请求失败。
@@ -203,11 +203,11 @@
 
   | 维度 | 内容 |
   |------|------|
-  | ✅ 正面 | 三个插件的槽位读取全部统一（`TransferAgent.cs:63-66`、`BillPlugin.cs:68-70`、`CardPlugin.cs:102`）；已有 4 个单元测试专门覆盖（`SlotReaderTests.cs`） |
+  | ✅ 正面 | 四个插件的槽位读取全部统一（转账、账单、卡片、理财均使用 `SlotReader`）；已有单元测试专门覆盖 |
   | ⚖️ 代价 | 每次读槽位多一层 switch；Base 承担了一点"便利性"职责 |
   | ⚠️ 风险 | 兜底分支 `value.ToString()` 对未知类型返回 `object.ToString()` 结果（如 `System.Collections.Hashtable` 的类型名），属于**静默错误**。约定：Agent 对关键槽位必须用 `!= null` 显式判断 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Agents/SlotReader.cs`、`src/UnitTests/SlotReaderTests.cs`、`src/plugins/BankingAgent.Plugin.Transfer/TransferAgent.cs:63-66`
+- **关联代码**：`src/src/BankingAgent.Base/Agents/SlotReader.cs`、`src/UnitTests/SlotReaderTests.cs`、`src/plugins/BankingAgent.Plugin.Transfer/TransferAgent.cs`
 
 ---
 
@@ -218,7 +218,7 @@
 - **背景**
 
   `IBankingAgent.SupportedIntents` 是一个**意图前缀列表**，而实际路由键是更细的意图字符串。
-  当前三个 Agent 的声明存在天然重叠：
+  当前四个 Agent 的声明存在天然重叠：
 
   | Agent | 声明的前缀 |
   |-------|-----------|
@@ -235,7 +235,7 @@
   `Resolve` 收集所有前缀命中的 Agent，按**命中前缀的最大长度倒序**排序，取第一个：
 
   ```csharp
-  // AgentRouter.cs:31-38
+  // AgentRouter.cs
   return _agents
       .Where(a => a.SupportedIntents.Any(p => intent.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
       .OrderByDescending(a => a.SupportedIntents
@@ -248,7 +248,7 @@
   - 匹配使用 `StringComparison.OrdinalIgnoreCase`（意图来自 LLM，大小写不可控）
   - 无匹配时返回 `null`，`RouteAsync` 转为 `AgentResult.Fail("NO_AGENT", ...)` 而非抛异常——
     **未识别意图是正常业务结果，不是系统故障**
-  - 路由表在 `AgentRouter` 构造时从 `IEnumerable<IBankingAgent>` 一次性收集（`AgentRouter.cs:17-21`），
+  - 路由表在 `AgentRouter` 构造时从 `IEnumerable<IBankingAgent>` 一次性收集（`AgentRouter.cs`），
     插件的 Agent 都是单例，集合在进程生命周期内不变
 
 - **备选方案**
@@ -264,11 +264,11 @@
 
   | 维度 | 内容 |
   |------|------|
-  | ✅ 正面 | 意图细分零成本；`UnitTests/IdempotencyTests.cs:159-165` 有专门的 `Resolve_LongestPrefixWins` 用例 |
+  | ✅ 正面 | 意图细分零成本；`UnitTests/IdempotencyTests.cs` 有专门的 `Resolve_LongestPrefixWins` 用例 |
   | ⚖️ 代价 | 每次路由是 O(Agent 数 × 前缀数) 的字符串比较。当前 3 个 Agent，可忽略 |
   | ⚠️ 风险 | **前缀冲突无法在编译期发现**。若两个 Agent 都声明了 `transfer`，且长度相同，`OrderByDescending` 是稳定排序，结果取决于 DI 注册顺序，**不可预测**。约定：插件应声明尽可能具体的前缀；后续应引入启动期冲突检测（见第 7 节遗留项） |
 
-- **关联代码**：`src/src/BankingAgent.Base/Agents/AgentRouter.cs:27-61`、`src/UnitTests/IdempotencyTests.cs:131-202`
+- **关联代码**：`src/src/BankingAgent.Base/Agents/AgentRouter.cs`、`src/UnitTests/IdempotencyTests.cs`
 
 ---
 
@@ -292,7 +292,7 @@
   合并为 `SignAndAdvance`，把**读链尾 → 规范化 → 算 HMAC → 写链尾**四步放进同一个 `lock (_gate)` 临界区：
 
   ```csharp
-  // AuditLogger.cs:98-114
+  // AuditLogger.cs
   public AuditEvent SignAndAdvance(AuditEvent evt)
   {
       if (!_options.EnableChainSignature) return evt;
@@ -307,14 +307,14 @@
   }
   ```
 
-  签名输入的规范化（`Canonicalize`，`AuditLogger.cs:160-174`）刻意**只取 10 个字段**并用 `|` 分隔，
+  签名输入的规范化（`Canonicalize`，`AuditLogger.cs`）刻意**只取 10 个字段**并用 `|` 分隔，
   字段顺序固定，保证同一条事件在任何机器上重算出相同的 payload。
   金额用 `ToString("F2")` 固定两位小数，避免 `1000` 与 `1000.00` 造成签名不一致。
 
-  另外保留 `Sign(evt)` 方法（`AuditLogger.cs:117-131`）：**只算不推进**，仅供离线校验与单元测试使用，
+  另外保留 `Sign(evt)` 方法（`AuditLogger.cs`）：**只算不推进**，仅供离线校验与单元测试使用，
   绝不能出现在生产写路径上。
 
-  `VerifyChain` 使用 `CryptographicOperations.FixedTimeEquals` 做签名比对（`AuditLogger.cs:147-149`），
+  `VerifyChain` 使用 `CryptographicOperations.FixedTimeEquals` 做签名比对（`AuditLogger.cs`），
   避免时序侧信道。
 
 - **备选方案**
@@ -330,11 +330,11 @@
 
   | 维度 | 内容 |
   |------|------|
-  | ✅ 正面 | 链的完整性有了确定的并发语义；`AuditLoggerTests.cs` + E2E 测试 `E2ETest/Program.cs:341-342` 双重验证 |
+  | ✅ 正面 | 链的完整性有了确定的并发语义；`AuditLoggerTests.cs` + E2E 测试 `E2ETest/Program.cs` 双重验证 |
   | ⚖️ 代价 | 所有审计写入被串行化。HMAC-SHA256 对几百字节输入耗时在微秒级，实测无压力 |
-  | ⚠️ 风险 | `_lastSignature` 只存在于**进程内存**（`AuditLogger.cs:73`），进程重启后链从 `GENESIS` 重开，<br>而审计文件是追加的、不清空。结果：`VerifyChain` 跨重启会报告断链。生产化方案见第 7 节 |
+  | ⚠️ 风险 | `_lastSignature` 只存在于**进程内存**（`AuditLogger.cs`），进程重启后链从 `GENESIS` 重开，<br>而审计文件是追加的、不清空。结果：`VerifyChain` 跨重启会报告断链。生产化方案见第 7 节 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs:93-157`、`src/UnitTests/AuditLoggerTests.cs`
+- **关联代码**：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`、`src/UnitTests/AuditLoggerTests.cs`
 
 ---
 
@@ -345,7 +345,7 @@
 - **背景**
 
   审计除了写内存链，还要追加一份**独立的离线证据文件** `logs/audit-chain.log`
-  （`AuditOptions.FilePath`，`AuditLogger.cs:23`）。设计意图是：数据库可能被攻破，但文件在另一个介质上，
+  （`AuditOptions.FilePath`，`AuditLogger.cs`）。设计意图是：数据库可能被攻破，但文件在另一个介质上，
   离线校验时能把文件内容重新串成链。
 
   关键约束是"每一行必须是一个完整、可解析的 JSON 记录"。
@@ -359,7 +359,7 @@
   用 `SemaphoreSlim(1, 1)` 把文件追加完全串行化，并规定"追加失败必须显式告警，不允许静默丢弃"：
 
   ```csharp
-  // AuditLogger.cs:209-224
+  // AuditLogger.cs
   // 文件追加本身不是线程安全的，并发写会撕裂行，审计证据不可接受
   await _fileGate.WaitAsync(ct);
   try { await File.AppendAllTextAsync(_options.FilePath, line, ct); }
@@ -379,8 +379,8 @@
      但必须留下 `LogCritical`。这是"可用性优先 + 强告警"的取舍。
 
   此外，文件中的 `ActorId` 经 `HashActor` 处理，取 SHA-256 前 12 个十六进制字符
-  （`AuditLogger.cs:228-232`），符合最小化原则：审计要能证明"谁做的"，但不需要在文件里存明文用户标识。
-  E2E 测试 `E2ETest/Program.cs:336` 断言了"文件里不出现明文 `u_demo01`"。
+  （`AuditLogger.cs`），符合最小化原则：审计要能证明"谁做的"，但不需要在文件里存明文用户标识。
+  E2E 测试 `E2ETest/Program.cs` 断言了"文件里不出现明文 `u_demo01`"。
 
 - **备选方案**
 
@@ -399,7 +399,7 @@
   | ⚖️ 代价 | 审计写入成为全局串行点，文件 IO 抖动会传导到请求延迟 |
   | ⚠️ 风险 | 磁盘满时只 `LogCritical` 不重试也不落库。生产化应补：写失败计数 + 告警对接 + 本地环形缓冲兜底 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs:70-72`、`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs:183-232`
+- **关联代码**：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`、`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`
 
 ---
 
@@ -411,7 +411,7 @@
 
   项目早期版本的 `/api/chat` 直接信任请求体里的 `userId` 字段。
   这是一个**致命的水平越权漏洞**：任何人只要把 body 里的 `userId` 改成别人的 ID，
-  就能查别人的卡、看别人的账单、甚至向别人转账。`Program.cs:83-84` 的注释记录了这个修复背景。
+  就能查别人的卡、看别人的账单、甚至向别人转账。`Program.cs` 的注释记录了这个修复背景。
 
   修复需要同时解决两件事：
   1. **身份可信** —— 请求方声明的 userId 不能直接用。
@@ -424,35 +424,35 @@
   令牌自包含，服务端与客户端共享同一把密钥，无需 JWKS 端点，适合单体架构快速落地。
 
   密钥强度在**构造时**校验，长度不足 32 字节直接抛 `InvalidOperationException`
-  （`TokenService.cs:27-31`）——把配置错误拦在启动期。
-  使用开发默认密钥时打 Warning（`TokenService.cs:33-37`）。
-  `Validate` 完整校验 issuer / audience / 签名 / 生命周期，`ClockSkew` 容忍 30 秒（`TokenService.cs:96`）。
+  （`TokenService.cs`）——把配置错误拦在启动期。
+  使用开发默认密钥时打 Warning（`TokenService.cs`）。
+  `Validate` 完整校验 issuer / audience / 签名 / 生命周期，`ClockSkew` 容忍 30 秒（`TokenService.cs`）。
 
   ### 决策 B：角色一律以服务端账号表为准
 
-  `TokenRequest` 记录里有 `Role` 字段（`Program.cs:524`），但签发时被**完全忽略**：
+  `TokenRequest` 记录里有 `Role` 字段（`Program.cs`），但签发时被**完全忽略**：
 
   ```csharp
-  // Program.cs:141-143
+  // Program.cs
   // 角色一律以服务端账号表为准，绝不信任客户端传入的角色（否则可自助提权）
   var role = DemoCredentials.GetRole(req.UserId) ?? JwtRoles.User;
   var token = tokenService.IssueToken(req.UserId, role, displayName);
   ```
 
-  同时，密码校验失败统一返回 401，不区分"用户不存在"与"密码错误"（`Program.cs:137-139`），
+  同时，密码校验失败统一返回 401，不区分"用户不存在"与"密码错误"（`Program.cs`），
   避免账号枚举。
 
   ### 决策 C：userId 一律从令牌提取
 
-  `/api/chat` 里 `effectiveUserId = principal.UserId`（`Program.cs:354`），
+  `/api/chat` 里 `effectiveUserId = principal.UserId`（`Program.cs`），
   请求体的 `userId` **只用于越权比对**（不一致且无代客权限 → 403）。
-  `/api/chat/confirm` 同样比对（`Program.cs:427-432`）——**确认动作也不能代客**，
+  `/api/chat/confirm` 同样比对（`Program.cs`）——**确认动作也不能代客**，
   除非持有 `CanImpersonateSupport`。
 
   ### 决策 D：代客操作必须留痕
 
   客服/审计/管理员代客时必须提供 `impersonationReason`，缺失返回 400
-  （`Program.cs:361-368`），并写入一条 `user.impersonation` 审计（`Program.cs:382-392`），
+  （`Program.cs`），并写入一条 `user.impersonation` 审计（`Program.cs`），
   `ActorType = "STAFF"`、`ActorId` 是**客服本人**而非被代理用户。
 
 - **备选方案**
@@ -469,11 +469,11 @@
 
   | 维度 | 内容 |
   |------|------|
-  | ✅ 正面 | 越权漏洞闭环；E2E 测试覆盖了 4 个场景：无令牌 401、伪造令牌 401、越权 401/403、正常 200（`Program.cs:145-177`） |
+  | ✅ 正面 | 越权漏洞闭环；E2E 测试覆盖了 4 个场景：无令牌 401、伪造令牌 401、越权 401/403、正常 200（`Program.cs`） |
   | ⚖️ 代价 | 令牌无主动吊销能力（用户改密码/登出后旧令牌在 30 分钟内仍有效） |
-  | ⚠️ 风险 | 令牌有效期 30 分钟且无刷新机制；演示账号密码明文写在 `DemoCredentials`（`Program.cs:542-550`），<br>生产必须替换为统一身份认证，代码注释已明确标注 |
+  | ⚠️ 风险 | 令牌有效期 30 分钟且无刷新机制；演示账号密码明文写在 `DemoCredentials`（`Program.cs`），<br>生产必须替换为统一身份认证，代码注释已明确标注 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Security/Auth/TokenService.cs`、`src/src/BankingAgent.Base/Security/Auth/JwtOptions.cs`、`src/src/BankingAgent.Host/Program.cs:87-117`、`src/src/BankingAgent.Host/Program.cs:127-154`
+- **关联代码**：`src/src/BankingAgent.Base/Security/Auth/TokenService.cs`、`src/src/BankingAgent.Base/Security/Auth/JwtOptions.cs`、`src/src/BankingAgent.Host/Program.cs`、`src/src/BankingAgent.Host/Program.cs`
 
 ---
 
@@ -498,18 +498,18 @@
 
   **完全不引入 ASP.NET Core Authentication/Authorization 体系**，改为：
 
-  1. 在 `app.Use(...)` 里写一个显式的鉴权中间件（`Program.cs:87-117`），手工完成：
+  1. 在 `app.Use(...)` 里写一个显式的鉴权中间件（`Program.cs`），手工完成：
      取 `Authorization` 头 → `ITokenService.Validate` → 成功则 `CurrentUserAccessor.Enter` 并放进 `ctx.Items["Principal"]`。
-  2. 免认证白名单用**路径前缀匹配**实现（`Program.cs:486-489`），只放行 `/health` 与 `/api/auth/token`。
+  2. 免认证白名单用**路径前缀匹配**实现（`Program.cs`），只放行 `/health` 与 `/api/auth/token`。
   3. 401 直接写响应体：
      ```csharp
-     // Program.cs:111-116
+     // Program.cs
      ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
      await ctx.Response.WriteAsJsonAsync(new { code = "UNAUTHORIZED", message = "..." });
      ```
   4. 403 用**显式构造的 `IResult`**，绕开 `Forbid()`：
      ```csharp
-     // Program.cs:478-484
+     // Program.cs
      /// 返回 403。自定义中间件下 Results.Forbid() 需要 ASP.NET Core
      /// 鉴权方案配合，否则会抛 InvalidOperationException，因此显式构造响应。
      static IResult Forbidden(string message) => Results.Json(
@@ -519,7 +519,7 @@
   5. 权限判断走 `CurrentPrincipal` 的能力属性（`CanAudit` / `CanAdminister` / `CanImpersonateSupport`），
      而非 `[Authorize(Policy=...)]` 特性或 `IAuthorizationService`。
 
-  身份通过 `AsyncLocal` 传递给数据层（`CurrentUserAccessor`，`DbContext.cs:210-239`），
+  身份通过 `AsyncLocal` 传递给数据层（`CurrentUserAccessor`，`DbContext.cs`），
   使 `CreatedBy` / `UpdatedBy` 拿到真实操作者。
 
 - **备选方案**
@@ -537,9 +537,9 @@
   |------|------|
   | ✅ 正面 | 零外部依赖、行为完全可控；错误响应体格式统一（`{code, message}`）；能力模型简单可测 |
   | ⚖️ 代价 | **放弃了 ASP.NET Core 生态的一整套能力**：Swagger 的 Authorize 按钮、`[Authorize]` 特性、基于 Policy 的细粒度授权、Blazor/Identity 的集成 |
-  | ⚠️ 风险 | 白名单用 `StartsWith` 匹配（`Program.cs:487-489`），若将来新增 `/healthz/detail` 之类端点会被误放行。约定：白名单项必须是**完整端点**；后续可改为 `PathString` 精确集合 |
+  | ⚠️ 风险 | 白名单用 `StartsWith` 匹配（`Program.cs`），若将来新增 `/healthz/detail` 之类端点会被误放行。约定：白名单项必须是**完整端点**；后续可改为 `PathString` 精确集合 |
 
-- **关联代码**：`src/src/BankingAgent.Host/Program.cs:82-117`、`src/src/BankingAgent.Host/Program.cs:478-499`、`src/src/BankingAgent.Base/Data/BankingDbContext.cs:200-239`
+- **关联代码**：`src/src/BankingAgent.Host/Program.cs`、`src/src/BankingAgent.Host/Program.cs`、`src/src/BankingAgent.Base/Data/BankingDbContext.cs`
 
 ---
 
@@ -569,7 +569,7 @@
   **提前构建一个临时容器（bootstrap）供插件加载期使用，插件服务再合并回主容器，正式 Build 后立刻释放临时容器**：
 
   ```csharp
-  // Program.cs:33-62
+  // Program.cs
   var bootstrap = builder.Services.BuildServiceProvider();          // 临时容器
   var registry = new PluginRegistry(bootstrap, ...);
   var loaded = await registry.LoadFromDirectoryAsync(pluginDir);    // 插件 ConfigureServices 写入 registry.Services
@@ -580,11 +580,11 @@
   await bootstrap.DisposeAsync();                                   // 立即释放临时容器
   ```
 
-  `PluginRegistry` 内部持有一个自己的 `IServiceCollection _serviceCollection`（`PluginRegistry.cs:80`），
+  `PluginRegistry` 内部持有一个自己的 `IServiceCollection _serviceCollection`（`PluginRegistry.cs`），
   插件先注册到它，宿主再逐条 `Add` 进主容器——这样插件加载逻辑与宿主装配解耦，
   `PluginRegistry` 也可以脱离 ASP.NET Core 单独测试。
 
-  依赖拓扑排序在合并之前完成（`PluginRegistry.cs:135-139`），保证依赖方在其依赖方之后启动。
+  依赖拓扑排序在合并之前完成（`PluginRegistry.cs`），保证依赖方在其依赖方之后启动。
 
 - **备选方案**
 
@@ -601,10 +601,10 @@
   |------|------|
   | ✅ 正面 | 插件目录即插即用，宿主不重编译；`PluginRegistry` 与 Web 框架解耦 |
   | ⚖️ 代价 | 手动 `BuildServiceProvider()` 属于"早期介入"反模式，官方文档并不推荐；本项目接受这个代价，因为它是唯一能同时满足三个约束的方案 |
-  | ⚠️ 风险 1 | 临时容器若忘记 `DisposeAsync`（`Program.cs:62`）会泄漏单例（如 `SqliteConnection`）。当前代码已正确释放 |
+  | ⚠️ 风险 1 | 临时容器若忘记 `DisposeAsync`（`Program.cs`）会泄漏单例（如 `SqliteConnection`）。当前代码已正确释放 |
   | ⚠️ 风险 2 | 临时容器里解析出的服务实例与正式容器里的**不是同一个对象**。当前 `PluginRegistry` 只用它当"服务查询入口"传给插件（插件不在 `ConfigureServices` 阶段解析服务），所以安全。**约定：插件不得在 `ConfigureServices` 内解析服务** |
 
-- **关联代码**：`src/src/BankingAgent.Host/Program.cs:27-62`、`src/src/BankingAgent.Base/Plugins/PluginRegistry.cs:72-197`
+- **关联代码**：`src/src/BankingAgent.Host/Program.cs`、`src/src/BankingAgent.Base/Plugins/PluginRegistry.cs`
 
 ---
 
@@ -636,17 +636,17 @@
 
   | 需求 | 实现 |
   |------|------|
-  | 解耦 | 订阅索引 `ConcurrentDictionary<string, List<IDomainEventHandler>>`（`EventBus.cs:14`） |
-  | 精确 + 通配 | 发布时同时查 `evt.EventType` 与 `"*"` 两个键（`EventBus.cs:64-71`） |
-  | 死信 | 单个处理器异常被 try/catch 捕获，事件入 `ConcurrentQueue<DomainEvent> _deadLetters`（`EventBus.cs:79-84`） |
-  | 历史 | `_history` 保留最近 500 条，超出丢最旧（`EventBus.cs:57`） |
-  | 计数 | `Interlocked.Increment` 保证并发下不丢计数（`EventBus.cs:53`） |
-  | 可观测 | `Program.cs:307-319` 暴露 `GET /api/plugins/events` |
+  | 解耦 | 订阅索引 `ConcurrentDictionary<string, List<IDomainEventHandler>>`（`EventBus.cs`） |
+  | 精确 + 通配 | 发布时同时查 `evt.EventType` 与 `"*"` 两个键（`EventBus.cs`） |
+  | 死信 | 单个处理器异常被 try/catch 捕获，事件入 `ConcurrentQueue<DomainEvent> _deadLetters`（`EventBus.cs`） |
+  | 历史 | `_history` 保留最近 500 条，超出丢最旧（`EventBus.cs`） |
+  | 计数 | `Interlocked.Increment` 保证并发下不丢计数（`EventBus.cs`） |
+  | 可观测 | `Program.cs` 暴露 `GET /api/plugins/events` |
 
   **不用 MediatR 的原因**（具体，不是泛泛而谈）：
 
   1. **MediatR 的 `INotificationHandler<T>` 是泛型强绑定的**，而本项目的 `DomainEvent` 是**单个信封类型**
-     携带 `EventType` 字符串（`EventContracts.cs:7-17`）。用 MediatR 就得为每种事件定义一个类型，
+     携带 `EventType` 字符串（`EventContracts.cs`）。用 MediatR 就得为每种事件定义一个类型，
      或者加一层 marker 泛型包装——都比重写订阅索引更麻烦。
   2. MediatR v12 起对 `IPublisher` 的许可与版本策略有变化，5 人团队维护一个 MIT 许可切换的依赖不划算。
   3. 死信队列 MediatR 不提供，需要自己加 `IPipelineBehavior`。
@@ -656,10 +656,10 @@
 
   | 步骤 | 动作 | 影响面 |
   |------|------|------|
-  | 1 | 新增 `KafkaEventPublisher : IEventPublisher`，实现同样的 `PublishAsync` | **插件零改动**（它们只依赖 `IEventPublisher`，`EventContracts.cs:28-31`） |
-  | 2 | 在 `AddBankingCore` 里根据配置选择实现 | 只改 `DIExtensions.cs:43-49` 一处 |
+  | 1 | 新增 `KafkaEventPublisher : IEventPublisher`，实现同样的 `PublishAsync` | **插件零改动**（它们只依赖 `IEventPublisher`，`EventContracts.cs`） |
+  | 2 | 在 `AddBankingCore` 里根据配置选择实现 | 只改 `DIExtensions.cs` 一处 |
   | 3 | 事件契约 `DomainEvent` 已与 CloudEvents 字段命名对齐（`EventId`/`Source`/`OccurredAt`/`CorrelationId`） | 可直接映射到 Kafka message headers，无需改契约 |
-  | 4 | 处理器侧引入 outbox，保证"落库"与"发消息"的原子性 | ⚠️ **当前实现缺少 outbox**：`TransferAgent` 先 `SaveChangesAsync` 再 `PublishAsync`（`TransferAgent.cs:209` → `:212`），进程崩溃会丢事件。这是迁移到 Kafka 之前**必须先补**的 |
+  | 4 | 处理器侧引入 outbox，保证"落库"与"发消息"的原子性 | ⚠️ **当前实现缺少 outbox**：`TransferAgent` 先 `SaveChangesAsync` 再 `PublishAsync`（`TransferAgent.cs` → `:212`），进程崩溃会丢事件。这是迁移到 Kafka 之前**必须先补**的 |
 
 - **备选方案**
 
@@ -675,12 +675,12 @@
 
   | 维度 | 内容 |
   |------|------|
-  | ✅ 正面 | 零依赖；插件间零耦合（账单插件订阅转账插件的事件，两个插件互不引用，见 `BillPlugin.cs:120`）；死信与历史可观测 |
+  | ✅ 正面 | 零依赖；插件间零耦合（账单插件订阅转账插件的事件，两个插件互不引用，见 `BillPlugin.cs`）；死信与历史可观测 |
   | ⚖️ 代价 | 事件**不跨进程**、**不持久化**；进程重启丢失历史 |
-  | ⚠️ 风险 1 | 发布是 `await` 同步串行的（`EventBus.cs:77`），慢处理器会拖慢转账请求的响应时间 |
-  | ⚠️ 风险 2 | 合规规则短路导致 `AmlThresholdRule` 在大额场景下**不会被执行**（`TransferAmountRule` 先返回，见 `ComplianceGuard.cs:77-85`）。当前 `RiskScore` 仍写审计，合规视角可接受；若未来要求"所有规则都跑一遍再汇总"，需要把 `Evaluate` 改为全量收集模式 |
+  | ⚠️ 风险 1 | 发布是 `await` 同步串行的（`EventBus.cs`），慢处理器会拖慢转账请求的响应时间 |
+  | ⚠️ 风险 2 | 合规规则短路导致 `AmlThresholdRule` 在大额场景下**不会被执行**（`TransferAmountRule` 先返回，见 `ComplianceGuard.cs`）。当前 `RiskScore` 仍写审计，合规视角可接受；若未来要求"所有规则都跑一遍再汇总"，需要把 `Evaluate` 改为全量收集模式 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Events/InMemoryEventBus.cs`、`src/src/BankingAgent.Plugin.Sdk/EventContracts.cs`、`src/src/BankingAgent.Base/BankingCoreServiceCollectionExtensions.cs:44-50`、`src/plugins/BankingAgent.Plugin.BillAnalysis/BillAnalysisPlugin.cs:112-133`
+- **关联代码**：`src/src/BankingAgent.Base/Events/InMemoryEventBus.cs`、`src/src/BankingAgent.Plugin.Sdk/EventContracts.cs`、`src/src/BankingAgent.Base/BankingCoreServiceCollectionExtensions.cs`、`src/plugins/BankingAgent.Plugin.BillAnalysis/BillAnalysisPlugin.cs`
 
 ---
 
@@ -695,17 +695,17 @@
   当前系统的幂等实现在 `TransferAgent`：
 
   ```csharp
-  // TransferAgent.cs:140-163
+  // TransferAgent.cs
   var idempotencyKey = request.SessionId ?? Guid.NewGuid().ToString("N");
   await using var db = await _dbFactory.CreateDbContextAsync(ct);
   var existing = await db.Set<TransferRecord>().FirstOrDefaultAsync(x => x.IdempotencyKey == idempotencyKey, ct);
   if (existing is not null) { /* 返回原结果，不重复扣款 */ }
   ```
 
-  配套还有数据库唯一索引 `entity.HasIndex(e => e.IdempotencyKey).IsUnique()`（`TransferPlugin.cs:83`）。
+  配套还有数据库唯一索引 `entity.HasIndex(e => e.IdempotencyKey).IsUnique()`（`TransferPlugin.cs`）。
 
   问题在于：**`sessionId` 是什么？** 它是客户端在 `/api/chat` 里自带的会话标识
-  （`ChatRequest.SessionId`，`Program.cs:520`），客户端可以传、可以复用、可以随便填。
+  （`ChatRequest.SessionId`，`Program.cs`），客户端可以传、可以复用、可以随便填。
   用它当幂等键是三个候选里最省事但最不安全的一个。
 
 - **决策**
@@ -714,15 +714,15 @@
 
   | 候选 | 取舍 |
   |------|------|
-  | A. `SessionId` ✅ | 客户端无需改造；人工确认链路天然复用（`/api/chat/confirm` 传同一个 `sessionId`，`Program.cs:456`）。代价是语义错位——一个会话可以有 N 笔转账，但只有一个键 |
+  | A. `SessionId` ✅ | 客户端无需改造；人工确认链路天然复用（`/api/chat/confirm` 传同一个 `sessionId`，`Program.cs`）。代价是语义错位——一个会话可以有 N 笔转账，但只有一个键 |
   | B. `Idempotency-Key` HTTP 头（业界标准做法） | 需要客户端配合改造；且 `/api/chat` 是自然语言入口，"这次请求"与"这次会话"边界模糊，前端要额外维护键的生命周期 |
   | C. 服务端按 `userId + 金额 + 收款方 + 时间窗` 哈希 | 无需客户端传参，但**极其危险**：用户合法地转两笔相同金额给同一人会被误判为重复，静默丢单 |
 
   选定 A 之后补三条约束：
 
-  1. **`sessionId` 为空时降级为随机 GUID**（`TransferAgent.cs:141`），保证键永远非空。
+  1. **`sessionId` 为空时降级为随机 GUID**（`TransferAgent.cs`），保证键永远非空。
   2. **人工确认必须复用原 `sessionId`**，`/api/chat/confirm` 的 `SessionId` 是必填语义字段。
-  3. **命中重复时返回 `idempotent_replay = true` 并携带原 `transaction_no`**（`TransferAgent.cs:156-161`），
+  3. **命中重复时返回 `idempotent_replay = true` 并携带原 `transaction_no`**（`TransferAgent.cs`），
      而不是报错——因为对客户端而言这是成功。
 
 - **备选方案**
@@ -738,13 +738,13 @@
 
   | # | 缺陷 | 位置 | 严重度 |
   |---|------|------|:------:|
-  | 1 | **同一会话内的两笔不同转账会被误判为重复**。第二笔不执行，且返回"该转账已处理过，流水号 XXX"——用户看到的是**错误的成功信息** | `TransferAgent.cs:144-163` | 🔴 高 |
-  | 2 | **并发下可能重复扣款**。检查（`:144`）与写入（`:208`）之间无事务无锁，中间还调了核心系统（`:166`）。两个同 `sessionId` 的并发请求可能都通过检查 | `TransferAgent.cs:144` / `:166` / `:208` | 🔴 高 |
-  | 3 | **唯一索引拦不住缺陷 2**。唯一索引只保证不会出现两条相同键的记录；但两次扣款发生在索引冲突之前 | `TransferPlugin.cs:83` | 🔴 高 |
-  | 4 | **`CoreBankClient` 没把 `IdempotencyKey` 发给核心系统**，CBS 侧无第二道防线 | `CoreBankClient.cs:63-71` | 🟠 中 |
-  | 5 | `UnitOfWork.TryRegisterIdempotencyKey` 注册为 Scoped，其字典生命周期只有单请求，实际无防护作用 | `DIExtensions.cs:115`、`UnitOfWork.cs:13` | 🟢 低（冗余代码） |
+  | 1 | **同一会话内的两笔不同转账会被误判为重复**。第二笔不执行，且返回"该转账已处理过，流水号 XXX"——用户看到的是**错误的成功信息** | `TransferAgent.cs` | 🔴 高 |
+  | 2 | **并发下可能重复扣款**。检查（`:144`）与写入（`:208`）之间无事务无锁，中间还调了核心系统（`:166`）。两个同 `sessionId` 的并发请求可能都通过检查 | `TransferAgent.cs` / `:166` / `:208` | 🔴 高 |
+  | 3 | **唯一索引拦不住缺陷 2**。唯一索引只保证不会出现两条相同键的记录；但两次扣款发生在索引冲突之前 | `TransferPlugin.cs` | 🔴 高 |
+  | 4 | **`CoreBankClient` 没把 `IdempotencyKey` 发给核心系统**，CBS 侧无第二道防线 | `CoreBankClient.cs` | 🟠 中 |
+  | 5 | `UnitOfWork.TryRegisterIdempotencyKey` 注册为 Scoped，其字典生命周期只有单请求，实际无防护作用 | `DIExtensions.cs`、`UnitOfWork.cs` | 🟢 低（冗余代码） |
 
-  **已验证的部分**：E2E 测试 `E2ETest/Program.cs:305` 断言"重复请求后余额未重复扣款"——
+  **已验证的部分**：E2E 测试 `E2ETest/Program.cs` 断言"重复请求后余额未重复扣款"——
   串行重复场景是**通过**的。风险集中在并发与同会话多笔。
 
   **改造方向（分三步，建议按序推进）**：
@@ -759,7 +759,7 @@
      插入时用 `INSERT ... ON CONFLICT DO NOTHING` 抢占，天然解决并发双写（修缺陷 2、3）。
      这一步同时会让 [转账生命周期状态图](01-uml-diagrams.md#10-状态图转账生命周期) 变得名副其实。
 
-- **关联代码**：`src/plugins/BankingAgent.Plugin.Transfer/TransferAgent.cs:140-163`、`src/plugins/BankingAgent.Plugin.Transfer/TransferPlugin.cs:83`、`src/src/BankingAgent.Base/CoreBank/CoreBankClient.cs:59-108`、`src/src/BankingAgent.Base/Data/UnitOfWork.cs:43-48`、`src/UnitTests/IdempotencyTests.cs`
+- **关联代码**：`src/plugins/BankingAgent.Plugin.Transfer/TransferAgent.cs`、`src/plugins/BankingAgent.Plugin.Transfer/TransferPlugin.cs`、`src/src/BankingAgent.Base/CoreBank/CoreBankClient.cs`、`src/src/BankingAgent.Base/Data/UnitOfWork.cs`、`src/UnitTests/IdempotencyTests.cs`
 
 ---
 

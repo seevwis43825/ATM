@@ -1,13 +1,31 @@
 # 事件 Schema 规范（Event Schema）
 
-> **状态**：评审中 · **所有者**：架构师 + 业务开发 · **版本**：v1.0
+> [!IMPORTANT]
+> **Current vs Target**：当前代码使用 SDK 的 `DomainEvent` 信封与
+> `InMemoryEventBus`，主要业务事件为 `transfer.completed`，由转账插件发布、
+> 账单插件订阅。本文其余 CloudEvents 类型与 Schema Registry 均为**目标态契约**，
+> 不能据此假定事件已发布、跨进程持久化或已部署 Schema 服务。
+>
+> **状态**：目标规范评审中 · **所有者**：架构师 + 业务开发 · **版本**：v1.0
 > **最后更新**：2026-09-21
 
-> 事件契约详见 [`../00-architecture/07-event-driven-contract.md`](../00-architecture/07-event-driven-contract.md)。本文给出**具体的事件 JSON Schema**。
+> 当前事件契约见 `BankingAgent.Plugin.Sdk.DomainEvent` 与
+> `BankingAgent.Base.Events.InMemoryEventBus`；目标契约详见
+> [`../00-architecture/07-event-driven-contract.md`](../00-architecture/07-event-driven-contract.md)。
+
+## 0. 当前实现
+
+当前信封字段为 `EventId`、`EventType`、`Source`、`OccurredAt`、
+`CorrelationId`、`UserId` 与 `Payload`。`InMemoryEventBus` 支持精确/通配订阅、
+最近事件历史与内存死信，但不跨进程、不持久化。
+
+| 当前事件 | 发布方 | 订阅方 | 状态 |
+|---|---|---|---|
+| `transfer.completed` | `banking.transfer` | `banking.bill` | ✅ 已实现 |
 
 ---
 
-## 1. 通用外壳（CloudEvents 1.0）
+## 1. 目标通用外壳（CloudEvents 1.0）
 
 ```json
 {
@@ -389,7 +407,8 @@
 | `com.bankagent.cross_scenario.triggered.v1` | `https://schemas.bankagent.com/scenario-triggered/v1.json` | v1 | 2026-09-21 |
 | `com.bankagent.audit.logged.v1` | `https://schemas.bankagent.com/audit-logged/v1.json` | v1 | 2026-09-21 |
 
-所有 schema 文件存放于 `docs/02-api/schemas/`，并通过 CI/CD 自动发布到 schema 服务。
+> 上表是目标注册表。Schema 文件与自动发布服务尚未完整落地；是否存在、是否发布
+> 必须以仓库和 CI 的实际产物为准。
 
 ---
 

@@ -3,13 +3,27 @@
 > **说明**：本文件记录**代码里真实存在**的端点。
 > 设计层面的完整 API 规范见 [`../02-api/01-rest-api-spec.md`](../02-api/01-rest-api-spec.md)，
 > 两者差异见 [`03-implementation-status.md`](03-implementation-status.md)。
-> **实测状态**：所有端点已通过端到端测试验证（30/30）。
+> **验证口径**：单元测试 149 项已实测通过；E2E/Stress 的检查项以程序最终输出和 CI 为准。
 
 ---
 
 ## 1. 宿主服务 :5243
 
 Base URL：`http://localhost:5243`
+
+### 当前 Host 端点矩阵
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/health`、`/health/ready`、`/health/live` | 健康、就绪、存活探针 |
+| POST | `/api/auth/token` | 获取 JWT |
+| GET | `/api/auth/me` | 当前身份 |
+| GET | `/api/plugins`、`/api/plugins/agents` | 插件与 Agent 清单 |
+| POST | `/api/orchestrate` | Supervisor 编排 |
+| GET | `/api/trajectory/{sessionId}`、`/api/trajectory` | 轨迹回放与最近事件 |
+| GET | `/api/plugins/compliance`、`/api/plugins/events` | 合规规则与事件总线状态 |
+| POST | `/api/plugins/{pluginId}/stop|start` | 插件启停（仅 admin） |
+| POST | `/api/chat`、`/api/chat/confirm` | 对话与人工确认 |
 
 ### 1.0 身份认证（必须先获取令牌）
 
@@ -57,7 +71,7 @@ Authorization: Bearer <token>
 
 #### 免认证白名单
 
-仅 `/health` 与 `/api/auth/token` 免认证，其余端点均需令牌。
+`/health`、`/health/ready`、`/health/live` 与 `/api/auth/token` 免认证，其余端点均需令牌。
 
 #### 速率限制
 
@@ -65,10 +79,10 @@ Authorization: Bearer <token>
 
 | 档位 | 端点 | 配额（每分钟） | 突发容量 |
 |------|------|--------------|---------|
-| 严格 | `/api/auth/token` | 5 | 3 |
-| 中等 | 含 transfer / confirm / wealth | 20 | 15 |
-| 普通 | 业务端点 | 120 | 30 |
-| 只读 | `/api/plugins` `/api/trajectory` (GET) | 300 | 60 |
+| 严格 | `/api/auth/token` | 5 | `min(BurstCapacity, 5)` |
+| 中等 | 含 transfer / confirm / wealth | 20 | `min(BurstCapacity, 20)` |
+| 普通 | 业务端点 | 120 | `min(BurstCapacity, 120)` |
+| 只读 | `/api/plugins` `/api/trajectory` (GET) | 300 | `min(BurstCapacity, 300)` |
 | IP 兜底 | 全部 | 600 | 120 |
 
 超过配额返回 **429 Too Many Requests**：
@@ -136,9 +150,18 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "plugins": 3,
+  "plugins": 4,
+  "ai": { "intentRecognition": "rule", "model": null },
+  "database": { "healthy": true, "provider": "Sqlite", "latencyMs": 2 },
   "timestamp": "2026-09-27T10:01:02.4910164+00:00"
 }
+```
+
+`/health` 会执行数据库真实探活；数据库不健康时返回 503。另有：
+
+```http
+GET /health/ready   # 就绪探针，检查数据库，不健康返回 503
+GET /health/live    # 存活探针，不检查数据库
 ```
 
 ---
@@ -400,7 +423,8 @@ POST /api/chat/confirm
 }
 ```
 
-> **必须复用原 `sessionId`**，否则幂等检查不通过会重复扣款。
+> **必须复用原 `sessionId`**，以便确认请求命中原操作的幂等语义；
+> 不要把同一 `sessionId` 用于另一笔转账。
 > 该端点会写一条 `human.approval` 审计记录。
 
 ---
@@ -416,6 +440,7 @@ Base URL：`http://localhost:5200`
 GET /api/corebank/v1/accounts?userId=u_demo01
 GET /api/corebank/v1/accounts/6222020200000001/balance
 GET /api/corebank/v1/accounts/6222020200000001/limit
+GET /api/corebank/v1/beneficiaries?keyword=李华
 ```
 
 **余额响应**
@@ -603,7 +628,7 @@ X-Mock-Scenario: insufficient_funds | daily_limit_exceeded | account_frozen | ti
 ## 4. 调用示例（PowerShell）
 
 > **中文编码**：PowerShell 5.1 需用 UTF-8 字节，否则中文乱码。
-> **鉴权**：除 `/health` 与 `/api/auth/token` 外，均需 `Authorization: Bearer <token>`。
+> **鉴权**：除健康探针与 `/api/auth/token` 外，均需 `Authorization: Bearer <token>`。
 
 ```powershell
 # 1. 先取令牌
