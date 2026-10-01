@@ -1,11 +1,66 @@
 # 测试策略（Testing Strategy）
 
 > **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **最后更新**：2026-10-01
+>
+> **口径**：本页先记录当前可运行测试，再保留生产化测试体系为 **Target**。测试数与性能数字以本次命令输出为准。
 
 ---
 
-## 1. 测试金字塔
+## 1. 当前测试资产（Current）
+
+| 项目 | 形态 | 当前用途 |
+|------|------|----------|
+| `src/UnitTests` | xUnit 测试项目 | 当前单元/组件测试；基线为 149 个测试 |
+| `src/E2ETest` | `Exe` 独立程序 | Host + MockBank 跨进程场景验证 |
+| `src/StressTest` | `Exe` 独立程序 | 压力验证 |
+| `src/LoadTest` | `Exe` 独立程序 | 负载验证 |
+
+`E2ETest`、`StressTest`、`LoadTest` 不是 `Microsoft.NET.Test.Sdk` 测试项目，不能用 `dotnet test` 代表已执行。它们默认访问 Host `http://localhost:5243` 和 MockBank `http://localhost:5200`。
+
+### 1.1 日常验证
+
+```bash
+dotnet restore src/BankingAgent.slnx
+dotnet build src/BankingAgent.slnx -c Release
+dotnet test src/UnitTests/UnitTests.csproj -c Release
+```
+
+测试总数必须引用命令输出。当前核对基线为 **149 个 UnitTests**；新增/删除测试后同步更新文档，不把该数字视为永久常量。
+
+### 1.2 跨进程验证
+
+分别启动两个服务：
+
+```bash
+dotnet run --project src/mock-bank/MockBank.Api/MockBank.Api.csproj
+dotnet run --project src/src/BankingAgent.Host/BankingAgent.Host.csproj
+```
+
+再按目的运行：
+
+```bash
+dotnet run --project src/E2ETest/E2ETest.csproj
+dotnet run --project src/StressTest/StressTest.csproj
+dotnet run --project src/LoadTest/LoadTest.csproj
+```
+
+这些程序的通过数、吞吐、延迟和错误率只报告本次标准输出，不引用固定示例数字。
+
+### 1.3 当前测试原则
+
+- 修改 Base/Sdk/Host/插件行为时，优先在 `src/UnitTests` 增加可重复、隔离的测试。
+- 单元测试不得依赖公网或真实生产数据；数据库测试使用临时 SQLite 或明确隔离的测试配置。
+- 跨进程程序负责验证真实 HTTP、认证、插件加载和 MockBank 交互。
+- 覆盖率目标可用于改进方向；当前没有证据表明“覆盖率 < 70% 自动拒绝 PR”已成为仓库门禁。
+
+---
+
+## 2. 目标测试体系（Target）
+
+以下测试金字塔、PostgreSQL/Testcontainers、Playwright、Python Eval 与覆盖率门禁是生产化方向；在项目文件、依赖和 CI 作业落地前，不得作为当前能力或必跑命令。
+
+### 2.1 测试金字塔
 
 ```
                  ╱╲
@@ -32,7 +87,7 @@
 
 ---
 
-## 2. 单元测试
+## 3. 目标单元测试规范
 
 ### 2.1 范围
 - 聚合根、实体、值对象（不依赖 DB/网络）
@@ -96,7 +151,7 @@ var order = new TransferOrderBuilder()
 
 ---
 
-## 3. 集成测试
+## 4. 目标集成测试（PostgreSQL/Testcontainers）
 
 ### 3.1 范围
 - 数据库访问（真实 PostgreSQL）
@@ -144,7 +199,7 @@ public class TransferIntegrationTests : IClassFixture<PostgresFixture>
 
 ---
 
-## 4. 端到端（E2E）测试
+## 5. 目标浏览器 E2E（Playwright）
 
 ### 4.1 范围
 - 用户场景（转账、账单、理财）
@@ -180,7 +235,7 @@ test('user can transfer money via IM', async ({ page }) => {
 
 ---
 
-## 5. AI/LLM 相关测试
+## 6. 目标 Python AI/LLM 测试
 
 ### 5.1 单元测试（无需真实 LLM）
 
@@ -245,7 +300,7 @@ def test_llm_output_is_valid_json():
 
 ---
 
-## 6. 性能测试（可选）
+## 7. 目标 k6 性能测试（可选）
 
 ### 6.1 工具：k6
 
@@ -282,7 +337,7 @@ export default function() {
 
 ---
 
-## 7. 测试覆盖率
+## 8. 目标覆盖率
 
 ### 7.1 工具
 - C#：`coverlet` + `reportgenerator`
@@ -310,11 +365,11 @@ Code Coverage Report:
 总体覆盖率: 84.9%  ✅ (目标 ≥ 80%)
 ```
 
-覆盖率 < 70% 的 PR 拒绝合并。
+未来只有在 CI 已采集并验证覆盖率后，才可启用明确的拒绝阈值。
 
 ---
 
-## 8. 测试数据管理
+## 9. 测试数据管理
 
 ### 8.1 单元测试
 - 完全隔离、无共享
