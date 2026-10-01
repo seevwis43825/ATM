@@ -1,25 +1,39 @@
-# 🎨 前端 / Frontend 设计规范
+# 🎨 前端现状与目标设计
 
 > **状态**：评审中 · **所有者**：前端全栈 + 业务开发 · **版本**：v0.1
-> **最后更新**：2026-09-21
+> **最后更新**：2026-10-01
 > **配套原型**：[`prototype/chat.html`](prototype/chat.html)（IM 对话 H5）· [`prototype/admin.html`](prototype/admin.html)（Admin 后台）
+>
+> **重要**：`prototype/` 是可直接打开的静态设计资产，不是当前生产前端；Next.js/Tailwind/Ant Design/Playwright 均为 **Target**。
 
 ---
 
-## 1. 总览
+## 1. 当前实现（Current）
 
-AI Banking Agent 系统有两个主要前端：
+当前可运行 UI 位于：
+
+```text
+src/src/BankingAgent.Host/wwwroot/
+├── index.html
+└── app.js
+```
+
+它由 Host 通过 `UseDefaultFiles()` / `UseStaticFiles()` 提供，访问 `http://localhost:5243/`，无需 Node.js 构建。其职责是演示登录、对话、插件能力与人工确认，并直接调用 Host 当前 API（如 `/api/auth/token`、`/api/chat`、`/api/chat/confirm`）。
+
+`docs/08-frontend/prototype/chat.html` 与 `admin.html` 仅用于讨论交互和视觉方案，不应作为接口已实现、页面已上线或框架已选型的证据。
+
+## 2. 目标产品（Target）
 
 | 端 | 用途 | 用户 | 技术栈 |
 |----|------|------|--------|
-| **IM 对话 H5** | 用户对话主入口（核心）| 普通客户 | Next.js 14 + React 18 + Tailwind CSS |
-| **Admin / Auditor 后台** | 客服、风控、合规、运营 | 内部员工 | Next.js 14 + Ant Design Pro |
+| **IM 对话 H5** | 用户对话主入口（核心）| 普通客户 | Target：Next.js + React + Tailwind CSS |
+| **Admin / Auditor 后台** | 客服、风控、合规、运营 | 内部员工 | Target：Next.js + Ant Design Pro |
 
 **IM 通道（微信/支付宝/飞书）**：通过 Bot SDK 接入，核心 UI 是 H5 webview。
 
 ---
 
-## 2. 设计原则
+## 3. 目标设计原则
 
 1. **对话优先**：所有功能都是对话的延伸（卡片/按钮/表单嵌入对话流）
 2. **移动优先**：H5 主交互（80% 用户在手机）
@@ -30,7 +44,7 @@ AI Banking Agent 系统有两个主要前端：
 
 ---
 
-## 3. 设计令牌（Design Tokens）
+## 4. 目标设计令牌（Design Tokens）
 
 ### 3.1 颜色
 
@@ -105,7 +119,7 @@ font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
 
 ---
 
-## 4. 核心组件
+## 5. 目标核心组件
 
 ### 4.1 对话流（Chat Stream）
 
@@ -184,7 +198,7 @@ font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
 
 ---
 
-## 5. 信息架构（IA）
+## 6. 目标信息架构（IA）
 
 ### 5.1 IM 对话 H5
 
@@ -247,7 +261,7 @@ font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
 
 ---
 
-## 6. 接口契约（与后端）
+## 7. 目标接口契约（尚未等同当前 Host API）
 
 ### 6.1 对话接口（SSE 流式）
 
@@ -268,7 +282,7 @@ data: {"type": "actions", "actions": [...]}
 data: {"type": "done"}
 ```
 
-详见 [`../02-api/01-rest-api-spec.md` §6](../02-api/01-rest-api-spec.md)
+详见 [`../02-api/01-rest-api-spec.md` §6](../02-api/01-rest-api-spec.md)。实施前必须与 `BankingAgent.Host/Program.cs` 的当前端点核对，不能直接假定 SSE/WebSocket 已存在。
 
 ### 6.2 事件订阅（WebSocket）
 
@@ -279,7 +293,7 @@ ws://api.example.com/ws
 
 ---
 
-## 7. 性能与体验目标
+## 8. 性能与体验目标（Target）
 
 | 指标 | 目标 |
 |------|------|
@@ -292,7 +306,7 @@ ws://api.example.com/ws
 
 ---
 
-## 8. 可访问性（A11Y）
+## 9. 可访问性（A11Y，Target）
 
 - 所有按钮有 `aria-label`
 - 所有图片有 `alt`
@@ -304,7 +318,7 @@ ws://api.example.com/ws
 
 ---
 
-## 9. i18n
+## 10. i18n（Target）
 
 - 当前：**简体中文** 唯一
 - 预留架构：`next-intl`
@@ -313,7 +327,7 @@ ws://api.example.com/ws
 
 ---
 
-## 10. 原型说明
+## 11. 静态原型说明（Design Assets）
 
 ### 10.1 IM 对话 H5（`prototype/chat.html`）
 
@@ -338,7 +352,7 @@ ws://api.example.com/ws
 
 ---
 
-## 11. 技术栈
+## 12. 目标技术栈（尚未落地）
 
 | 层 | 技术 |
 |----|------|
@@ -354,7 +368,7 @@ ws://api.example.com/ws
 
 ---
 
-## 12. 参考
+## 13. 参考
 
 - 设计参考：[微信支付 H5](https://pay.weixin.qq.com/) · [支付宝 H5](https://www.alipay.com/)
 - 合规要求：[`../05-security-compliance/02-compliance-matrix.md`](../05-security-compliance/02-compliance-matrix.md)
@@ -363,7 +377,7 @@ ws://api.example.com/ws
 
 ---
 
-## 13. 原型演示
+## 14. 原型演示
 
 打开 `prototype/chat.html` 即可看到 IM 对话 H5 原型。
 打开 `prototype/admin.html` 即可看到 Admin 后台原型。
