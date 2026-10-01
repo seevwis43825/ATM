@@ -111,7 +111,23 @@ ATM/
 - **.NET SDK 9.0.200+**（解决方案是 `.slnx` 格式；各项目本身目标 `net8.0`）
 - 无需数据库、无需 AI Key
 
-### 三步跑起来
+### 从克隆到运行
+
+先把仓库克隆到本地并进入仓库根目录。已配置 GitHub SSH Key 的成员使用：
+
+```bash
+git clone git@github.com:seevwis43825/ATM.git
+cd ATM
+```
+
+未配置 SSH Key 时，可改用 HTTPS（私有仓库仍需登录有权限的 GitHub 账号）：
+
+```bash
+git clone https://github.com/seevwis43825/ATM.git
+cd ATM
+```
+
+后续命令都在 `ATM` 仓库根目录执行：
 
 ```bash
 # 1. 编译（从仓库根目录）
