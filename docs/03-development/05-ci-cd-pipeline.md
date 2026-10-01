@@ -1,11 +1,41 @@
 # CI/CD 流水线（CI/CD Pipeline）
 
-> **状态**：已通过 · **所有者**：平台 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前仓库对齐 · **所有者**：平台 · **版本**：v1.1
+> **最后更新**：2026-10-01
+>
+> **边界**：`.github/workflows/ci.yml` 是当前唯一落地的流水线；仓库没有 CD、Dockerfile、镜像仓库、staging/production 环境或部署脚本。本文后半部分保留为 Target，不能当作已上线能力。
 
 ---
 
-## 1. 总览
+## 1. 当前流水线（Current）
+
+当前 GitHub Actions 在 `main`、`master`、`dev` 的 push/PR 上触发。分支触发范围是工作流现状，不改变团队当前以 `main` 为主线的协作规则。
+
+| Job | 当前行为 | 门禁口径 |
+|---|---|---|
+| `build` | SDK 8/9、restore、Release `/warnaserror` build、EF pending-model gate、插件契约校验 | 阻断 |
+| `unit-test` | xUnit + TRX + Cobertura 上传 | 测试失败阻断；未配置覆盖率百分比阈值 |
+| `static-analysis` | `dotnet format`、Gitleaks、依赖漏洞检查 | 当前命令允许 warning/continue-on-error，不是安全阻断门 |
+| `integration` | 启动 MockBank `:5200` 与 Host `:5243`，运行 E2E 和 StressTest | 阻断 |
+| `summary` | 汇总 build/unit/static/integration | build、unit、integration 非 success 时失败 |
+
+仓库当前不在 CI 中运行 LoadTest，也不构建/推送镜像或自动部署。
+
+### 1.1 本地复现
+
+```bash
+dotnet restore src/BankingAgent.slnx
+dotnet build src/BankingAgent.slnx -c Release /warnaserror
+dotnet test src/UnitTests/UnitTests.csproj -c Release
+dotnet run --project src/PluginValidator --configuration Release -- \
+  src/src/BankingAgent.Host/bin/Release/net8.0/plugins
+```
+
+迁移一致性命令见 [`../13-database/01-migration-and-ci.md`](../13-database/01-migration-and-ci.md)；E2E/Stress 需先启动两个服务。
+
+---
+
+## 2. 目标流水线总览（Target）
 
 ```
 ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
@@ -29,20 +59,22 @@
 
 ---
 
-## 2. 环境
+## 3. 目标环境（Target，尚未提供）
 
 | 环境 | 用途 | URL | 数据 |
 |------|------|-----|------|
-| **local** | 个人开发 | `localhost:5000` | mock |
+| **local** | 个人开发 | `localhost:5243` | mock |
 | **dev** | 团队集成测试 | `dev.api.bankagent.com` | 共享 dev DB（每日重置） |
 | **staging** | 预发 / QA / 性能测试 | `staging.api.bankagent.com` | 脱敏数据 |
 | **production** | 生产 | `api.bankagent.com` | 真实数据（生产 + 强审计） |
 
 ---
 
-## 3. CI 流水线（GitHub Actions）
+## 4. 目标 CI 示例（Target，不是当前工作流）
 
-### 3.1 PR Checks（`.github/workflows/pr.yml`）
+### 4.1 PR Checks 示例
+
+> 当前真实文件是 `.github/workflows/ci.yml`。以下 Python、Node、Docker 作业只有在对应项目和构建资产落地后才可采用。
 
 ```yaml
 name: PR Checks
@@ -151,7 +183,7 @@ jobs:
           docker push agent-core:${{ github.sha }}
 ```
 
-### 3.2 必过的 Check
+### 4.2 目标必过 Check
 
 | Check | 阻塞 | 通过条件 |
 |-------|------|---------|
@@ -166,7 +198,7 @@ jobs:
 
 ---
 
-## 4. CD 流水线
+## 5. CD 流水线（Target，未实现）
 
 ### 4.1 Staging 部署（自动）
 
@@ -228,14 +260,14 @@ jobs:
 
 ---
 
-## 5. 数据库 Migration
+## 6. 数据库 Migration（Current + Target）
 
 ### 5.1 流程
 
 ```
-开发 PR 中包含 migration SQL 文件
+开发 PR 中包含 EF Core Migration 类、Designer 与 ModelSnapshot
     ↓
-CI 检查 migration 语法（启动 PostgreSQL 容器测试）
+CI 使用 `has-pending-model-changes` 检查模型一致性
     ↓
 PR 合并 → 自动在 staging 跑 migration
     ↓
@@ -244,22 +276,23 @@ PR 合并 → 自动在 staging 跑 migration
 如失败 → 立即停止部署、保留旧版本
 ```
 
-### 5.2 工具
+### 6.2 工具
 
-- 开发期：Entity Framework Core Migrations / Flyway
-- 生产期：Flyway
+- 当前统一使用 EF Core Migrations；不使用 Flyway `V*.sql`。
+- 当前 CI 已执行模型/迁移一致性门禁，但没有 staging/production 自动迁移。
+- 生产化后应在部署前执行备份、`dotnet ef database update`、冒烟和回滚演练。
 
 ```bash
-# 生产部署前
-flyway -url=jdbc:postgresql://prod-db migrate
-
-# 如需回滚
-flyway -url=jdbc:postgresql://prod-db undo
+dotnet ef database update \
+  --project src/src/BankingAgent.Base/BankingAgent.Base.csproj \
+  --startup-project src/src/BankingAgent.Host/BankingAgent.Host.csproj \
+  --context BankingDbContext \
+  --configuration Release
 ```
 
 ---
 
-## 6. 镜像构建
+## 7. 镜像构建（Target 示例，当前仓库无 Dockerfile）
 
 ### 6.1 Agent Core Dockerfile
 
@@ -296,7 +329,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ---
 
-## 7. 部署策略（生产）
+## 8. 部署策略（Target）
 
 ### 7.1 蓝绿部署（推荐）
 
@@ -325,7 +358,7 @@ Production v1.2.3 接收 100% 流量
 
 ---
 
-## 8. 关联文档
+## 9. 关联文档
 
 - **测试策略**：[`04-testing-strategy.md`](04-testing-strategy.md)
 - **部署架构**：[`../04-operations/01-deployment-architecture.md`](../04-operations/01-deployment-architecture.md)
