@@ -1,8 +1,9 @@
 # 🤖 AI / 数据开发 / AI & Data Developer 分册
 
 > **角色定位**：智能体、LLM、数据层的主要作者
-> **主战场**：`src/ai-service/` `02-api/02-event-schema.md` `06-product/`
-> **更新时间**：2026-09-21
+> **主战场**：`src/src/BankingAgent.Base/Ai/` `src/src/BankingAgent.Base/Agents/` `src/plugins/`
+> **更新时间**：2026-10-01
+> **口径**：当前 AI/Agent 能力是 .NET 8 进程内组件与可选 LLM 调用；Python/FastAPI、RAG、向量库和独立 AI Service 均为 Target。
 
 ---
 
@@ -63,39 +64,21 @@
 
 ```
 src/
-├── ai-service/                                ← 【你的主战场】
-│   ├── Agent/                                 # Agent 编排
-│   │   ├── Orchestrator/                      # 主 Agent + 副 Agent
-│   │   ├── Tools/                             # Function Call 工具
-│   │   ├── Memory/                            # 短期/长期记忆
-│   │   └── Profile/                           # 用户画像
-│   ├── LLM/                                   # LLM 客户端封装
-│   │   ├── Clients/                           # Qwen3 / DeepSeek 适配
-│   │   ├── Prompt/                            # Prompt 模板
-│   │   └── Parsers/                           # 输出解析
-│   ├── RAG/                                   # RAG 系统
-│   │   ├── Embeddings/                        # 嵌入（pgvector）
-│   │   ├── Retrievers/                        # 检索器
-│   │   └── KnowledgeBase/                     # 知识库
-│   ├── Intent/                                # 意图识别
-│   ├── Recommendation/                        # 推荐（理财、卡片等）
-│   ├── Eval/                                  # 模型评估
-│   │   ├── GoldenSet/                         # 黄金集
-│   │   └── Metrics/                           # 评估指标
-│   └── Safety/                                # 内容安全审查
-│
-├── agent-core/                                # 【业务开发，但 AI 协作部分】
-│   ├── AgentOrchestration/                    # C# 端的 Agent 桥接
-│   ├── Memory&Profile/                        # 长期记忆落 DB
-│   └── Recommendation/                        # 推荐落业务
-│
-└── admin-web/                                 # 【前端角色】
-    └── /admin/llm-eval/                       # LLM 评估后台（你设计）
+├── src/BankingAgent.Base/
+│   ├── Ai/                                    # LLM 客户端与意图分类
+│   └── Agents/                                # Router、Orchestrator、轨迹
+├── plugins/BankingAgent.Plugin.*/             # 场景 Agent、意图与关键词
+├── src/BankingAgent.Host/Program.cs           # AI/Agent 组合与 API
+└── UnitTests/                                 # LLM 分类、路由等测试
 ```
+
+当前未配置 API Key 时使用规则表；配置后可走兼容 LLM API，失败自动降级。**Target** 独立 Python/FastAPI、RAG、黄金集平台或 `admin-web` 需先经 ADR 并建立真实项目。
 
 ---
 
 ## 4. 你必须掌握的"硬规则"
+
+> 本节 Python 片段是语言无关安全规则的 **Target 示意**，不是当前仓库源码。当前实现应在 `BankingAgent.Base/Ai`、`BankingAgent.Base/Agents` 与插件 Agent 中按同样原则落地。
 
 ### 4.1 Prompt 安全（参考 05-security-compliance/01 §5.1）
 
@@ -195,8 +178,8 @@ with audit_context(
 
 ### 5.1 每周
 
-- ≥ **2 个 AI Service PR**
-- **黄金集** 维护 + 评估（intent 准确率 ≥ 95%）
+- 当前：维护 Base/插件中的 AI 与 Agent PR、规则降级和对应 UnitTests
+- Target：独立 AI Service、黄金集与评估门禁
 - **Prompt 优化**：分析失败案例，迭代 Prompt
 - **LLM 成本** 监控（每日 ≤ 预算）
 
@@ -230,8 +213,9 @@ with audit_context(
 
 | 技术 | 用途 | 学习资源 |
 |------|------|---------|
-| **Python 3.11** | 主语言 | Python.org |
-| **FastAPI** | HTTP 框架 | FastAPI.tiangolo.com |
+| **当前：C# / .NET 8** | AI 客户端、分类、Agent 编排 | 微软文档 |
+| **当前：xUnit** | AI 组件测试 | xUnit.net |
+| **Target：Python 3.11 / FastAPI** | 独立 AI 服务 | 官方文档 |
 | **LangChain / LlamaIndex** | LLM 编排 | LangChain 文档 |
 | **Qwen3 / DeepSeek-V3** | 国内合规 LLM | 阿里云百炼、DeepSeek 平台 |
 | **pgvector** | 向量库 | GitHub README |

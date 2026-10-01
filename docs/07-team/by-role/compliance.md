@@ -1,8 +1,9 @@
 # 🔒 安全 / 合规 / Security & Compliance 分册
 
 > **角色定位**：合规底线 + 安全防线的守护者
-> **主战场**：`05-security-compliance/` 全集
-> **更新时间**：2026-09-21
+> **主战场**：`src/src/BankingAgent.Base/Security/` `src/src/BankingAgent.Host/Middleware/` `docs/05-security-compliance/`
+> **更新时间**：2026-10-01
+> **口径**：当前代码审查围绕已落地的认证、审计、加密、合规规则和安全中间件；监管平台与独立管理后台为 Target。
 
 ---
 
@@ -56,27 +57,18 @@
 ## 3. 你负责的代码模块
 
 ```
-src/agent-core/
-├── Compliance/                                ← 【你】
-│   ├── Guards/                                # 合规拦截器
-│   │   ├── ConsentGuard/
-│   │   ├── RiskControlGuard/
-│   │   ├── AMLGuard/                          # 反洗钱
-│   │   ├── FrequencyLimitGuard/
-│   │   └── ContentSafetyGuard/
-│   ├── Policy/                                # 合规规则引擎
-│   │   ├── Rules/
-│   │   └── Versions/
-│   ├── PIA/                                   # PIA 评估工具
-│   └── Reporting/                             # 监管报送
-
-src/admin-web/
-└── /admin/
-    ├── /compliance/                           # 合规工作台（你设计）
-    ├── /aml/                                  # AML 监控
-    ├── /audit-query/                          # 审计查询
-    └── /user-rights/                          # 用户权利响应
+src/src/BankingAgent.Base/
+├── Security/Auth/                             # 认证与角色
+├── Security/Audit/                            # 审计
+├── Security/Compliance/                       # 合规规则
+├── Security/Hardening/                        # 启动安全门
+└── Plugins/Security/                          # 插件签名/验证
+src/src/BankingAgent.Host/Middleware/           # 安全响应头、限流等
+src/plugins/BankingAgent.Plugin.*/              # 场景合规规则与审计接入
+src/UnitTests/                                  # 安全、审计、合规测试
 ```
+
+**Target**：PIA/AML/监管报送平台、独立 `admin-web` 与更完整的自动化安全工具链；当前不存在 `src/agent-core/Compliance`。
 
 ---
 

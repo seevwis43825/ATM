@@ -1,6 +1,12 @@
 # REST API 设计规范
 
-> **状态**：评审中 · **所有者**：业务开发 + 平台 · **版本**：v1.0
+> [!IMPORTANT]
+> **Target API（目标态）**：本文描述计划中的 `/v1/*` 对外资源 API，**不是当前
+> `BankingAgent.Host` 的真实路由清单**。当前可调用端点以
+> [`../09-uml/03-api-contract.md`](../09-uml/03-api-contract.md) 和
+> [根 README](../../README.md#接口清单宿主-5243) 为准。
+>
+> **状态**：目标规范评审中 · **所有者**：业务开发 + 平台 · **版本**：v1.0
 > **最后更新**：2026-09-21
 
 ---
@@ -439,7 +445,7 @@ Claims:
 
 ## 7. OpenAPI 规范
 
-完整 OpenAPI 3.0 文档：
+目标 OpenAPI 3.0 文档的基础信息如下：
 
 ```yaml
 openapi: 3.0.3
@@ -458,7 +464,9 @@ servers:
     description: 本地开发
 ```
 
-完整 OpenAPI 文件位于 `docs/02-api/openapi.yaml`。
+> `docs/02-api/openapi.yaml` **尚未生成**。落地 Target API 时应由 Host
+> 的实际端点生成并纳入契约差异检查；当前 MockBank 的运行时 OpenAPI 可通过
+> `GET /openapi/v1.json` 获取。
 
 ---
 

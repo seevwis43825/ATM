@@ -1,23 +1,36 @@
 # 插件化扩展机制（Extension Points）
 
-> **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前实现对齐 · **所有者**：架构师 · **版本**：v1.1
+> **最后更新**：2026-10-01
 
-> **本文是 "功能随时增加" 的核心实现指南**。所有新功能都按本文约定实现。
-
----
-
-## 1. 三种扩展机制总览
-
-| 机制 | 适用场景 | 改动量 | 上线时间 |
-|------|---------|--------|---------|
-| **A. 增加 Context（新领域）** | 新业务领域（如增加"保险"） | 4-5 个新项目 | 3-5 天 |
-| **B. 增加 Plugin（轻功能）** | 现有 Context 增加能力 | 1-2 个新文件 | 0.5-1 天 |
-| **C. FeatureFlag 启用现有能力** | 已有能力但默认关闭 | 0 | 0 |
+> **边界**：先按 Current 插件契约扩展。后文 Context/FeatureFlag 方案是 Target，不可照抄为现有 API。
 
 ---
 
-## 2. 机制 A：增加 Bounded Context（新业务领域）
+## 1. 当前扩展机制（Current）
+
+当前唯一完整落地的业务扩展点是 **.NET 插件程序集**：
+
+1. 新建引用 `BankingAgent.Base` 与 `BankingAgent.Plugin.Sdk` 的 .NET 8 项目（可从 `src/templates/banking-plugin` 开始）。
+2. 实现 `IPluginEntryPoint`，通过 `PluginManifest` 声明 ID、版本、场景、依赖和敏感级别。
+3. 在 `ConfigureServices(IServiceCollection, IPluginContext)` 中注册一个或多个 `IBankingAgent`。
+4. Agent 声明 `SupportedIntents` 与 `TriggerKeywords`；默认规则分类和可选 LLM 分类都会从这些声明生成候选。
+5. 需要事件时注入 `IEventPublisher`，处理方实现 `IDomainEventHandler`；插件不得引用另一插件程序集。
+6. 需要持久化时实现并注册 `IEntitySetContributor`，然后生成/审查 EF Core migration。
+7. 将 DLL 及依赖放入 Host 输出的 `plugins/` 目录。宿主在 Build 前扫描并把插件服务并入主容器。
+
+当前四个实现可作为样例：Transfer（持久化/事件/人工确认）、BillAnalysis（只读/事件订阅）、CardManagement（manifest 依赖/写操作）、Wealth（只读）。
+
+### Current 限制
+
+- `PluginManifest.FeatureFlags` 只是元数据，尚无运行时开关服务或灰度拦截。
+- `/api/plugins/{id}/start|stop` 管理的是生命周期状态；已注入的 Agent 不会因此自动从 `AgentRouter` 移除。
+- “可回收 `AssemblyLoadContext`”不等于可以安全在线替换所有已注册 DI 服务。
+- 插件服务必须在主容器 `Build` 前完成注册。
+
+---
+
+## 2. 目标机制 A：增加 Bounded Context（Target）
 
 ### 场景举例
 增加"保险"领域（Insurance Context），支持：
@@ -88,7 +101,7 @@ services.AddBoundedContext<InsuranceModule>(config =>
 
 ---
 
-## 3. 机制 B：增加 Plugin（轻功能）
+## 3. 目标机制 B：Context 内轻量 Plugin（Target 示例，接口未实现）
 
 ### 场景举例
 在 Transfer Context 中增加"扫码转账"功能。
@@ -128,7 +141,7 @@ services.AddTransferPlugin<QrCodeTransferPlugin>(config =>
 
 ---
 
-## 4. 机制 C：FeatureFlag 启用现有能力
+## 4. 目标机制 C：FeatureFlag（Target，未实现）
 
 ### 场景
 已有功能但默认关闭（如跨场景联动、保险），需要快速启用给内部用户测试。
@@ -162,7 +175,7 @@ WHERE flag_key = 'feature.cross_scenario.enabled';
 
 ---
 
-## 5. FeatureFlag 设计原则
+## 5. FeatureFlag 设计原则（Target）
 
 ### 5.1 命名规范
 - `feature.<module>.<feature>.enabled` — 总开关
@@ -186,7 +199,7 @@ WHERE flag_key = 'feature.cross_scenario.enabled';
 
 ---
 
-## 6. 实现细节
+## 6. 目标实现草案（Target，不是当前源码）
 
 ### 6.1 插件注册中心
 
@@ -267,14 +280,16 @@ public class FeatureFlagService : IFeatureFlagService
 
 ---
 
-## 7. 新功能 Checklist（开发者自检）
+## 7. Current 新插件 Checklist
 
 发布新功能时检查以下项：
 
-- [ ] **接口定义**：是否有公开的 `I<Service>` 接口？
-- [ ] **插件注册**：是否在 `Bootstrap/Startup.cs` 注册？
-- [ ] **FeatureFlag**：是否设置了 `feature.<name>.enabled = false` 默认关闭？
-- [ ] **灰度策略**：是否有 rollout_percentage？
+- [ ] **入口**：是否只有一个 `IPluginEntryPoint`，manifest ID/版本/依赖是否正确？
+- [ ] **Agent 注册**：是否在 `ConfigureServices` 注册 `IBankingAgent`？
+- [ ] **意图声明**：`SupportedIntents` 与 `TriggerKeywords` 是否足以被默认规则路径识别？
+- [ ] **跨插件边界**：是否只用 Sdk 事件契约/manifest 依赖，未引用其他插件实现？
+- [ ] **持久化**：需要落库时是否注册 `IEntitySetContributor` 并更新 migration？
+- [ ] **FeatureFlag**：若仅写入 manifest，是否明确它当前不具备强制开关效果？
 - [ ] **审计日志**：是否调用了 `IAuditLogger`？
 - [ ] **合规检查**：是否经过 `IComplianceGuard`？
 - [ ] **人工回环**：高风险操作是否有人工确认？

@@ -5,6 +5,12 @@
 
 ---
 
+## 0. 现状与目标边界
+
+> **Current（源码可验证）**：宿主使用 .NET 控制台日志，并提供 `/health`、`/health/ready`、`/health/live`；健康检查会实际查询数据库。审计另走 HMAC 链 JSONL 与 `audit_events` 双写。仓库中未发现 Prometheus 指标端点、Grafana Dashboard、AlertManager 规则、ELK/Filebeat、OpenTelemetry/Jaeger 上报或生产告警路由的落地配置。
+>
+> **Target / Runbook（规划）**：本文其余指标名、阈值、保留期、Dashboard、告警和值班流程是生产可观测性目标。上线前需以实际埋点、部署清单、告警试触发和留存策略作为验收证据。
+
 ## 1. 设计原则
 
 可观测性三大支柱：**Metrics（指标）+ Logs（日志）+ Traces（链路追踪）**，缺一不可。
@@ -16,7 +22,7 @@
 
 ---
 
-## 2. Metrics（指标）
+## 2. Metrics（Target）
 
 ### 2.1 技术指标（Prometheus + Grafana）
 
@@ -61,7 +67,7 @@
 
 ---
 
-## 3. Logs（日志）
+## 3. Logs（Current + Target）
 
 ### 3.1 结构化日志规范
 
@@ -104,10 +110,10 @@
 - ❌ 永远不打：身份证号、银行卡号全段、密码、CVV、验证码、PIN、生物特征
 - ✅ 可以打：银行卡号后 4 位、手机号后 4 位、哈希后的 user_id
 
-实现方式：
-- C# 端：通过 `Serilog` 的 `Destructuring.ByTransforming<T>` 自动屏蔽字段
-- Python 端：通过 `python-json-logger` + 自定义 `__filter_sensitive__` 钩子
-- 落盘前再过一次正则（兜底）
+目标实现方式：
+- C# 端：接入结构化日志过滤器；当前已有 `DataMasker` 等脱敏能力，但未形成本文所述 Serilog/ELK 全链路
+- Python 端：仅在未来引入独立 Python 服务时适用
+- 落盘前再做一次敏感字段检测（兜底）
 
 ### 3.4 关键事件日志（必须落审计）
 
@@ -119,7 +125,7 @@
 
 ---
 
-## 4. Traces（链路追踪）
+## 4. Traces（Target）
 
 ### 4.1 OpenTelemetry 标准
 
@@ -157,7 +163,7 @@ ai-service.LLM.Invoke
 
 ---
 
-## 5. 告警（Alerting）
+## 5. 告警（Target）
 
 ### 5.1 告警分级
 
@@ -205,7 +211,7 @@ groups:
 
 ---
 
-## 6. 大数据与视图（可视化）
+## 6. 大数据与视图（Target）
 
 ### 6.1 Grafana Dashboard 清单
 
@@ -228,7 +234,7 @@ groups:
 
 ---
 
-## 7. 工具栈
+## 7. 工具栈（Target）
 
 | 用途 | 工具 | 备注 |
 |------|------|------|
@@ -244,7 +250,7 @@ groups:
 
 ## 8. 上线检查清单（监控部分）
 
-每次新功能上线，必须确认：
+生产化上线前确认（当前仓库尚未全部满足）：
 
 - [ ] 新增自定义业务指标已在 Prometheus 注册
 - [ ] 关键 Span Attribute 已埋点

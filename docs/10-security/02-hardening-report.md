@@ -2,7 +2,9 @@
 
 > **日期**：2026-09-28
 > **范围**：`src/` 全部代码
-> **验证**：201 项自动化断言全部通过（单测 112 + 密码自检 22 + 端到端 38 + 压测 29）
+> **当前验证**：`dotnet test src/UnitTests/UnitTests.csproj` 实测 **149/149 通过**。旧版“112/201 项”统计已失效；密码自检、E2E、Stress 与 LoadTest 是独立程序，不能并入当前单元测试数量，需按各自最近一次运行证据报告。
+
+> **Current / Target 边界**：本报告中的“已实现”只表示仓库存在代码与相应测试，不表示生产已部署。当前默认仍为 `BankingAgent.Host :5243` + `MockBank.Api :5200`、HTTP、SQLite + `EnsureCreated`；安全门默认开发配置关闭。MFA、KMS/Vault、TDE、WORM、RLS 均未实现。
 
 ---
 
@@ -22,7 +24,7 @@
 
 ---
 
-## 1. 抗量子密码学（P0，已实现并实测）
+## 1. 抗量子密码学组件（已实现；未接生产协议）
 
 ### 1.1 实现了什么
 
@@ -60,7 +62,7 @@ ML-DSA 签名验证 + 篡改检测
   X25519 公钥 32B + ML-KEM-768 公钥 1184B，模式 Hybrid
 ```
 
-**当前运行状态**（宿主启动日志）：
+**组件自检示例**（历史运行日志，不代表当前 HTTP 宿主已启用 PQC 传输）：
 
 ```
 密码模式：混合（抗量子 + 传统）。ML-KEM-MlKem768 ⊕ X25519 → AES-256-GCM。
@@ -128,11 +130,13 @@ crypto.Encrypt(data, aad: "user:u_demo01");
 
 ---
 
-## 3. 生产安全门（已实现）
+## 3. 生产安全门框架（已实现；默认未启用）
 
 ### 3.1 失败即停
 
 `SecurityGate.Enforce()` 在**容器构建前**执行，任一硬性违规直接抛异常阻止启动。
+
+当前 `appsettings.json` 为开发口径：`SecurityGate:Enabled=false`、`RequireHttps=false`。只有在生产配置显式启用并通过检查时，才能作为生产门禁证据。
 
 ### 3.2 检查项
 
@@ -177,7 +181,7 @@ CRITICAL 安全门检查失败，检测到 3 项违规：
 
 ---
 
-## 4. 传输与响应头安全（已实现并实测）
+## 4. 传输与响应头安全（响应头已实现；默认 TLS 未部署）
 
 ### 4.1 实测的安全响应头
 
@@ -197,7 +201,7 @@ CRITICAL 安全门检查失败，检测到 3 项违规：
 
 > **实测注意**：`Server: Kestrel` 仍由 Kestrel 自身下发，需要 `AddServerHeader = false` 才能完全移除。当前已移除 `X-Powered-By`。
 
-### 4.2 HTTPS 强制
+### 4.2 HTTPS 强制（Target 配置）
 
 ```csharp
 if (!app.Environment.IsDevelopment())
@@ -268,11 +272,11 @@ foreach (var dll in Directory.EnumerateFiles(directory, "BankingAgent.Plugin.*.d
 
 ---
 
-## 6. 字段级加密（已实现框架）
+## 6. 字段级加密（已实现并用于 TransferRecord）
 
 ### 6.1 设计
 
-实体属性加 `[Encrypted]` 特性，**EF Core 自动装配值转换器**，业务代码无感知。
+实体属性加 `[Encrypted]` 特性后，EF Core 自动装配值转换器。当前 `TransferRecord` 的用户、付款/收款账号、幂等键和备注已应用；这不等于全数据库 TDE，也不表示所有敏感模型都已覆盖。
 
 ```csharp
 public class CustomerRecord : EncryptedEntity
@@ -322,8 +326,9 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 | **JWT + RBAC** | ✅ | 8 项端到端断言 |
 | **越权防护** | ✅ | userId 强制取自令牌 |
 | **速率限制** | ✅ | 令牌桶双维度 |
-| **L1-L4 脱敏** | ✅ | 30 项单元测试 |
-| **审计链签名** | ✅ | 200 并发完整性 |
+| **L1-L4 脱敏** | ✅ | 29 项单元测试 |
+| **审计链签名** | ✅ | HMAC 链 JSONL |
+| **审计独立表双写** | ✅ | `audit_events`；失败记 Critical、不阻断业务 |
 | **人工回环** | ✅ | 资金操作强制 |
 | **幂等保护** | ✅ | 防重复扣款 |
 
@@ -338,8 +343,8 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 | 3 | **JWT 用 HS256** | 🟡 中 | 实际安全，非最优 |
 | 4 | **无证书吊销检查** | 🟡 中 | CRL/OCSP 未接 |
 | 5 | **合规规则仅 4/14** | 🔴 高 | 缺高频限流、日累计、黑名单、制裁筛查 |
-| 6 | **无 EF Migration** | 🔴 高 | 用 `EnsureCreated`，表结构演进失控 |
-| 7 | **审计仅文件存储** | 🟡 中 | 未落独立库表，未做异地 WORM |
+| 6 | **默认仍用 EnsureCreated** | 🔴 高 | 已有 EF Migration 与 CI pending-model gate，但运行配置仍是 `EnsureCreated` |
+| 7 | **审计归档未生产化** | 🟡 中 | 已双写 JSONL + 独立 `audit_events`；无异地 WORM，失败不阻断 |
 | 8 | **用户权利接口未实现** | 🔴 高 | 个保法 §46-47 强制 |
 | 9 | **无 SBOM / 依赖锁定** | 🟡 中 | 供应链可追溯性不足 |
 | 10 | **未做渗透测试** | 🟡 中 | 无第三方安全评估 |
@@ -355,13 +360,13 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 1. **MFA / OTP** 接入
 2. **TLS 1.3 + 证书配置**，`RequireHttps=true`
 3. **密钥全部改用环境变量注入**，配置文件中清空
-4. **EF Core Migration** 替代 `EnsureCreated`
+4. 将运行配置从 `EnsureCreated` 切换为已具备的 EF Core Migration 流程，并演练回滚
 5. **合规规则补齐 4 条**（高频限流 / 日累计 / 黑名单 / 制裁筛查）
 6. **用户权利接口**（个保法 §46-47）
 
 ### P1（上线后一个月内）
 
-7. 审计落独立库表 + 异地 WORM 归档
+7. 在现有独立 `audit_events` 基础上增加可靠补偿与异地 WORM 归档
 8. 证书吊销检查（CRL/OCSP）
 9. 依赖锁定 + SBOM 生成
 10. 第三方渗透测试
@@ -378,16 +383,16 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 
 ```powershell
 # 单元测试
-dotnet test src/UnitTests              # 112 断言
+dotnet test src/UnitTests/UnitTests.csproj  # 当前 149 项
 
-# 密码学自检（含抗量子）
-dotnet run --project src/CryptoSelfTest # 22 断言
+# 密码学自检（含抗量子；以本次程序输出为准）
+dotnet run --project src/CryptoSelfTest
 
-# 端到端
-dotnet run --project src/E2ETest         # 38 断言
+# 端到端（需先启动两个服务）
+dotnet run --project src/E2ETest
 
-# 并发压测
-dotnet run --project src/StressTest      # 29 断言
+# 并发压测（历史数字不并入单测计数）
+dotnet run --project src/StressTest
 
 # 容量压测
 dotnet run --project src/LoadTest        # 7 级阶梯

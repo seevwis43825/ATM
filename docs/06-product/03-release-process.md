@@ -1,7 +1,9 @@
 # 发布流程（Release Process）
 
 > **状态**：评审中 · **所有者**：产品 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **最后更新**：2026-10-01
+>
+> **状态边界**：本文是 Target 发布 Runbook。当前仓库只有 GitHub Actions CI 和本地 Release 构建/双进程启动方式；没有 Dockerfile、镜像仓库、staging/production、K8s、Argo Rollouts、自动部署或可验证的生产回滚记录。未落地前不得把下文节奏、SLA 和命令描述为现行发布能力。
 
 ---
 

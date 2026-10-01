@@ -1,7 +1,9 @@
 # 限界上下文（Bounded Contexts）
 
-> **状态**：评审中 · **所有者**：架构师 + 业务开发 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前实现对齐 · **所有者**：架构师 + 业务开发 · **版本**：v1.1
+> **最后更新**：2026-10-01
+>
+> **边界**：Current 描述实际插件能力边界；后文十个 Context 是 Target 领域分解，不代表已有十个项目、聚合或服务。
 
 ---
 
@@ -14,7 +16,23 @@
 
 ---
 
-## 3. 当前 Context 划分（11 个）
+## 2. 当前能力边界（Current）
+
+当前代码以 **Base + 插件** 划分能力，而不是以独立 DDD Context 项目划分：
+
+| 当前边界 | 已实现职责 | 主要模型/接口 |
+|---|---|---|
+| Transfer 插件 | 意图解析、账户/收款人解析、合规、人工确认、幂等、模拟转账、记录落库、发布事件 | `TransferAgent`、`TransferRecord`、`ITransferIntentParser` |
+| BillAnalysis 插件 | 月账单查询、分类汇总展示、脱敏；监听转账完成事件 | `BillAnalysisAgent`、`TransferEventListener` |
+| CardManagement 插件 | 卡列表查询、挂失/冻结/解挂、合规检查与审计 | `CardManagementAgent` |
+| Wealth 插件 | 余额、理财产品查询和只读推荐 | `理财Agent`；当前不含申购/赎回 |
+| Base Agent 能力 | 规则/可选 LLM 意图分类、单跳路由、多步编排、轨迹 | `IIntentClassifier`、`AgentRouter`、`AgentOrchestrator` |
+| Base 横切能力 | 合规、审计、数据库、事件、插件加载、核心银行客户端 | `ComplianceGuard`、`IAuditLogger`、`BankingDbContext`、`IEventPublisher` |
+| MockBank.Api | 模拟客户、账户、交易、卡片和理财产品；不是 Host 内的领域插件 | `MockBankStore` 及 `MockBank.Api.Domain.*` |
+
+Current 没有独立 Conversation、Subscription、CrossScenario、Memory&Profile、Audit Context 项目。Audit 是 Base 的横切服务；AgentOrchestration 也是 Base 组件。四个插件共享 Host 进程、Base 基础设施与核心银行契约，因此不能声称已经实现完全自治的限界上下文。
+
+## 3. 目标 Context 划分（Target，共 10 个）
 
 ### 3.1 总览
 
@@ -41,7 +59,7 @@
 
 ---
 
-## 4. 核心 Context 详细定义
+## 4. 目标 Context 详细定义（Target 领域设计）
 
 ### 4.1 AgentOrchestration Context
 
@@ -234,7 +252,7 @@
 
 ---
 
-## 5. Context 之间的依赖矩阵
+## 5. 目标 Context 依赖矩阵（Target）
 
 | From → To | 调用方式 |
 |-----------|---------|
@@ -253,7 +271,7 @@
 
 ---
 
-## 6. 防腐层（Anti-Corruption Layer）
+## 6. 防腐层（Target 示例）
 
 当 Context A 调用 Context B 时，A 必须通过 ACL 转换：
 
@@ -285,7 +303,7 @@ public class TransferACL : ITransferExecutionService
 
 ---
 
-## 7. 共享内核（Shared Kernel）
+## 7. 共享内核（Target）
 
 只有真正跨 Context 的**枚举、错误码、值对象**可以共享：
 
@@ -306,7 +324,11 @@ Shared/
 
 ---
 
-## 8. 关联文档
+## 8. Current 防腐边界补充
+
+Current 的外部系统防腐边界是 `BankingAgent.PluginSdk.ICoreBankClient` 及其 DTO，由 Base 的 `CoreBankClient` 通过 HTTP 适配 `MockBank.Api`。插件不直接引用 `MockBank.Api.Domain` 类型。
+
+## 9. 关联文档
 
 - **领域模型详细**：[`02-domain-model.md`](02-domain-model.md)
 - **术语表**：[`03-glossary.md`](03-glossary.md)

@@ -5,6 +5,12 @@
 
 ---
 
+## 0. 评估基线
+
+> **Current（源码可验证）**：当前信任边界是本地 HTTP `BankingAgent.Host :5243` → `MockBank.Api :5200`，默认 SQLite/`EnsureCreated`。已实现 JWT/RBAC、速率限制中间件、安全响应头、人工确认、HMAC 链审计 JSONL + `audit_events` 双写，以及 `TransferRecord` 的 `[Encrypted]` 字段转换器。MFA、KMS/Vault 托管、TDE、WORM、PostgreSQL RLS、mTLS 和生产 K8s 边界均未实现。
+>
+> **Target**：下文 CDN/WAF、K8s、PostgreSQL/Redis/Kafka、外部 CBS 与 LLM 边界是生产威胁建模目标。缓解措施表描述应达到的控制，不等于当前全部生效。
+
 ## 1. 目的
 
 对 AI Banking Agent 系统进行系统化威胁建模，识别潜在攻击面，在设计阶段消除或缓解风险。
@@ -26,7 +32,7 @@
 
 ---
 
-## 3. 系统信任边界
+## 3. 系统信任边界（Target）
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -243,18 +249,18 @@
 
 ## 7. 缓解措施汇总
 
-### 7.1 已落地的设计（Build-in Security）
+### 7.1 当前已落地（代码可验证）
 
 | 类别 | 措施 |
 |------|------|
-| **认证** | JWT + MFA + 设备指纹 |
-| **授权** | RBAC + 资源 ownership 校验 + 行级安全 |
-| **加密** | TLS 1.3（传输）+ AES-256（数据库）+ Vault（密钥）|
-| **审计** | 全链路 trace_id + 不可篡改审计日志 |
+| **认证** | JWT 签发/校验；演示账号；**无 MFA/OTP** |
+| **授权** | RBAC + 请求身份绑定/ownership 校验；**无数据库 RLS** |
+| **加密** | AES-256-GCM 密码框架；`TransferRecord` 敏感字段经 `[Encrypted]` 转换器加密；**无 KMS/TDE，默认 HTTP** |
+| **审计** | HMAC-SHA256 链 JSONL + 独立 `audit_events` 双写；失败记 Critical 且不阻断；**无 WORM** |
 | **HITL** | 高风险操作强制人工回环 |
 | **输入** | 参数化查询 + JSON Schema 校验 + 长度限制 |
-| **输出** | 输出白名单 + 敏感信息过滤 |
-| **降级** | FeatureFlag + 限流 + 熔断 |
+| **输出** | 数据脱敏与安全响应头 |
+| **防滥用** | 进程内速率限制；生产安全门框架（默认开发配置关闭） |
 
 ### 7.2 待建设项（Roadmap）
 
@@ -265,6 +271,7 @@
 - [ ] 渗透测试：每年 1 次外部第三方
 - [ ] 红蓝对抗：每年 1 次
 - [ ] SBOM（软件物料清单）：CycloneDX 标准
+- [ ] MFA/OTP、KMS/Vault、TDE、WORM、PostgreSQL RLS 与 mTLS
 
 ---
 

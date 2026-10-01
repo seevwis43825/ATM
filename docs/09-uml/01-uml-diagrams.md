@@ -58,6 +58,10 @@
 | TransferAgent | `src/plugins/BankingAgent.Plugin.Transfer/TransferAgent.cs` |
 | BillPlugin | `src/plugins/BankingAgent.Plugin.BillAnalysis/BillAnalysisPlugin.cs` |
 | CardPlugin | `src/plugins/BankingAgent.Plugin.CardManagement/CardManagementPlugin.cs` |
+| WealthPlugin | `src/plugins/BankingAgent.Plugin.Wealth/PluginEntryPoint.cs` |
+| Orchestrator | `src/src/BankingAgent.Base/Agents/AgentOrchestrator.cs` |
+| RateLimit | `src/src/BankingAgent.Host/Middleware/RateLimitingMiddleware.cs` |
+| DatabaseInitializer | `src/src/BankingAgent.Base/Data/DatabaseInitializer.cs` |
 
 ---
 
@@ -101,17 +105,17 @@ flowchart TB
 
 | 关系 | 协议 | 源码落点 |
 |------|------|----------|
-| 客户 → 系统 | `POST /api/chat`、`POST /api/chat/confirm` | `Host/Program.cs:341`、`Host/Program.cs:418` |
-| 客服代客 | 同上，且必须带 `impersonationReason` | `Host/Program.cs:357-393` |
-| 运维启停插件 | `POST /api/plugins/{pluginId}/stop|start` | `Host/Program.cs:322`、`Host/Program.cs:331` |
-| 系统 → CBS | `ICoreBankClient` 9 个方法 | `SDK-CoreBank.cs:8-24`，实现 `CoreBankClient.cs:28` |
+| 客户 → 系统 | `POST /api/chat`、`POST /api/chat/confirm` | `Host/Program.cs`、`Host/Program.cs` |
+| 客服代客 | 同上，且必须带 `impersonationReason` | `Host/Program.cs` |
+| 运维启停插件 | `POST /api/plugins/{pluginId}/stop|start` | `Host/Program.cs`、`Host/Program.cs` |
+| 系统 → CBS | `ICoreBankClient` 9 个方法 | `SDK-CoreBank.cs`，实现 `CoreBankClient.cs` |
 | 系统 → LLM | **可选**（未配 `Ai:ApiKey` 时不调用）。意图识别由 `IIntentClassifier` 统一入口：配了密钥走 OpenAI 兼容模型，否则规则表 | `Base/Ai/LlmIntentClassifier.cs` |
-| 系统 → 监管 | **当前未接入**。`AmlThresholdRule` 只打标不外发 | `ComplianceRules.cs:78-93` |
+| 系统 → 监管 | **当前未接入**。`AmlThresholdRule` 只打标不外发 | `ComplianceRules.cs` |
 | 系统 → IM | **当前未接入**。人工确认靠前端轮询 `/api/chat/confirm` | — |
 
 > **现状与目标的差距**（诚实记录，不粉饰）：
-> 图中 6 个外部依赖里，只有 CBS/MockBank 与 IM 通道的**契约**已定义，
-> LLM、监管报送、IM 推送三条链路**尚无代码**。这也是 [`03-api-contract.md`](03-api-contract.md) 里把 LLM 列为"规划"的原因。
+> 图中外部依赖里，CBS/MockBank 已接通；LLM 意图分类可选接入，未配置或失败时降级规则表；
+> 监管报送与 IM 推送仍未实现。
 
 ---
 
@@ -129,11 +133,14 @@ flowchart TB
         HOST["<b>BankingAgent.Host</b><br/>Program.cs 最小 API<br/>:5243 / https :7247"]:::proc
         subgraph CORE["BankingAgent.Base（框架层，编译进宿主）"]
             direction TB
-            ROUTER["AgentRouter<br/>意图 → Agent"]:::proc
+            RATE["RateLimitingMiddleware<br/>IP + 身份双维度限流"]:::proc
+            ROUTER["AgentRouter<br/>单跳意图路由"]:::proc
+            ORCH["AgentOrchestrator<br/>Supervisor 多步编排"]:::proc
             GUARD["ComplianceGuard<br/>4 条内置规则"]:::proc
             AUDIT["AuditLogger<br/>HMAC 链式签名"]:::proc
             BUS["InMemoryEventBus<br/>进程内发布订阅"]:::proc
             DBC["BankingDbContext<br/>+ SimpleDbContextFactory"]:::proc
+            DBINIT["DatabaseInitializer<br/>初始化 + 数据库健康探活"]:::proc
             CBB["CoreBankClient<br/>IHttpClientFactory"]:::proc
         end
         subgraph PLUGDIR["plugins/ 目录（独立 ALC 加载，不编译进宿主）"]
@@ -141,6 +148,7 @@ flowchart TB
             P_TR["BankingAgent.Plugin.Transfer.dll<br/>banking.transfer v1.0.0"]:::proc
             P_BL["BankingAgent.Plugin.BillAnalysis.dll<br/>banking.bill v1.0.0"]:::proc
             P_CD["BankingAgent.Plugin.CardManagement.dll<br/>banking.card v1.0.0"]:::proc
+            P_WL["BankingAgent.Plugin.Wealth.dll<br/>banking.wealth v1.0.0"]:::proc
         end
     end
 
@@ -153,10 +161,14 @@ flowchart TB
     LOGS[["logs/audit-chain.log<br/>审计链文件（HMAC 签名）"]]:::fs
     OPENAPI[["/openapi/v1.json<br/>17 paths / 22 schemas"]]:::fs
 
-    HOST --- ROUTER
+    HOST --- RATE
+    RATE --- ROUTER
+    HOST --- ORCH
     ROUTER --- P_TR
     ROUTER --- P_BL
     ROUTER --- P_CD
+    ROUTER --- P_WL
+    ORCH --- ROUTER
     P_TR --- GUARD
     P_TR --- CBB
     P_CD --- GUARD
@@ -168,6 +180,7 @@ flowchart TB
     P_TR --- AUDIT
     P_BL --- AUDIT
     P_CD --- AUDIT
+    DBINIT --- DBC
     DBC --- DB
     AUDIT --- LOGS
     CBB -->|"HTTP/JSON 端口 5200"| MOCK
@@ -181,17 +194,17 @@ flowchart TB
 | `BankingAgent.Host` | `5243`（https `7247`） | ASP.NET Core 8 最小 API | `Host/Properties/launchSettings.json:16` | 唯一对外暴露的服务 |
 | `MockBank.Api` | `5200` | ASP.NET Core 8 最小 API | `mock-bank/MockBank.Api/Properties/launchSettings.json:8` | 仅开发/演示环境 |
 | 数据库 | — | SQLite / PostgreSQL | `Host/appsettings.json:10-14` | 默认 `Data Source=bankingagent.db` |
-| 事件总线 | — | 进程内 | `EventBus.cs:12` | **不跨进程**，见 [ADR-020](02-architecture-decision-record.md#adr-020) |
-| `plugins/` | — | 独立 `AssemblyLoadContext` | `PluginRegistry.cs:34` | 宿主构建后复制，**可独立发布** |
+| 事件总线 | — | 进程内 | `EventBus.cs` | **不跨进程**，见 [ADR-020](02-architecture-decision-record.md#adr-020) |
+| `plugins/` | — | 独立 `AssemblyLoadContext` | `PluginRegistry.cs` | 宿主构建后复制，**可独立发布** |
 
-**插件如何进入 `plugins/` 目录**：Host 项目用 MSBuild 目标 `CopyPluginsToOutput` 在 `AfterTargets="Build"` 阶段把三个 `.dll` 复制到 `$(OutDir)plugins`
-（`Host/BankingAgent.Host.csproj:22-32`）。`Plugins:Directory` 配置为空时回退到 `AppContext.BaseDirectory + "plugins"`（`Host/Program.cs:39-41`）。
+**插件如何进入 `plugins/` 目录**：Host 项目用 MSBuild 目标 `CopyPluginsToOutput` 在 `AfterTargets="Build"` 阶段把四个 `.dll` 复制到 `$(OutDir)plugins`
+（`Host/BankingAgent.Host.csproj:22-32`）。`Plugins:Directory` 配置为空时回退到 `AppContext.BaseDirectory + "plugins"`（`Host/Program.cs`）。
 
 **边界约束（架构铁律）**：
 
-1. 插件**只**通过 `ICoreBankClient` 访问资金系统，**绝不**直接依赖 MockBank 的 DTO（`CoreBankClient.cs:1-3` 的注释即此约束）。
-2. 插件**只**通过 `IEventPublisher` 与其他插件通信，**禁止**互相引用类型（`EventContracts.cs:1-2`）。
-3. 插件**只**能写自己的数据分区（`IPluginContext.PartitionName`，`SDK-Plugin.cs:77`）。
+1. 插件**只**通过 `ICoreBankClient` 访问资金系统，**绝不**直接依赖 MockBank 的 DTO（`CoreBankClient.cs` 的注释即此约束）。
+2. 插件**只**通过 `IEventPublisher` 与其他插件通信，**禁止**互相引用类型（`EventContracts.cs`）。
+3. 插件**只**能写自己的数据分区（`IPluginContext.PartitionName`，`SDK-Plugin.cs`）。
 
 ---
 
@@ -266,9 +279,9 @@ flowchart TB
 
 ### 3.1 每个插件一个可回收 ALC
 
-`PluginLoadContext : AssemblyLoadContext`，构造时 `isCollectible: true`（`PluginRegistry.cs:28-38`）。
+`PluginLoadContext : AssemblyLoadContext`，构造时 `isCollectible: true`（`PluginRegistry.cs`）。
 SDK 契约程序集名放进 `_sharedAssemblies`，`Load()` 命中就返回 `null` 交回 Default 上下文
-（`PluginRegistry.cs:41-50`）—— 这是让**插件类型与宿主类型互转**能成立的前提，
+（`PluginRegistry.cs`）—— 这是让**插件类型与宿主类型互转**能成立的前提，
 否则同一个 `IPluginEntryPoint` 会在两个上下文里各有一份，DI 会直接抛 `InvalidCastException`。
 
 ### 3.2 加载期与构建期的时序
@@ -286,14 +299,14 @@ Program.cs
 ```
 
 为什么必须提前 `BuildServiceProvider()`？因为 `PluginRegistry` 构造时需要一个 `IServiceProvider` 作为
-`IPluginContext.Services` 传给插件（`PluginRegistry.cs:86-94`、`PluginRegistry.cs:173`），
+`IPluginContext.Services` 传给插件（`PluginRegistry.cs`、`PluginRegistry.cs`），
 而插件的 `ConfigureServices` 又要执行才能拿到服务描述。详见 [ADR-019](02-architecture-decision-record.md#adr-019)。
 
 ### 3.3 依赖拓扑排序
 
 `TopologicalSort` 用三色 DFS（`state`: 1=访问中、2=已完成）检测循环依赖，
-并用 `PluginVersion.IsCompatible` 校验最低版本（`PluginRegistry.cs:269-308`）。
-当前唯一的依赖边是 `banking.card → banking.transfer >= 1.0.0`（`CardPlugin.cs:31-34`）。
+并用 `PluginVersion.IsCompatible` 校验最低版本（`PluginRegistry.cs`）。
+当前唯一的依赖边是 `banking.card → banking.transfer >= 1.0.0`（`CardPlugin.cs`）。
 所有插件版本都是 1.0.0，实际无版本冲突。
 
 ---
@@ -392,9 +405,15 @@ classDiagram
         +ConfigureServices(IServiceCollection, IPluginContext) void
     }
 
+    class 理财PluginEntryPoint {
+        +GetManifest() PluginManifest
+        +ConfigureServices(IServiceCollection, IPluginContext) void
+    }
+
     IPluginEntryPoint <|.. TransferPluginEntryPoint : 实现
     IPluginEntryPoint <|.. BillAnalysisPluginEntryPoint : 实现
     IPluginEntryPoint <|.. CardManagementPluginEntryPoint : 实现
+    IPluginEntryPoint <|.. 理财PluginEntryPoint : 实现
 
     IPluginContext <|.. PluginContext : 实现
 
@@ -414,31 +433,31 @@ classDiagram
 
 | 元素 | 源码位置 | 关键设计 |
 |------|----------|----------|
-| `IPluginEntryPoint` | `SDK-Plugin.cs:92-98` | 每个插件程序集**必须且只能**实现一个；`PluginRegistry` 用 `FirstOrDefault` 查找（`PluginRegistry.cs:150-151`） |
-| `IPluginContext` | `SDK-Plugin.cs:72-79` | 插件只读使用；`PartitionName` 是插件写数据的唯一授权范围 |
-| `PluginManifest` | `SDK-Plugin.cs:42-56` | `required` 修饰的 `Id/Name/Description/Version` 强制初始化，纯元数据、不可变 |
-| `PluginDependency` | `SDK-Plugin.cs:39` | `IsOptional=false` 的依赖在拓扑排序时**缺失即抛异常**（`PluginRegistry.cs:285-297`） |
-| `PluginVersion.IsCompatible` | `SDK-Plugin.cs:29-32` | 主版本必须相同；`Patch` 相同才比较 `Prerelease`，属于简化版 SemVer |
-| `IPlugin` | `SDK-Plugin.cs:82-89` | 生命周期钩子。**当前三个插件均未实现**（见文末"已知不一致"） |
-| `PluginContext` | `PluginRegistry.cs:312-331` | `PartitionName` 把 `banking.transfer` 转成 `banking_transfer`（小写 + `.`→`_`），保证 SQL 标识符合法 |
+| `IPluginEntryPoint` | `SDK-Plugin.cs` | 每个插件程序集**必须且只能**实现一个；`PluginRegistry` 用 `FirstOrDefault` 查找（`PluginRegistry.cs`） |
+| `IPluginContext` | `SDK-Plugin.cs` | 插件只读使用；`PartitionName` 是插件写数据的唯一授权范围 |
+| `PluginManifest` | `SDK-Plugin.cs` | `required` 修饰的 `Id/Name/Description/Version` 强制初始化，纯元数据、不可变 |
+| `PluginDependency` | `SDK-Plugin.cs` | `IsOptional=false` 的依赖在拓扑排序时**缺失即抛异常**（`PluginRegistry.cs`） |
+| `PluginVersion.IsCompatible` | `SDK-Plugin.cs` | 主版本必须相同；`Patch` 相同才比较 `Prerelease`，属于简化版 SemVer |
+| `IPlugin` | `SDK-Plugin.cs` | 生命周期钩子。**当前四个插件均未实现**（见文末"已知不一致"） |
+| `PluginContext` | `PluginRegistry.cs` | `PartitionName` 把 `banking.transfer` 转成 `banking_transfer`（小写 + `.`→`_`），保证 SQL 标识符合法 |
 
-**三个插件清单对照**（数据来自 `TransferPlugin.cs:23-34`、`BillPlugin.cs:18-29`、`CardPlugin.cs:19-35`）：
+**四个插件清单对照**（数据来自 `TransferPlugin.cs`、`BillPlugin.cs`、`CardPlugin.cs`、`Wealth/PluginEntryPoint.cs`）：
 
-| 字段 | banking.transfer | banking.bill | banking.card |
-|------|------------------|--------------|--------------|
-| Name | 智能转账 | 账单分析 | 卡片管理 |
-| Version | 1.0.0 | 1.0.0 | 1.0.0 |
-| Author | 业务开发组 | AI 数据组 | 业务开发组 |
-| Scenarios | `["transfer"]` | `["bill"]` | `["card"]` |
-| FeatureFlags | `transfer.enabled`、`transfer.auto_confirm` | `bill.enabled`、`bill.trend_analysis` | `card.enabled`、`card.limit_adjust` |
-| MaxDataClassification | L3 | L3 | L3 |
-| Dependencies | 无 | 无 | `banking.transfer >= 1.0.0`（必需） |
-| 注册的 Agent | `TransferAgent` | `BillAnalysisAgent` | `CardManagementAgent` |
-| 数据分区 | `plugin_transfer` | 无（只读） | 无（不落库） |
-| 事件订阅 | 无（是发布方） | `transfer.completed` | 无 |
+| 字段 | banking.transfer | banking.bill | banking.card | banking.wealth |
+|------|------------------|--------------|--------------|----------------|
+| Name | 智能转账 | 账单分析 | 卡片管理 | 理财 |
+| Version | 1.0.0 | 1.0.0 | 1.0.0 | 1.0.0 |
+| Author | 业务开发组 | AI 数据组 | 业务开发组 | 业务开发组 |
+| Scenarios | `["transfer"]` | `["bill"]` | `["card"]` | `["wealth"]` |
+| FeatureFlags | `transfer.enabled`、`transfer.auto_confirm` | `bill.enabled`、`bill.trend_analysis` | `card.enabled`、`card.limit_adjust` | `wealth.enabled` |
+| MaxDataClassification | L3 | L3 | L3 | L3 |
+| Dependencies | 无 | 无 | `banking.transfer >= 1.0.0`（必需） | 无 |
+| 注册的 Agent | `TransferAgent` | `BillAnalysisAgent` | `CardManagementAgent` | `理财Agent` |
+| 数据分区 | `plugin_transfer` | 无（只读） | 无（不落库） | 无（只读） |
+| 事件订阅 | 无（是发布方） | `transfer.completed` | 无 | 无 |
 
 > **一致性观察**：`IPluginContext.PartitionName` 推导出的名字是 `banking_transfer`，
-> 而 `TransferPersistenceContributor.PartitionName` 硬编码为 `plugin_transfer`（`TransferPlugin.cs:70`）。
+> 而 `TransferPersistenceContributor.PartitionName` 硬编码为 `plugin_transfer`（`TransferPlugin.cs`）。
 > **两个值不同**，前者用于日志标识，后者才是真正的 PostgreSQL Schema 名。见 [04-data-model.md](04-data-model.md#5-插件分区策略)。
 
 ---
@@ -549,10 +568,15 @@ classDiagram
         -ComplianceGuard _compliance
     }
 
+    class 理财Agent {
+        -ICoreBankClient _coreBank
+    }
+
     IBankingAgent <|.. BankingAgentBase : 实现抽象契约
     BankingAgentBase <|-- TransferAgent : 继承
     BankingAgentBase <|-- BillAnalysisAgent : 继承
     BankingAgentBase <|-- CardManagementAgent : 继承
+    BankingAgentBase <|-- 理财Agent : 继承
 
     IBankingAgent --> AgentId : Id
     IBankingAgent --> AgentRole : Role
@@ -573,12 +597,12 @@ classDiagram
 
 | 层 | 类型 | 职责 | 源码 |
 |----|------|------|------|
-| 契约 | `IBankingAgent` | 只声明"我是谁 + 我能处理什么意图 + 执行" | `SDK-Agent.cs:113-121` |
-| 模板 | `BankingAgentBase` | 计时、审计、异常兜底、意图判定 `CanHandle` | `AgentBase.cs:12-110` |
-| 路由 | `AgentRouter` | 意图 → Agent 的最长前缀匹配 | `AgentRouter.cs:11-61` |
+| 契约 | `IBankingAgent` | 只声明"我是谁 + 我能处理什么意图 + 执行" | `SDK-Agent.cs` |
+| 模板 | `BankingAgentBase` | 计时、审计、异常兜底、意图判定 `CanHandle` | `AgentBase.cs` |
+| 路由 | `AgentRouter` | 意图 → Agent 的最长前缀匹配 | `AgentRouter.cs` |
 
 `BankingAgentBase.ExecuteAsync` 是 **Template Method**：`HandleAsync` 是抽象钩子，
-基类负责计时（`Stopwatch`）、写 `agent.execute` 审计、异常兜底转 `AGENT_EXCEPTION`（`AgentBase.cs:38-98`）。
+基类负责计时（`Stopwatch`）、写 `agent.execute` 审计、异常兜底转 `AGENT_EXCEPTION`（`AgentBase.cs`）。
 子类只写业务，**不可能忘记审计**——这是模板方法在这个项目里最实际的价值。
 
 ### 5.2 `AgentResult` 的三态语义
@@ -596,17 +620,18 @@ classDiagram
 
 | Agent | Id | Role | SupportedIntents | 源码 |
 |-------|----|------|------------------|------|
-| 转账执行 Agent | `transfer.agent` | DomainExpert | `transfer`, `transfer.execute` | `TransferAgent.cs:48-57` |
-| 账单分析 Agent | `bill.agent` | DomainExpert | `bill`, `bill.summary` | `BillPlugin.cs:54-63` |
-| 卡片管理 Agent | `card.agent` | DomainExpert | `card`, `card.status` | `CardPlugin.cs:63-72` |
+| 转账执行 Agent | `transfer.agent` | DomainExpert | `transfer`, `transfer.execute` | `TransferAgent.cs` |
+| 账单分析 Agent | `bill.agent` | DomainExpert | `bill`, `bill.summary` | `BillPlugin.cs` |
+| 卡片管理 Agent | `card.agent` | DomainExpert | `card`, `card.status` | `CardPlugin.cs` |
+| 理财 Agent | `wealth.agent` | DomainExpert | `wealth`, `wealth.products`, `wealth.balance` | `Wealth/Agent.cs` |
 
-`AgentRole` 定义了 6 种角色（`SDK-Agent.cs:15-29`），但**当前只有 `DomainExpert` 被使用**。
-`Intent` / `Orchestrator` / `Memory` / `Response` 对应的 Agent 尚未实现——
-`DetectIntent`（`Host/Program.cs:502`）目前是一个静态方法而非可插拔 Agent，这是后续演进点。
+`AgentRole` 定义了 6 种角色（`SDK-Agent.cs`），但**当前只有 `DomainExpert` 被使用**。
+`Intent` / `Orchestrator` / `Memory` / `Response` 角色对应的独立 Agent 尚未实现；
+当前意图入口是 `IIntentClassifier`，多步编排由 `AgentOrchestrator` 承担。
 
 ### 5.4 路由规则与已知盲区
 
-`Resolve` 的最长前缀逻辑（`AgentRouter.cs:27-39`）：
+`Resolve` 的最长前缀逻辑（`AgentRouter.cs`）：
 
 ```
 intent = "transfer.execute"
@@ -615,9 +640,9 @@ intent = "transfer.execute"
 OrderByDescending(Max(前缀长度)) → 选 B
 ```
 
-`Resolve` 的已知盲区（`DetectIntent` 会产出但无 Agent 匹配，`AgentRouter.cs:53-57` 返回 `NO_AGENT`）：
+`Resolve` 的已知盲区（`IIntentClassifier` 可能产出但无 Agent 匹配，`AgentRouter` 返回 `NO_AGENT`）：
 
-| DetectIntent 产出 | 是否有 Agent 匹配 | 结果 |
+| 分类器产出 | 是否有 Agent 匹配 | 结果 |
 |-------------------|:-----------------:|------|
 | `transfer.execute` | ✅ `transfer` 前缀 | 转账 |
 | `bill.summary` | ✅ `bill` 前缀 | 账单 |
@@ -627,11 +652,11 @@ OrderByDescending(Max(前缀长度)) → 选 B
 
 ### 5.5 `SlotReader` 为什么必须存在
 
-`AgentRequest.Slots` 是 `IReadOnlyDictionary<string, object?>`（`SDK-Agent.cs:39-40`）。
+`AgentRequest.Slots` 是 `IReadOnlyDictionary<string, object?>`（`SDK-Agent.cs`）。
 Minimal API 把 JSON 请求体反序列化成 `Dictionary<string, object?>` 时，**嵌套值是 `System.Text.Json.JsonElement` 而不是 `string`**。
 插件 Agent 若直接 `(string)request.Slots["to_account"]` 会抛 `InvalidCastException`。
 
-`SlotReader` 把这个坑集中处理了一遍（`SlotReader.cs:11-145`）：
+`SlotReader` 把这个坑集中处理了一遍（`SlotReader.cs`）：
 支持 `string` / `int` / `long` / `decimal` / `double` / `bool` / 数字字符串 / `JsonElement`，
 并且**捕获 `ObjectDisposedException`**——当 `JsonElement` 来自已释放的 `JsonDocument` 时降级为 `null` 而不是让整个请求 500。
 详见 [ADR-013](02-architecture-decision-record.md#adr-013)。
@@ -865,15 +890,15 @@ classDiagram
 
 | 不变量 | 代码保障 | 位置 |
 |--------|----------|------|
-| 任何篡改都会导致链断裂 | 每条记录的 HMAC 输入包含**前一条的签名** | `AuditLogger.cs:160-174` `Canonicalize` 第 10 段 `previousSignature` |
-| 读链尾 / 算签名 / 写链尾是原子的 | 三步在同一个 `lock (_gate)` 临界区内 | `AuditLogger.cs:98-114` `SignAndAdvance` |
-| 并发写文件不会撕裂行 | `_fileGate` SemaphoreSlim 串行化文件追加 | `AuditLogger.cs:210-218` |
-| 审计文件不泄露用户身份 | `HashActor` 取 SHA-256 前 12 个十六进制字符 | `AuditLogger.cs:228-232` |
-| 审计写失败必须告警 | `LogCritical` 而不是吞异常 | `AuditLogger.cs:220-224` |
+| 任何篡改都会导致链断裂 | 每条记录的 HMAC 输入包含**前一条的签名** | `AuditLogger.cs` `Canonicalize` 第 10 段 `previousSignature` |
+| 读链尾 / 算签名 / 写链尾是原子的 | 三步在同一个 `lock (_gate)` 临界区内 | `AuditLogger.cs` `SignAndAdvance` |
+| 并发写文件不会撕裂行 | `_fileGate` SemaphoreSlim 串行化文件追加 | `AuditLogger.cs` |
+| 审计文件不泄露用户身份 | `HashActor` 取 SHA-256 前 12 个十六进制字符 | `AuditLogger.cs` |
+| 审计写失败必须告警 | `LogCritical` 而不是吞异常 | `AuditLogger.cs` |
 
 `SignAndAdvance` 与 `Sign` 的区别就是 ADR-015 的全部内容：
-`Sign` **只算不推进**（供离线校验与单元测试用，`AuditLogger.cs:117-131`），
-`SignAndAdvance` **算完立即推进链尾**（生产路径，`AuditLogger.cs:98-114`）。
+`Sign` **只算不推进**（供离线校验与单元测试用，`AuditLogger.cs`），
+`SignAndAdvance` **算完立即推进链尾**（生产路径，`AuditLogger.cs`）。
 早期实现把这两步拆开，导致并发写入时两条记录引用同一个 `PreviousSignature`，链直接断裂。
 
 ### 6.2 四条合规规则
@@ -885,7 +910,7 @@ classDiagram
 | `aml.large_amount` | v1.2 | `transfer`, `wealth` | ≥ 反洗钱阈值要求人工复核 | `AmlReportThreshold` |
 | `scenario.permission` | v1.0 | 全部（`Scenarios` 为空） | 非资金场景 + `Amount > 0` 拒绝 | 无 |
 
-**求值语义（`ComplianceGuard.Evaluate`，`ComplianceGuard.cs:64-89`）**：
+**求值语义（`ComplianceGuard.Evaluate`，`ComplianceGuard.cs`）**：
 
 ```
 for rule in _rules:                    # 注册顺序即执行顺序
@@ -902,25 +927,25 @@ return ComplianceDecision.Allow()
 
 > **规则顺序的隐含风险**：`TransferAmountRule`（要求人工）先于 `AmlThresholdRule`（要求人工）执行，
 > 30,000 元的转账只会命中第一条，返回的 `RuleId` 是 `transfer.amount.threshold`，
-> **反洗钱规则不会被记录**。但 `RiskScore` 仍会写审计（`TransferAgent.cs:115`），
+> **反洗钱规则不会被记录**。但 `RiskScore` 仍会写审计（`TransferAgent.cs`），
 > 且合规模板里也声明了场景，合规视角可接受。改造方案见 [ADR-020 备注](02-architecture-decision-record.md#adr-020)。
 
 ### 6.3 四个配置项中两个**当前未被任何规则消费**
 
 | 配置项 | 默认值 | 是否被规则读取 | 位置 |
 |--------|--------|:--------------:|------|
-| `TransferAutoApproveLimit` | 5000 | ✅ | `ComplianceRules.cs:45` |
-| `AmlReportThreshold` | 50000 | ✅ | `ComplianceRules.cs:86` |
-| `TransferHardCap` | 500000 | ✅ | `ComplianceRules.cs:38` |
+| `TransferAutoApproveLimit` | 5000 | ✅ | `ComplianceRules.cs` |
+| `AmlReportThreshold` | 50000 | ✅ | `ComplianceRules.cs` |
+| `TransferHardCap` | 500000 | ✅ | `ComplianceRules.cs` |
 | `TransferDailyLimit` | 200000 | ❌ **未被读取** | 配置在 `Host/appsettings.json:33`，无规则引用 |
 | `HighFrequencyThreshold` | 5 | ❌ **未被读取** | 配置在 `Host/appsettings.json:36`，无规则引用 |
 
-单日限额目前由 MockBank 的 `DAILY_LIMIT_EXCEEDED` 兜底（`ErrorContracts.cs:44`），
+单日限额目前由 MockBank 的 `DAILY_LIMIT_EXCEEDED` 兜底（`ErrorContracts.cs`），
 频率风控**没有实现**。这是有意的范围裁剪，记录在此以免误判为已完成。
 
 ### 6.4 脱敏策略矩阵
 
-`DataMasker.Apply(value, level, fieldKind)`（`DataMasker.cs:79-97`）：
+`DataMasker.Apply(value, level, fieldKind)`（`DataMasker.cs`）：
 
 | 级别 | 行为 |
 |------|------|
@@ -928,7 +953,7 @@ return ComplianceDecision.Allow()
 | L4 绝密 | 一律返回 `"********"` |
 | L2 / L3 | 按 `fieldKind` 分派到具体脱敏函数 |
 
-`fieldKind` 分派表（`DataMasker.cs:86-95`）：
+`fieldKind` 分派表（`DataMasker.cs`）：
 
 | fieldKind | 函数 | 输出示例 |
 |-----------|------|----------|
@@ -941,12 +966,12 @@ return ComplianceDecision.Allow()
 | 其他 | `MaskAccount`（保守默认） | 掩码 |
 
 `MaskGraph` 递归处理对象图，**字典会把键名传给值**以实现字段感知脱敏
-（`DataMasker.cs:109-113`，注释明确说明"否则 phone 字段会被当成 generic 走账号掩码"），
+（`DataMasker.cs`，注释明确说明"否则 phone 字段会被当成 generic 走账号掩码"），
 这正是 LLM 上下文中防止敏感字段外泄的关键路径。
 
 ### 6.5 鉴权能力矩阵
 
-`CurrentPrincipal`（`JwtOptions.cs:39-54`）：
+`CurrentPrincipal`（`JwtOptions.cs`）：
 
 | 属性 | 判定 | 覆盖角色 |
 |------|------|----------|
@@ -954,9 +979,9 @@ return ComplianceDecision.Allow()
 | `CanAdminister` | `Role == admin` | 仅管理员 |
 | `CanImpersonateSupport` | `Role is staff or auditor or admin` | 客服、审计员、管理员 |
 
-`TokenService` 在**构造时**校验密钥长度 ≥ 32 字节，不足直接抛 `InvalidOperationException`（`TokenService.cs:27-31`）——
+`TokenService` 在**构造时**校验密钥长度 ≥ 32 字节，不足直接抛 `InvalidOperationException`（`TokenService.cs`）——
 这是把配置错误拦在启动期而不是运行期的典型做法。
-`Validate` 关闭了详细异常信息，只记录 `ex.GetType().Name`，避免日志泄露凭证（`TokenService.cs:123-127`）。
+`Validate` 关闭了详细异常信息，只记录 `ex.GetType().Name`，避免日志泄露凭证（`TokenService.cs`）。
 
 ---
 
@@ -1105,7 +1130,7 @@ classDiagram
     SimpleDbContextFactory ..> PluginContributorRegistry : 每次创建前回填
     PluginContributorRegistry ..> IEntitySetContributor : 静态持有
     UnitOfWork ..> BankingDbContext : 通过工厂创建
-    DatabaseInitializer ..> BankingDbContext : EnsureCreated
+    DatabaseInitializer ..> BankingDbContext : 初始化 / Migration / 健康探活
     DatabaseInitializer ..> IEntitySetContributor : 遍历分区建 Schema
     TransferAgent ..> SimpleDbContextFactory : 经 IDbContextFactory 注入
 ```
@@ -1114,7 +1139,7 @@ classDiagram
 
 ### 7.1 实体继承树
 
-当前**只有一张业务表**：`transfer_records`（`TransferPlugin.cs:78`）。
+当前**只有一张业务表**：`transfer_records`（`TransferPlugin.cs`）。
 其余两个插件不落库（`BillAnalysisPlugin` 只读核心系统、`CardManagementPlugin` 直接调核心系统）。
 本文档如实反映这一点，不虚构表。
 
@@ -1133,15 +1158,15 @@ BaseEntity（抽象，9 个字段，全部带审计语义）
 
 存在两个构造函数的原因：2F Core 内置的 `IDbContextFactory<T>` 只会找"接受 `DbContextOptions` 的唯一构造函数"，
 而项目的 DbContext 需要注入插件贡献器集合、当前用户、时钟。见
-[ADR-011](02-architecture-decision-record.md#adr-011) 与 `SimpleDbContextFactory.cs:1-6` 的注释。
+[ADR-011](02-architecture-decision-record.md#adr-011) 与 `SimpleDbContextFactory.cs` 的注释。
 
 `SimpleDbContextFactory.CreateDbContext` 的做法是：从根容器 `GetServices<IEntitySetContributor>()` 取出贡献器，
-**先写进静态注册表**（`SimpleDbContextFactory.cs:22-23`），再调主构造函数。
+**先写进静态注册表**（`SimpleDbContextFactory.cs`），再调主构造函数。
 代价是每次创建 DbContext 都会重写一次进程级静态状态，详见 [ADR-012](02-architecture-decision-record.md#adr-012)。
 
 ### 7.3 审计字段自动填充
 
-`ApplyAuditFields`（`BankingDbContext.cs:95-118`）在**每次 SaveChanges 前**执行：
+`ApplyAuditFields`（`BankingDbContext.cs`）在**每次 SaveChanges 前**执行：
 
 | 实体状态 | 动作 |
 |----------|------|
@@ -1149,7 +1174,7 @@ BaseEntity（抽象，9 个字段，全部带审计语义）
 | `Modified` | 写 `UpdatedAt`、`UpdatedBy`；**强制 `CreatedAt`/`CreatedBy` 的 `IsModified = false`** |
 | `Deleted` | **不处理**（见下方不一致清单） |
 
-`IsModified = false` 那一行是安全关键：防止业务代码在更新实体时顺手改掉创建信息（`BankingDbContext.cs:112-114`）。
+`IsModified = false` 那一行是安全关键：防止业务代码在更新实体时顺手改掉创建信息（`BankingDbContext.cs`）。
 
 ### 7.4 `UnitOfWork` 的事务边界
 
@@ -1164,12 +1189,12 @@ stateDiagram-v2
     提交 --> [*]
 ```
 
-`ExecuteAsync` 的 catch 分支 `LogError` + `Rollback` + **rethrow**（`UnitOfWork.cs:29-34`），
+`ExecuteAsync` 的 catch 分支 `LogError` + `Rollback` + **rethrow**（`UnitOfWork.cs`），
 不吞异常——这是正确的：静默吞掉会导致调用方以为转账成功了。
 
 `TryRegisterIdempotencyKey` 用 `ConcurrentDictionary.TryAdd` 实现进程内去重，
-并发下**恰好一个**成功（`UnitOfWork.cs:44-48`，单元测试 `IdempotencyTests.cs:51-62` 验证了 100 并发只有 1 次成功）。
-但 `UnitOfWork` 注册为 **Scoped**（`DIExtensions.cs:115`），每次请求都是新实例，
+并发下**恰好一个**成功（`UnitOfWork.cs`，单元测试 `IdempotencyTests.cs` 验证了 100 并发只有 1 次成功）。
+但 `UnitOfWork` 注册为 **Scoped**（`DIExtensions.cs`），每次请求都是新实例，
 所以这个字典实际只在单个请求内有效——真正的幂等保护在 `TransferRecord.IdempotencyKey` 的**唯一索引**上。
 
 ---
@@ -1183,14 +1208,14 @@ sequenceDiagram
     autonumber
     actor U as 用户
     participant IM as 前端 / IM 卡片
-    participant MW as 鉴权中间件<br/>Program.cs:87
-    participant EP as /api/chat<br/>Program.cs:341
-    participant RT as AgentRouter<br/>AgentRouter.cs:47
-    participant TA as TransferAgent<br/>TransferAgent.cs:60
-    participant CG as ComplianceGuard<br/>ComplianceGuard.cs:64
+    participant MW as 鉴权中间件<br/>Program.cs
+    participant EP as /api/chat<br/>Program.cs
+    participant RT as AgentRouter<br/>AgentRouter.cs
+    participant TA as TransferAgent<br/>TransferAgent.cs
+    participant CG as ComplianceGuard<br/>ComplianceGuard.cs
     participant R1 as TransferAmountRule
     participant RE as AmlThresholdRule
-    participant AU as AuditLogger<br/>AuditLogger.cs:82
+    participant AU as AuditLogger<br/>AuditLogger.cs
     participant FS as logs/audit-chain.log
 
     U->>IM: 输入「给6E2E020200000003转账30000元」
@@ -1201,7 +1226,7 @@ sequenceDiagram
 
     Note over MW,EP: userId 一律取自令牌<br/>请求体中的 userId 仅用于越权比对
 
-    EP->>EP: DetectIntent(message) → transfer.execute
+    EP->>EP: IIntentClassifier.ClassifyAsync(message) → transfer.execute
     EP->>EP: 越权校验：req.UserId ≠ principal.UserId → 403
     EP->>RT: RouteAsync(AgentRequest{Upstream=Ok(intent)})
     RT->>RT: Resolve("transfer.execute")<br/>最长前缀 → TransferAgent
@@ -1258,47 +1283,47 @@ sequenceDiagram
 
 | 步骤 | 代码位置 | 安全要点 |
 |------|----------|----------|
-| 1. 鉴权 | `Host/Program.cs:87-117` | 令牌无效 → 401；白名单只有 `/health` 与 `/api/auth/token`（`Host/Program.cs:486-489`） |
-| 2. 身份落地 | `Host/Program.cs:97` | `CurrentUserAccessor.Enter` 写 AsyncLocal，让审计字段拿到真实用户 |
+| 1. 鉴权 | `Host/Program.cs` | 令牌无效 → 401；白名单只有 `/health` 与 `/api/auth/token`（`Host/Program.cs`） |
+| 2. 身份落地 | `Host/Program.cs` | `CurrentUserAccessor.Enter` 写 AsyncLocal，让审计字段拿到真实用户 |
 | 3. 意图识别 | `Base/Ai/LlmIntentClassifier.cs` | 默认规则表（插件自报关键词）；配 `Ai:ApiKey` 后由大模型判定，失败自动降级 |
-| 4. 越权防护 | `Host/Program.cs:353-373` | `effectiveUserId = principal.UserId`，请求体 userId 仅用于比对 |
-| 5. 路由 | `AgentRouter.cs:27-39` | 最长前缀优先 |
-| 6. 槽位抽取 | `TransferAgent.cs:63-66` + `SlotReader.cs:14-126` | 统一处理 JsonElement |
-| 7. 补全付款账户 | `TransferAgent.cs:81-87` | 调 `ICoreBankClient.ListAccountsAsync`，取 `Status == "正常"` 的第一个 |
-| 8. 合规评估 | `TransferAgent.cs:91-100` | 幂等键 `IdempotencyKey = request.SessionId` 也传进合规上下文 |
-| 9. 审计合规决策 | `TransferAgent.cs:102-117` | `ActorType = "AGENT"`，`RiskScore` 入审计 |
-| 10. 人工回环 | `TransferAgent.cs:126-138` | `RequiresHumanApproval && !confirmed` → `PendingApproval`，**此时 `SideEffectCommitted` 必为 false** |
-| 11. 幂等检查 | `TransferAgent.cs:141-163` | 命中则返回原结果，`idempotent_replay = true` |
-| 12. 调核心 | `TransferAgent.cs:166-174` | 只经 `ICoreBankClient`，插件不感知 HTTP |
-| 13. 失败审计 | `TransferAgent.cs:178-189` | `ActorType = "CORE_BANK"`，`Decision = "FAILED"` |
-| 14. 落库 | `TransferAgent.cs:196-209` | `Status = "Completed"`，`HumanApproved = compliance.RequiresHumanApproval` |
-| 15. 发事件 | `TransferAgent.cs:212-228` | `EventType = "transfer.completed"`，`CorrelationId = SessionId` |
-| 16. 统一审计 | `AgentBase.cs:53-66` | 模板方法保证每个 Agent 执行都留痕 |
-| 17. 确认端点 | `Host/Program.cs:418-471` | 也做越权校验（`Host/Program.cs:427-432`） |
+| 4. 越权防护 | `Host/Program.cs` | `effectiveUserId = principal.UserId`，请求体 userId 仅用于比对 |
+| 5. 路由 | `AgentRouter.cs` | 最长前缀优先 |
+| 6. 槽位抽取 | `TransferAgent.cs` + `SlotReader.cs` | 统一处理 JsonElement |
+| 7. 补全付款账户 | `TransferAgent.cs` | 调 `ICoreBankClient.ListAccountsAsync`，取 `Status == "正常"` 的第一个 |
+| 8. 合规评估 | `TransferAgent.cs` | 幂等键 `IdempotencyKey = request.SessionId` 也传进合规上下文 |
+| 9. 审计合规决策 | `TransferAgent.cs` | `ActorType = "AGENT"`，`RiskScore` 入审计 |
+| 10. 人工回环 | `TransferAgent.cs` | `RequiresHumanApproval && !confirmed` → `PendingApproval`，**此时 `SideEffectCommitted` 必为 false** |
+| 11. 幂等检查 | `TransferAgent.cs` | 命中则返回原结果，`idempotent_replay = true` |
+| 12. 调核心 | `TransferAgent.cs` | 只经 `ICoreBankClient`，插件不感知 HTTP |
+| 13. 失败审计 | `TransferAgent.cs` | `ActorType = "CORE_BANK"`，`Decision = "FAILED"` |
+| 14. 落库 | `TransferAgent.cs` | `Status = "Completed"`，`HumanApproved = compliance.RequiresHumanApproval` |
+| 15. 发事件 | `TransferAgent.cs` | `EventType = "transfer.completed"`，`CorrelationId = SessionId` |
+| 16. 统一审计 | `AgentBase.cs` | 模板方法保证每个 Agent 执行都留痕 |
+| 17. 确认端点 | `Host/Program.cs` | 也做越权校验（`Host/Program.cs`） |
 
 ### 8.2 三条安全不变量
 
-1. **`SideEffectCommitted == false` 时余额一定没动**：第 10 步直接 `return`，第 12 步的 `ExecuteTransferAsync` 根本没被调用。E2E 测试 `Program.cs:257` 断言了"等待确认期间余额未变"。
-2. **人工确认必须由令牌身份发起**：第 17 步，`userId` 取 `principal.UserId`（`Host/Program.cs:434`），不能代客确认除非有 `CanImpersonateSupport`。
-3. **确认动作本身留痕**：`human.approval` 审计带 `ActorType = "USER"` 与 `Amount`（`Host/Program.cs:436-448`）。
+1. **`SideEffectCommitted == false` 时余额一定没动**：第 10 步直接 `return`，第 12 步的 `ExecuteTransferAsync` 根本没被调用。E2E 测试 `Program.cs` 断言了"等待确认期间余额未变"。
+2. **人工确认必须由令牌身份发起**：第 17 步，`userId` 取 `principal.UserId`（`Host/Program.cs`），不能代客确认除非有 `CanImpersonateSupport`。
+3. **确认动作本身留痕**：`human.approval` 审计带 `ActorType = "USER"` 与 `Amount`（`Host/Program.cs`）。
 
 ### 8.3 幂等的真实保护点与竞态
 
 `TransferAgent` 的幂等检查是**先查后写**：
 
 ```
-① SELECT ... WHERE IdempotencyKey = sessionId     ← TransferAgent.cs:144
-② POST /transfers 到核心系统                        ← TransferAgent.cs:166
-③ INSERT TransferRecord                             ← TransferAgent.cs:208
+① SELECT ... WHERE IdempotencyKey = sessionId     ← TransferAgent.cs
+② POST /transfers 到核心系统                        ← TransferAgent.cs
+③ INSERT TransferRecord                             ← TransferAgent.cs
 ```
 
 **①②③ 之间没有事务、也没有分布式锁**，且 ② ③ 顺序不可调换（先扣款才知道流水号）。
 两个并发请求用同一个 `sessionId` 时，**可能都通过 ① 然后都执行 ②**。
-唯一索引 `entity.HasIndex(e => e.IdempotencyKey).IsUnique()`（`TransferPlugin.cs:83`）只能拦住"两次都走到 ③"的情况，
+唯一索引 `entity.HasIndex(e => e.IdempotencyKey).IsUnique()`（`TransferPlugin.cs`）只能拦住"两次都走到 ③"的情况，
 而此时**核心系统已经扣了两次款**。
 
 更根本的问题：`CoreBankClient.ExecuteTransferAsync` 组装请求体时**没有发送 `cmd.IdempotencyKey`**
-（`CoreBankClient.cs:63-71` 只有 userId / fromAccountNo / toAccountNo / amount / currency / remark），
+（`CoreBankClient.cs` 只有 userId / fromAccountNo / toAccountNo / amount / currency / remark），
 所以 CBS 侧也没有第二道防线。完整分析与迁移方案见
 [ADR-021](02-architecture-decision-record.md#adr-021)。
 
@@ -1306,7 +1331,7 @@ sequenceDiagram
 
 ## 9. 时序图：插件热加载与热插拔
 
-**场景**：宿主启动时扫描 `plugins/`，加载 3 个插件；随后管理员停用 `banking.card`。
+**场景**：宿主启动时扫描 `plugins/`，加载 4 个插件；随后管理员停用 `banking.card`。
 
 ```mermaid
 sequenceDiagram
@@ -1355,7 +1380,7 @@ sequenceDiagram
     PRG->>REG: AttachProvider(app.Services)
     PRG->>PRG: await bootstrap.DisposeAsync()
     PRG->>PRG: PluginContributorRegistry.Register(全部 IEntitySetContributor)
-    PRG->>PRG: DatabaseInitializer.InitializeAsync → EnsureCreated
+    PRG->>PRG: DatabaseInitializer.InitializeAsync → 按配置初始化 / Migration
     end
 
     rect rgb(255, 250, 240)
@@ -1381,13 +1406,13 @@ sequenceDiagram
 
 | 约束 | 代码 | 违反后果 |
 |------|------|----------|
-| SDK 契约必须走 Default 上下文 | `PluginRegistry.cs:37`、`PluginRegistry.cs:43-46` | 类型无法互转，DI 抛 `InvalidCastException` |
-| 插件文件名必须匹配 `BankingAgent.Plugin.*.dll` | `PluginRegistry.cs:119` | 插件被静默忽略 |
-| `.Plugin.Sdk` 后缀要显式排除 | `PluginRegistry.cs:122` | SDK 程序集被当成插件重复加载 |
-| 同一程序集只能有一个 `IPluginEntryPoint` 实现 | `PluginRegistry.cs:150-151` 取 `FirstOrDefault` | 第二个实现被静默忽略 |
-| `PluginId` 全局唯一 | `PluginRegistry.cs:163-171` | 重复加载被跳过并打 Warning |
-| 非可选依赖必须存在且版本兼容 | `PluginRegistry.cs:285-297` | 抛 `InvalidOperationException`，该插件加载失败 |
-| 插件服务必须静态注册（DI 友好） | 三个插件全用 `AddSingleton` | 捕获依赖（scoped 服务）会抛异常 |
+| SDK 契约必须走 Default 上下文 | `PluginRegistry.cs`、`PluginRegistry.cs` | 类型无法互转，DI 抛 `InvalidCastException` |
+| 插件文件名必须匹配 `BankingAgent.Plugin.*.dll` | `PluginRegistry.cs` | 插件被静默忽略 |
+| `.Plugin.Sdk` 后缀要显式排除 | `PluginRegistry.cs` | SDK 程序集被当成插件重复加载 |
+| 同一程序集只能有一个 `IPluginEntryPoint` 实现 | `PluginRegistry.cs` 取 `FirstOrDefault` | 第二个实现被静默忽略 |
+| `PluginId` 全局唯一 | `PluginRegistry.cs` | 重复加载被跳过并打 Warning |
+| 非可选依赖必须存在且版本兼容 | `PluginRegistry.cs` | 抛 `InvalidOperationException`，该插件加载失败 |
+| 插件服务必须静态注册（DI 友好） | 四个插件全用 `AddSingleton` | 捕获依赖（scoped 服务）会抛异常 |
 
 ### 9.2 停用 / 启动 / 卸载三种操作的区别
 
@@ -1397,19 +1422,19 @@ sequenceDiagram
 | 启动 `StartPluginAsync` | `POST /api/plugins/{id}/start` | 是 | 否 | 已启动时返回 `true` |
 | 卸载 `UnloadPlugin` | **无 HTTP 端点** | 否 | 是（`alc.Unload()`） | 运行中调用返回 `false` 并告警 |
 
-`UnloadPlugin` 只能在代码里调用（`PluginRegistry.cs:248-266`），当前**没有暴露 HTTP 端点**，
+`UnloadPlugin` 只能在代码里调用（`PluginRegistry.cs`），当前**没有暴露 HTTP 端点**，
 这意味着"真热更新"（换 dll 再加载）在当前版本做不到。`LoadFromDirectoryAsync` 也只在启动时调用一次。
 
 ### 9.3 启动钩子当前不会触发（重要发现）
 
-`PluginLoadResult.IsActive` 的**默认值是 `true`**（`PluginRegistry.cs:24`），
-而 `StartPluginAsync` 的第一句就是 `if (plugin.IsActive) return true;`（`PluginRegistry.cs:209`）。
+`PluginLoadResult.IsActive` 的**默认值是 `true`**（`PluginRegistry.cs`），
+而 `StartPluginAsync` 的第一句就是 `if (plugin.IsActive) return true;`（`PluginRegistry.cs`）。
 
-推论：`LoadFromDirectoryAsync` 末尾的 `await StartPluginAsync(...)`（`PluginRegistry.cs:136-139`）
-与 `Program.cs:75-78` 的循环，**两次都会在这里直接返回**，`IPluginStartupHook.StartAsync` 从未被调用。
-`PluginLifecycleBridge.StartAsync`（`Host/Program.cs:570-576`）是死代码。
+推论：`LoadFromDirectoryAsync` 末尾的 `await StartPluginAsync(...)`（`PluginRegistry.cs`）
+与 `Program.cs` 的循环，**两次都会在这里直接返回**，`IPluginStartupHook.StartAsync` 从未被调用。
+`PluginLifecycleBridge.StartAsync`（`Host/Program.cs`）是死代码。
 
-当前三个插件都没有实现 `IPlugin`（`SDK-Plugin.cs:82-89`），所以**没有可观察到的功能影响**；
+当前四个插件都没有实现 `IPlugin`（`SDK-Plugin.cs`），所以**没有可观察到的功能影响**；
 但一旦有插件需要在 `OnStartingAsync` 里订阅事件或启动后台任务，它会静默不执行。
 只有"先 stop 再 start"的路径才会真正触发钩子（因为此时 `IsActive` 为 `false`）。
 
@@ -1426,7 +1451,7 @@ stateDiagram-v2
     [*] --> 草稿
 
     草稿: 草稿 Draft
-    草稿: 用户输入被 DetectIntent 识别为 transfer.execute
+    草稿: 用户输入被 IIntentClassifier 识别为 transfer.execute
     待确认: 待人工确认 PendingApproval
     待确认: compliance.RequiresHumanApproval = true<br/>且 confirmed = false
     已确认: 已确认 Confirmed
@@ -1466,17 +1491,17 @@ stateDiagram-v2
 
 | 状态 | 是否写入 `TransferRecord.Status` | 承载物 | 源码 |
 |------|:-------------------------------:|--------|------|
-| 草稿 Draft | ❌ | 请求刚进来 | `Host/Program.cs:341` |
-| 缺参 Rejected | ❌ | `AgentResult.Fail` | `TransferAgent.cs:70`、`:75`、`:85` |
-| 待人工确认 | ❌ **不落库** | `AgentResult.PendingApproval` | `TransferAgent.cs:129-137` |
-| 已确认 | ❌ **不落库** | `Slots["confirmed"] = true` | `Host/Program.cs:450` |
-| 执行中 | ❌ **不落库** | 方法调用栈 | `TransferAgent.cs:166-174` |
-| 成功 | ✅ `"Completed"` | `TransferRecord` | `TransferAgent.cs:202` |
-| 失败 | ❌ | `AgentResult.Fail` | `TransferAgent.cs:122`、`:191` |
+| 草稿 Draft | ❌ | 请求刚进来 | `Host/Program.cs` |
+| 缺参 Rejected | ❌ | `AgentResult.Fail` | `TransferAgent.cs`、`:75`、`:85` |
+| 待人工确认 | ❌ **不落库** | `AgentResult.PendingApproval` | `TransferAgent.cs` |
+| 已确认 | ❌ **不落库** | `Slots["confirmed"] = true` | `Host/Program.cs` |
+| 执行中 | ❌ **不落库** | 方法调用栈 | `TransferAgent.cs` |
+| 成功 | ✅ `"Completed"` | `TransferRecord` | `TransferAgent.cs` |
+| 失败 | ❌ | `AgentResult.Fail` | `TransferAgent.cs`、`:191` |
 
 > **必须诚实说明的现状**：
-> `BaseEntity` 定义了 `IsDeleted` / `DeletedAt`（`BaseEntity.cs:17-18`），
-> `TransferRecord.Status` 的**默认值是 `"Pending"`**（`TransferPlugin.cs:60`），
+> `BaseEntity` 定义了 `IsDeleted` / `DeletedAt`（`BaseEntity.cs`），
+> `TransferRecord.Status` 的**默认值是 `"Pending"`**（`TransferPlugin.cs`），
 > 但代码里**从来没有写入过 `"Pending"`** —— 记录只在成功路径创建并直接写 `"Completed"`。
 > 所以数据库里只可能出现两种状态：没有记录（= 草稿/待确认/执行中/失败）或有记录且 `Status = "Completed"`。
 >
@@ -1516,7 +1541,7 @@ flowchart TB
         subgraph H1["BankingAgent.Host"]
             direction TB
             K1[":5243 HTTP<br/>:7247 HTTPS"]:::host
-            P1["plugins/*.dll ×3"]:::host
+            P1["plugins/*.dll ×4"]:::host
             K1 --- P1
         end
         subgraph HE["MockBank.Api"]
@@ -1541,8 +1566,8 @@ flowchart TB
 |------|------|------------|
 | 端口 | Host `5243/7247`、MockBank `5200` | 统一走网关（HTTPS + mTLS） |
 | 数据库 | SQLite 单文件 | PostgreSQL 16，建 `plugin_*` Schema |
-| 审计 | 本地文件 + 日志 | 独立审计库 + WORM 存储 / 审计网关 |
-| 密钥 | `dev-only-*` 写在 `appsettings.json` | 环境变量 `Jwt__SigningKey` / `Audit__SigningKey` 注入 |
+| 审计 | JSONL + 独立审计库双写 | 增加异地 WORM 存储 / 审计网关 |
+| 密钥 | Development 派生兜底；敏感配置不入库 | 生产通过环境变量或密钥服务注入 |
 | 插件 | 编译后复制到 `OutDir/plugins` | 独立发布包 + 签名校验 + 灰度装载 |
 | 进程 | 单实例 | 无状态化后可多实例（需先解决事件总线跨进程，见 [ADR-020](02-architecture-decision-record.md#adr-020)） |
 
@@ -1573,23 +1598,23 @@ flowchart TB
 
 | # | 问题 | 位置 | 影响 |
 |---|------|------|------|
-| ⚠️ 1 | `PluginLoadResult.IsActive` 默认 `true`，导致 `StartPluginAsync` 首行即返回，**启动钩子永不触发** | `PluginRegistry.cs:24` + `:209` | 未来实现 `IPlugin` 的插件初始化会静默失效 |
-| ⚠️ 2 | 幂等键复用 `SessionId`；同一会话内**两笔不同的转账**会被误判为重复并静默跳过 | `TransferAgent.cs:141-163` | 第二笔合法转账不执行且返回"已处理过" |
-| ⚠️ 3 | 幂等是"先查后写"且中间调核心系统，**并发下可能重复扣款** | `TransferAgent.cs:144` / `:166` / `:208` | 资金安全风险；唯一索引只拦第三步 |
-| ⚠️ 4 | `CoreBankClient` **没有把 `IdempotencyKey` 发给核心系统** | `CoreBankClient.cs:63-71` | CBS 侧无第二道防线 |
-| ⚠️ 5 | `OnModelCreating` 在循环里反复调 `HasDefaultSchema`，**最后一个贡献者覆盖前面的** | `BankingDbContext.cs:68-76` | PostgreSQL 下多插件**不会**各自独立 Schema |
-| ⚠️ 6 | 文件头注释声称"查询默认过滤 IsDeleted"，但**没有全局查询过滤器**，`ApplyAuditFields` 也不处理 `Deleted` | `BankingDbContext.cs:5`、`:95-118` | 软删除未落地 |
-| ⚠️ 7 | `RowVersion` 声明为并发令牌但**没有值生成器**，恒为 0 | `BaseEntity.cs:20`、`TransferPlugin.cs:82` | 乐观并发实际不生效 |
-| 8 | `PartitionName` 两套取值不一致：`banking_transfer`（推导）vs `plugin_transfer`（硬编码） | `PluginRegistry.cs:328` vs `TransferPlugin.cs:70` | 日志与 Schema 名对不上，易误排查 |
-| 9 | `ISensitiveEntity` 定义了但**没有任何实体实现**，脱敏要靠手写 `DataMasker.MaskXxx` | `BaseEntity.cs:24-29` | 声明的能力与实际能力不符 |
-| 10 | `ComplianceOptions.TransferDailyLimit` / `HighFrequencyThreshold` 配置了但**无规则读取** | `ComplianceRules.cs:10-22` | 单日限额靠 MockBank 兜底；频率风控未实现 |
-| 11 | `AuditLogger._lastSignature` 只在内存，重启后链从 `GENESIS` 重开而文件追加 | `AuditLogger.cs:73`、`:110` | `VerifyChain` 跨重启会报断链 |
+| ⚠️ 1 | `PluginLoadResult.IsActive` 默认 `true`，导致 `StartPluginAsync` 首行即返回，**启动钩子永不触发** | `PluginRegistry.cs` + `:209` | 未来实现 `IPlugin` 的插件初始化会静默失效 |
+| ⚠️ 2 | 幂等键复用 `SessionId`；同一会话内**两笔不同的转账**会被误判为重复并静默跳过 | `TransferAgent.cs` | 第二笔合法转账不执行且返回"已处理过" |
+| ⚠️ 3 | 幂等是"先查后写"且中间调核心系统，**并发下可能重复扣款** | `TransferAgent.cs` / `:166` / `:208` | 资金安全风险；唯一索引只拦第三步 |
+| ⚠️ 4 | `CoreBankClient` **没有把 `IdempotencyKey` 发给核心系统** | `CoreBankClient.cs` | CBS 侧无第二道防线 |
+| ⚠️ 5 | `OnModelCreating` 在循环里反复调 `HasDefaultSchema`，**最后一个贡献者覆盖前面的** | `BankingDbContext.cs` | PostgreSQL 下多插件**不会**各自独立 Schema |
+| ⚠️ 6 | 文件头注释声称"查询默认过滤 IsDeleted"，但**没有全局查询过滤器**，`ApplyAuditFields` 也不处理 `Deleted` | `BankingDbContext.cs`、`:95-118` | 软删除未落地 |
+| ⚠️ 7 | `RowVersion` 声明为并发令牌但**没有值生成器**，恒为 0 | `BaseEntity.cs`、`TransferPlugin.cs` | 乐观并发实际不生效 |
+| 8 | `PartitionName` 两套取值不一致：`banking_transfer`（推导）vs `plugin_transfer`（硬编码） | `PluginRegistry.cs` vs `TransferPlugin.cs` | 日志与 Schema 名对不上，易误排查 |
+| 9 | `ISensitiveEntity` 定义了但**没有任何实体实现**，脱敏要靠手写 `DataMasker.MaskXxx` | `BaseEntity.cs` | 声明的能力与实际能力不符 |
+| 10 | `ComplianceOptions.TransferDailyLimit` / `HighFrequencyThreshold` 配置了但**无规则读取** | `ComplianceRules.cs` | 单日限额靠 MockBank 兜底；频率风控未实现 |
+| 11 | `AuditLogger._lastSignature` 只在内存，重启后链从 `GENESIS` 重开而文件追加 | `AuditLogger.cs`、`:110` | `VerifyChain` 跨重启会报断链 |
 | 12 | `src/src/BankingAgent.PluginSdk/` 是**孤立的重复目录**（仅 1 个 `AgentContracts.cs`，GBK 乱码，无 `.csproj`） | 目录内 | 不参与编译，但会造成搜索噪声与误解 |
-| 13 | `Class1.cs` 是模板残留的空类 | `Base/Class1.cs:3-5` | 无功能影响，应清理 |
-| 14 | `AuditLogger` 声明为 `partial` 但只有一个文件 | `AuditLogger.cs:66` | 无功能影响 |
-| 15 | `PluginRegistry.cs:11-12` 重复 `using` | 同文件 | 无功能影响 |
-| 16 | `FeatureFlags` 在清单里声明但**运行时无任何强制** | 三个插件的 `GetManifest` | 与 [ADR-0010](../00-architecture/04-architecture-decisions.md#adr-0010功能开关系统featureflag) 的"评审中"状态一致 |
-| 17 | `UnitOfWork` 注册为 Scoped，其 `_idempotencyKeys` 字典**生命周期只有单请求** | `DIExtensions.cs:115`、`UnitOfWork.cs:13` | 该方法当前无实际防护作用 |
+| 13 | `Class1.cs` 是模板残留的空类 | `Base/Class1.cs` | 无功能影响，应清理 |
+| 14 | `AuditLogger` 声明为 `partial` 但只有一个文件 | `AuditLogger.cs` | 无功能影响 |
+| 15 | `PluginRegistry.cs` 重复 `using` | 同文件 | 无功能影响 |
+| 16 | `FeatureFlags` 在清单里声明但**运行时无任何强制** | 四个插件的 `GetManifest` | 与 [ADR-0010](../00-architecture/04-architecture-decisions.md#adr-0010功能开关系统featureflag) 的"评审中"状态一致 |
+| 17 | `UnitOfWork` 注册为 Scoped，其 `_idempotencyKeys` 字典**生命周期只有单请求** | `DIExtensions.cs`、`UnitOfWork.cs` | 该方法当前无实际防护作用 |
 
 ---
 

@@ -1,7 +1,7 @@
 # 新人入职指南（Onboarding）
 
 > **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **最后更新**：2026-10-01
 > **预计入职上手时间**：2 周（基本独立）+ 1 个月（完全独立）
 
 ---
@@ -10,10 +10,10 @@
 
 欢迎加入 AI Banking Agent 团队！
 
-我们做的是一个**面向银行业的多智能体（Multi-Agent）对话系统**，承担**真实资金 + 用户隐私 + 强合规**的核心业务。
+我们做的是一个**面向银行业的多智能体（Multi-Agent）对话系统**。当前仓库使用 MockBank 和演示数据；真实资金、真实用户隐私与生产监管要求属于上线目标。
 
 这意味着：
-- 你的代码直接关系到**用户的真金白银**
+- 生产化后的代码可能直接关系到**用户的真金白银**
 - 你的代码必须**可审计、可解释、可回滚**
 - 你的代码关乎**监管合规**
 
@@ -34,25 +34,32 @@
 
 ### 2.2 下午：环境搭建
 
-按 [`03-development/06-environment-setup.md`](../03-development/06-environment-setup.md) 一步步搭建：
+先安装 .NET SDK 9.0.200+（用于读取 `.slnx`），并确保具备 .NET 8 Runtime/Targeting Pack（项目目标为 `net8.0`），再在仓库根目录执行：
 
 ```bash
-# 1. 安装 IDE
-- Visual Studio 2022 / Rider（C# 业务）
-- PyCharm / VS Code（AI 服务）
-- VS Code（前端）
-
-# 2. 克隆代码
+# 1. 克隆代码
 git clone <repo-url>
-cd ai-banking-agent
+cd ATM
 
-# 3. 启动本地环境
-docker-compose up -d
+# 2. 恢复、构建和单元测试
+dotnet restore src/BankingAgent.slnx
+dotnet build src/BankingAgent.slnx -c Release
+dotnet test src/UnitTests/UnitTests.csproj -c Release
 
-# 4. 跑通 hello-world
-dotnet run --project src/agent-core
-# 访问 http://localhost:5000/health 返回 OK
+# 3. 终端 A：启动 MockBank
+dotnet run --project src/mock-bank/MockBank.Api/MockBank.Api.csproj
+
+# 4. 终端 B：启动 Host
+dotnet run --project src/src/BankingAgent.Host/BankingAgent.Host.csproj
 ```
+
+访问：
+
+- Host 静态控制台：`http://localhost:5243/`
+- Host 健康检查：`http://localhost:5243/health`
+- MockBank OpenAPI：`http://localhost:5200/openapi/v1.json`
+
+默认使用 SQLite + `EnsureCreated`，无需 Docker/PostgreSQL 即可启动。当前仓库没有 `src/agent-core`、`src/ai-service` 或 Python/FastAPI 服务。
 
 ### 2.3 第一天目标
 
@@ -93,21 +100,11 @@ dotnet run --project src/agent-core
 ### 3.2 跑通本地完整链路
 
 ```bash
-# 启动本地全栈
-docker-compose up -d
-
-# 跑通核心场景
-1. 用户在 IM 中输入 "查询我的余额"
-2. agent-core 接收请求
-3. 命中 intent（balance.query）
-4. 调用余额服务（mock）
-5. 返回结果给用户
-
-# 验证点：
-- Grafana: agent-core 收到 1 个请求
-- Kibana: 看到 1 条 INFO 日志 + 1 条 audit 日志
-- PostgreSQL: audit.events 表有 1 条记录
+# 先按 Day 1 启动 MockBank(:5200) 与 Host(:5243)，再运行独立 E2E 程序
+dotnet run --project src/E2ETest/E2ETest.csproj
 ```
+
+通过 Host `wwwroot` 控制台验证登录、对话、人工确认和四插件场景。Grafana、Kibana、PostgreSQL 是 Target 平台能力，不是当前本地验收前提。
 
 ### 3.3 第一个 PR（修复小问题 / 完善文档）
 
@@ -144,7 +141,7 @@ docker-compose up -d
 
 ```
 1. 创建 Issue（参见 03-development/02-git-workflow.md）
-2. 拉分支：feature/<ticket-id>-<name>
+2. 从最新 main 拉短分支：feature/<ticket-id>-<name>
 3. 写代码（遵循 coding-standards.md）
 4. 写单元测试
 5. 本地测试通过
@@ -154,7 +151,7 @@ docker-compose up -d
 9. 请 mentor Review
 10. 处理 Review 意见
 11. CI 全绿
-12. 合入主干
+12. PR 合入 main
 ```
 
 ### 4.3 参与设计评审（如有）
@@ -250,11 +247,10 @@ docker-compose up -d
 ### Q1：本地环境跑不起来怎么办？
 
 按顺序排查：
-1. Docker 是否启动？
-2. 端口是否被占用？
-3. 看 `docker-compose logs`
-4. 搜索 Issue 看是否有人遇到同样问题
-5. 求助 mentor / 团队群
+1. .NET 8 SDK 是否安装，`dotnet --info` 是否正常？
+2. `5200` / `5243` 端口是否被占用？
+3. 是否先构建整个 `src/BankingAgent.slnx`，让四个插件复制到 Host 输出目录？
+4. 查看两个进程的控制台日志，再搜索 Issue 或求助 mentor
 
 ### Q2：不知道某个功能怎么实现？
 
@@ -266,7 +262,7 @@ docker-compose up -d
 ### Q3：测试挂了怎么排查？
 
 1. 看 CI 日志
-2. 本地复现：`dotnet test` / `pytest`
+2. 本地复现：`dotnet test src/UnitTests/UnitTests.csproj -c Release`
 3. 看代码改动是否影响测试
 4. 实在不行请 mentor 帮忙看
 

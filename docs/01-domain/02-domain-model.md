@@ -1,13 +1,53 @@
 # 领域模型（Domain Model）
 
-> **状态**：评审中 · **所有者**：业务开发 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前实现对齐 · **所有者**：业务开发 · **版本**：v1.1
+> **最后更新**：2026-10-01
 
-本文展示核心 Context 的实体、值对象、聚合根，使用 C# 表达。
+本文先列出源码中的 **Current** 模型。后续 C# 是 **Target 概念模型**，用于讨论领域规则，不是当前源码摘录，也不保证可直接编译。
 
 ---
 
-## 1. 通用值对象（Shared Kernel）
+## 1. 当前领域/数据模型（Current）
+
+### 1.1 Host 插件域
+
+| 类型 | 位置 | 当前含义 |
+|---|---|---|
+| `TransferRecord : BaseEntity` | `BankingAgent.Plugin.Transfer` | 当前唯一插件持久化实体；含用户、付款/收款账号、金额、状态、流水、幂等键、人工确认标志 |
+| `DomainEvent` | `BankingAgent.PluginSdk` | 插件间事件信封，不是聚合根领域事件基类 |
+| `AgentRequest` / `AgentResult` | `BankingAgent.PluginSdk` | Agent 调用输入/输出契约 |
+| `PluginManifest` | `BankingAgent.PluginSdk` | 插件身份、版本、依赖、场景、FeatureFlag 元数据和数据级别 |
+| `AuditEvent` | `BankingAgent.Base.Security.Audit` | 审计写入模型，由 Base 持久化 |
+
+`TransferRecord` 通过 `TransferPersistenceContributor` 注册到共享 `BankingDbContext`。BillAnalysis、CardManagement、Wealth 当前没有自己的聚合或插件持久化实体。
+
+### 1.2 MockBank.Api 模拟银行域
+
+| 类型 | 位置 | 当前含义 |
+|---|---|---|
+| `Money` | `MockBank.Api.Data` | `decimal Amount` + `Currency` 值对象 |
+| `Customer` | `MockBank.Api.Domain` | 模拟客户与风险等级 |
+| `Account` | `MockBank.Api.Domain` | 账户、余额、状态、限额 |
+| `BankCard` | `MockBank.Api.Domain` | 卡号、卡类型、状态、绑定信息、日限额 |
+| `BankTransaction` | `MockBank.Api.Domain` | 模拟交易流水 |
+| `WealthProduct` | `MockBank.Api.Domain` | 模拟理财产品 |
+
+这些对象保存在单例 `MockBankStore` 内存中，不由 Host 的 EF Core 数据库持久化，也不应与下文 Target 聚合等同。
+
+### 1.3 当前缺口
+
+- 没有 `AggregateRoot<TId>` / `IDomainEvent` 领域基类的当前实现。
+- 没有 `TransferOrder`、`Bill`、`FinancialProduct`、`InvestmentOrder`、`Scenario`、`UserProfile` 等聚合实现。
+- Wealth 当前只读；Subscription、CrossScenario、Memory&Profile 未实现。
+- Current 的共享 `Money` 仅存在于 MockBank.Api，并非跨 Host 插件的 Shared Kernel。
+
+---
+
+## 2. 目标概念模型（Target）
+
+以下章节保留领域目标设计。示例中的目录（如 `Transfer.Domain`、`Shared/ValueObjects`）和类型均是规划，不是当前仓库结构。
+
+### 2.1 通用值对象（Target Shared Kernel）
 
 ```csharp
 // Shared/ValueObjects/Money.cs
@@ -44,7 +84,7 @@ public readonly record struct AccountId(string Value)
 
 ---
 
-## 2. Transfer Context
+## 3. Transfer Context（Target）
 
 ### 2.1 聚合根：TransferOrder
 
@@ -140,7 +180,7 @@ public record struct TransferSchedule
 
 ---
 
-## 3. BillAnalysis Context
+## 4. BillAnalysis Context（Target）
 
 ### 3.1 聚合根：Bill
 
@@ -203,7 +243,7 @@ public record struct Transaction
 
 ---
 
-## 4. Wealth Context
+## 5. Wealth Context（Target）
 
 ### 4.1 聚合根：FinancialProduct
 
@@ -259,7 +299,7 @@ public class InvestmentOrder : AggregateRoot<OrderId>
 
 ---
 
-## 5. CrossScenario Context
+## 6. CrossScenario Context（Target）
 
 ### 5.1 聚合根：Scenario
 
@@ -312,7 +352,7 @@ public class ScenarioTask : Entity<TaskId>
 
 ---
 
-## 6. Memory&Profile Context
+## 7. Memory&Profile Context（Target）
 
 ### 6.1 聚合根：UserProfile
 
@@ -376,7 +416,7 @@ public class UserRelationship : Entity<RelationshipId>
 
 ---
 
-## 7. Audit Context
+## 8. Audit Context（Target）
 
 ### 7.1 聚合根：AuditLog
 
@@ -417,7 +457,7 @@ public record struct AgentDecision
 
 ---
 
-## 8. 聚合根基类
+## 9. 聚合根基类（Target）
 
 ```csharp
 public abstract class AggregateRoot<TId> : Entity<TId>
@@ -444,7 +484,7 @@ public interface IDomainEvent
 
 ---
 
-## 9. 防腐层示例
+## 10. 防腐层示例（Target）
 
 ```csharp
 // AgentOrchestration/Infrastructure/ACL/WealthACL.cs
@@ -468,7 +508,7 @@ public class WealthACL : IWealthAdapter
 
 ---
 
-## 10. 关联文档
+## 11. 关联文档
 
 - **限界上下文**：[`01-bounded-contexts.md`](01-bounded-contexts.md)
 - **术语表**：[`03-glossary.md`](03-glossary.md)

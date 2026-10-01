@@ -5,6 +5,12 @@
 
 ---
 
+## 0. 现状与目标边界
+
+> **Current（源码可验证）**：存在 L1-L4 分类类型、`DataMasker`、`[Encrypted]` 特性和 EF Core 自动值转换器。`TransferRecord` 的 `UserId`、付款/收款账号、幂等键和备注已标注加密，其中需要等值查询的字段使用可搜索加密。默认仍是 SQLite；密钥由配置/环境变量提供。
+>
+> **未实现 / Target**：TDE、KMS/Vault 托管、PostgreSQL RLS、分 Schema 最小权限账号、备份加密/异地存储、自动留存清理与“所有 L3+ 字段”CI 阻断扫描均无当前落地证据。以下策略与示例保留为生产目标。
+
 ## 1. 目的
 
 为不同类型、不同敏感度的数据定义**统一的分级标准**、**保护措施**和**脱敏规则**，确保：
@@ -53,7 +59,7 @@
 
 ---
 
-## 3. 各级别保护措施
+## 3. 各级别保护措施（Target 基线）
 
 ### 3.1 保护矩阵
 
@@ -72,9 +78,11 @@
 
 ---
 
-## 4. 数据库加密
+## 4. 数据库加密（Current + Target）
 
 ### 4.1 透明加密（TDE）
+
+> **Target，未实现。**
 
 - PostgreSQL 16 使用 `pg_tde` 扩展（Percona / EDB 版本）
 - 或使用文件系统级加密（LUKS）
@@ -82,7 +90,7 @@
 
 ### 4.2 字段级加密（Field-level）
 
-针对 L4 字段（密码、CVV、PIN），应用层加密：
+当前已通过 `[Encrypted]` + EF 值转换器覆盖 `TransferRecord` 的部分 L3 字段。以下按分级选择算法的代码仅为目标示意，不是仓库当前 API：
 
 ```csharp
 public class EncryptedField
@@ -112,6 +120,8 @@ public class EncryptedField
 ```
 
 ### 4.3 密钥管理
+
+> **Target，当前未接 KMS/Vault。**
 
 - **L4 密钥**：存储在 Vault / KMS，永不出库
 - **L3 密钥**：存储在 Vault，定期轮换（90 天）
@@ -215,7 +225,7 @@ public class SensitiveDataFilter : IDestructuringPolicy
 
 ---
 
-## 7. 数据访问控制
+## 7. 数据访问控制（Target）
 
 ### 7.1 数据库账号矩阵
 
@@ -229,7 +239,7 @@ public class SensitiveDataFilter : IDestructuringPolicy
 
 ### 7.2 行级安全（RLS）
 
-PostgreSQL RLS 配置：
+> **Target，未实现**：当前默认 SQLite 不支持以下 PostgreSQL RLS 配置。
 
 ```sql
 ALTER TABLE core.accounts ENABLE ROW LEVEL SECURITY;
@@ -269,15 +279,15 @@ CREATE POLICY user_isolation ON core.accounts
 3. 加密 + 脱敏 + 最小化
 4. 定期审计
 
-### 8.3 当前系统判断
+### 8.3 目标部署约束
 
-- ❌ 不使用境外 LLM（生产环境）
-- ❌ 不存储数据在境外
+- 生产环境计划不使用境外 LLM
+- 生产环境计划不在境外存储数据
 - ✅ 可使用境外 LLM 仅用于开发/测试（脱敏样本）
 
 ---
 
-## 9. 自动化工具
+## 9. 自动化工具（Target）
 
 ### 9.1 分类扫描器（自研）
 
@@ -291,7 +301,7 @@ public string IdCard { get; set; }
 public string PasswordHash { get; set; }  // 即使是 hash 也是 L4
 ```
 
-启动时 + CI 时自动校验：
+目标是在启动时 + CI 时自动校验（当前 CI 尚未完整实现这些阻断规则）：
 - 所有 L3+ 字段都有 `[Encrypted]` 或 `[Masked]` 属性
 - 没有明文 L3+ 字段出现在日志 sink
 - 数据库表都有 RLS（多租户表）

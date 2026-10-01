@@ -1,9 +1,27 @@
 # 功能开关系统（Feature Flags）
 
-> **状态**：评审中 · **所有者**：业务开发 · **版本**：v1.0
+> [!IMPORTANT]
+> **Current vs Target**：当前插件只在 `PluginManifest.FeatureFlags` 中声明开关名，
+> Host 会在 `/api/plugins` 返回这些元数据；运行时 `IFeatureFlagService`、数据库表、
+> Redis 缓存、灰度评估、管理后台与 Kill Switch **均未实现**。本文除“当前实现”外
+> 都是目标态设计，不能作为现有安全控制。
+>
+> **状态**：目标规范评审中 · **所有者**：业务开发 · **版本**：v1.0
 > **最后更新**：2026-09-21
 
 ---
+
+## 0. 当前实现
+
+| 能力 | 当前状态 |
+|---|---|
+| 插件 Manifest 声明开关名 | ✅ 已实现 |
+| `/api/plugins` 返回 `featureFlags` | ✅ 已实现 |
+| 运行时读取并强制开关 | ❌ 未实现 |
+| 灰度、白名单、A/B 变体 | ❌ 未实现 |
+| 管理 API / 管理后台 / 审计变更 | ❌ 未实现 |
+
+在运行时服务落地前，关闭 Manifest 中的某个名字不会自动阻止 Agent 执行。
 
 ## 1. 为什么需要 FeatureFlag？
 

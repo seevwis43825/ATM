@@ -4,7 +4,7 @@
 >
 > 架构：**模块化单体 + 插件化扩展 + 领域驱动设计 + 事件驱动**
 > 技术栈：.NET 8（C#）、EF Core、SQLite / PostgreSQL、ASP.NET Core Minimal API
-> 当前状态：**可运行基座**。单元测试 143 / 端到端 38 / 并发压测 30 全部通过。
+> 当前状态：**可运行基座**。单元测试 149 项已实测通过；端到端与并发压测由 CI 持续验证。
 
 ---
 
@@ -62,7 +62,7 @@ plugins/  4 个插件 DLL（独立编译、独立部署）
   - banking.transfer  转账（L3，强制人工回环）
   - banking.bill      账单（只读，强制脱敏）
   - banking.card      卡片（写操作，依赖声明）
-  - banking.wealth    理财（模板生成的示例）
+  - banking.wealth    理财（只读：产品查询与推荐、余额查询）
 
 MockBank.Api :5200  模拟银行核心系统（独立进程）
   3 客户 / 6 账户 / 90+ 流水 / 理财产品 / 卡状态变更
@@ -85,9 +85,9 @@ ATM/
 │   ├── mock-bank/MockBank.Api/             模拟银行（:5200）
 │   ├── templates/banking-plugin/           [*] dotnet new 插件脚手架
 │   ├── PluginValidator/                    [*] 插件契约校验器（CI 门禁）
-│   ├── UnitTests/                          143 项单元测试
-│   ├── E2ETest/                            38 项端到端
-│   ├── StressTest/                         30 项并发压测
+│   ├── UnitTests/                          单元测试（当前 149 项）
+│   ├── E2ETest/                            端到端场景测试
+│   ├── StressTest/                         并发与稳定性压测
 │   ├── LoadTest/                           容量阶梯加压
 │   ├── CryptoSelfTest/                     密码学自检（ML-KEM/ML-DSA）
 │   ├── DbProbe/                            数据库诊断小工具
@@ -111,7 +111,23 @@ ATM/
 - **.NET SDK 9.0.200+**（解决方案是 `.slnx` 格式；各项目本身目标 `net8.0`）
 - 无需数据库、无需 AI Key
 
-### 三步跑起来
+### 从克隆到运行
+
+先把仓库克隆到本地并进入仓库根目录。已配置 GitHub SSH Key 的成员使用：
+
+```bash
+git clone git@github.com:seevwis43825/ATM.git
+cd ATM
+```
+
+未配置 SSH Key 时，可改用 HTTPS（私有仓库仍需登录有权限的 GitHub 账号）：
+
+```bash
+git clone https://github.com/seevwis43825/ATM.git
+cd ATM
+```
+
+后续命令都在 `ATM` 仓库根目录执行：
 
 ```bash
 # 1. 编译（从仓库根目录）
@@ -150,11 +166,11 @@ curl http://localhost:5243/health        # 含真实数据库健康检查
 ### 跑测试
 
 ```bash
-dotnet test src/UnitTests/UnitTests.csproj                    # 143 项单元测试
+dotnet test src/UnitTests/UnitTests.csproj                    # 当前 149 项单元测试
 
 # 以下需要两个服务已启动
-dotnet run --project src/E2ETest   -- http://localhost:5243 http://localhost:5200   # 38 项
-dotnet run --project src/StressTest -- http://localhost:5243 http://localhost:5200   # 30 项
+dotnet run --project src/E2ETest   -- http://localhost:5243 http://localhost:5200
+dotnet run --project src/StressTest -- http://localhost:5243 http://localhost:5200
 dotnet run --project src/LoadTest  -- http://localhost:5243 http://localhost:5200   # 容量阶梯
 
 # 插件契约校验（CI 阻断门禁）
@@ -215,7 +231,7 @@ curl -s -X POST http://localhost:5243/api/chat \
 | **Agent 无执行权** | 资金操作返回 `PendingApproval`，用户确认后才提交 | ✅ 端到端验证 |
 | **三级风险分级** | 合规规则决定 ALLOW / REQUIRE_APPROVAL / DENY | ✅ 4 条内置规则 |
 | **全链路审计** | HMAC 链式签名，写入 JSONL **与独立审计库**（双写） | ✅ 实测签名链逐条衔接 |
-| **数据脱敏** | L1-L4 分级，L4 永不返回明文 | ✅ 30 项单测 |
+| **数据脱敏** | L1-L4 分级，L4 永不返回明文 | ✅ 29 项单测 |
 | **字段级加密** | `[Encrypted]` 标注，支持确定性加密（可等值查询） | ✅ 已标注 L3 字段 |
 | **插件化扩展** | 新场景 = 新插件，无需改宿主 | ✅ 模板 + 校验器 + 实测 |
 | **数据库迁移** | 基线迁移 + 设计时插件发现 + 自动建 Schema | ✅ 已生成 |

@@ -1,21 +1,50 @@
 # 事件驱动契约（Event-Driven Contract）
 
-> **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前实现对齐 · **所有者**：架构师 · **版本**：v1.1
+> **最后更新**：2026-10-01
+>
+> **边界**：`DomainEvent` + `InMemoryEventBus` 是 **Current**；完整 CloudEvents、事件目录、Kafka、事件溯源和 OpenTelemetry 链路是 **Target**。
 
 ---
 
 ## 1. 为什么需要事件契约？
 
-事件总线是模块间通信的**唯一受支持方式**。事件契约保证：
+事件总线是当前插件间异步语义通知的受支持方式；显式 Base/Sdk 接口也用于共享基础能力。事件契约用于：
 - **解耦**：发布方不知道订阅方是谁
 - **可演进**：新增订阅方无需修改发布方
 - **可追溯**：所有事件有唯一 ID
-- **可重放**：支持事件溯源
+- **可演进**：为未来持久化与重放保留边界（Current 尚不可重放）
 
 ---
 
-## 2. 事件规范（基于 CloudEvents 1.0）
+## 2. 当前事件契约（Current）
+
+当前契约定义在 `BankingAgent.PluginSdk.EventContracts.cs`：
+
+```csharp
+public sealed record DomainEvent
+{
+    public required string EventId { get; init; }
+    public required string EventType { get; init; }
+    public required string Source { get; init; }
+    public required DateTimeOffset OccurredAt { get; init; }
+    public string? CorrelationId { get; init; }
+    public string? UserId { get; init; }
+    public IReadOnlyDictionary<string, object?> Payload { get; init; }
+        = new Dictionary<string, object?>();
+}
+```
+
+- 发布接口：`IEventPublisher.PublishAsync`
+- 订阅接口：`IDomainEventHandler` + `SubscribedEventTypes`
+- 实现：`BankingAgent.Base.Events.InMemoryEventBus`
+- 分发：按 `EventType` 精确匹配或 `"*"` 通配，处理器顺序执行
+- 失败：异常被记录，事件放入内存死信队列；不会重试或持久化
+- 历史：最多保留最近 500 条内存事件
+
+当前生产代码明确发布的业务事件只有 `transfer.completed`，由 `TransferAgent` 发布，`BillAnalysis.TransferEventListener` 订阅。当前信封借鉴 CloudEvents 字段习惯，但**不是完整 CloudEvents 1.0 实现**，没有 `specversion`、`type` 标准序列化、`dataschema` 或 `traceparent` 字段。
+
+## 3. 目标事件规范（Target：CloudEvents 1.0）
 
 所有事件遵循 [CloudEvents 1.0 规范](https://cloudevents.io/)：
 
@@ -63,7 +92,7 @@
 
 ---
 
-## 3. 事件命名规范
+## 4. 目标事件命名规范（Target）
 
 ```
 com.bankagent.<bounded-context>.<event-name>.v<version>
@@ -83,9 +112,9 @@ com.bankagent.<bounded-context>.<event-name>.v<version>
 
 ---
 
-## 4. 核心事件目录
+## 5. 目标事件目录（Target；除 `transfer.completed` 外未实现）
 
-### 4.1 Transfer Context
+### 5.1 Transfer Context
 
 ```yaml
 TransferInitiated.v1:
@@ -111,7 +140,7 @@ TransferFailed.v1:
     - NotificationContext
 ```
 
-### 4.2 Wealth Context
+### 5.2 Wealth Context
 
 ```yaml
 ProductRecommended.v1:
@@ -129,7 +158,7 @@ ProductSubscribed.v1:
     - ComplianceReportService（合规报送）
 ```
 
-### 4.3 Cross-Scenario Context
+### 5.3 Cross-Scenario Context
 
 ```yaml
 ScenarioTriggered.v1:
@@ -154,7 +183,7 @@ TaskCompleted.v1:
     - NotificationContext
 ```
 
-### 4.4 Memory Context
+### 5.4 Memory Context
 
 ```yaml
 UserPreferenceUpdated.v1:
@@ -171,7 +200,7 @@ RelationshipDiscovered.v1:
     - CrossScenarioContext（可能触发场景）
 ```
 
-### 4.5 Audit Context
+### 5.5 Audit Context
 
 ```yaml
 AuditLogged.v1:
@@ -183,22 +212,23 @@ AuditLogged.v1:
 
 ---
 
-## 5. 事件存储
+## 6. 事件存储
 
-### 5.1 当前架构
-- 进程内事件总线（MediatR）→ 同步处理
+### 6.1 当前架构
+- 进程内 `InMemoryEventBus` → 逐处理器同步等待
 - 事件**不持久化**（重启即丢失）
+- 内存死信无重试、无跨进程传输
 
-### 5.2 未来架构（ADR-0003）
+### 6.2 未来架构（Target，ADR-0003）
 - 所有事件持久化到 Kafka
 - 保留期 90 天
 - 支持事件溯源（Event Sourcing）
 
 ---
 
-## 6. 实现示例（C#）
+## 7. 目标实现示例（Target，不是当前目录/类型）
 
-### 6.1 定义事件
+### 7.1 定义事件
 
 ```csharp
 // Transfer.Domain/Events/TransferCompletedEvent.cs
@@ -216,7 +246,7 @@ public record TransferCompletedEvent : IIntegrationEvent
 }
 ```
 
-### 6.2 发布事件
+### 7.2 发布事件
 
 ```csharp
 // Transfer.Application/TransferExecutionService.cs
@@ -246,7 +276,7 @@ public class TransferExecutionService : ITransferExecutionService
 }
 ```
 
-### 6.3 订阅事件
+### 7.3 订阅事件
 
 ```csharp
 // Audit.Application/EventHandlers/TransferCompletedAuditHandler.cs
@@ -270,14 +300,14 @@ public class TransferCompletedAuditHandler : IEventHandler<TransferCompletedEven
 
 ---
 
-## 7. 事件演进规则
+## 8. 事件演进规则（Target）
 
-### 7.1 向后兼容变更（保持版本号）
+### 8.1 向后兼容变更（保持版本号）
 - ✅ 增加可选字段
 - ✅ 增加新事件类型
 - ✅ 增加订阅方
 
-### 7.2 不兼容变更（升级版本号 v1 → v2）
+### 8.2 不兼容变更（升级版本号 v1 → v2）
 - ❌ 移除字段
 - ❌ 重命名字段
 - ❌ 修改字段类型
@@ -291,7 +321,7 @@ public class TransferCompletedAuditHandler : IEventHandler<TransferCompletedEven
 
 ---
 
-## 8. 调试与追踪
+## 9. 调试与追踪（Target）
 
 每个事件携带 `traceparent`，自动接入 OpenTelemetry。可以通过：
 
@@ -306,7 +336,9 @@ Jaeger → 按 traceId 查询 → 查看事件发布、订阅、执行链路
 
 ---
 
-## 9. 关联文档
+Current 可通过 `/api/plugins/events` 查看内存计数、死信和最近事件；仓库未接入 Grafana Tempo/Jaeger。
+
+## 10. 关联文档
 
 - **架构总览**：[`00-overview.md`](00-overview.md)
 - **模块边界**：[`05-module-boundaries.md`](05-module-boundaries.md)

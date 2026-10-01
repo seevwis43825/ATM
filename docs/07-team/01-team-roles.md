@@ -1,7 +1,9 @@
 # 团队角色定义（Team Roles）
 
 > **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **最后更新**：2026-10-01
+>
+> **口径**：角色职责是团队协作目标；代码主战场以当前仓库真实路径为准。K8s、独立 Python AI 服务、Next.js 管理台等标为 **Target**，不代表已经落地。
 
 ---
 
@@ -16,6 +18,17 @@
 ---
 
 ## 2. 总览：5 个核心角色
+
+### 2.1 当前仓库责任面（Current）
+
+| 角色 | 当前代码主战场 |
+|------|----------------|
+| 架构 | `src/src/BankingAgent.Base`、`BankingAgent.Plugin.Sdk`、`BankingAgent.Host`、`docs/00-architecture` |
+| 业务 | `src/plugins/BankingAgent.Plugin.{Transfer|BillAnalysis|CardManagement|Wealth}`、`src/mock-bank/MockBank.Api` |
+| AI/数据 | `BankingAgent.Base/Ai`、`BankingAgent.Base/Agents`、插件 Agent；当前没有 `src/ai-service` |
+| 平台 | `src/BankingAgent.slnx`、仓库现有 CI/脚本、运行配置；当前默认 SQLite + EnsureCreated |
+| 安全/合规 | `BankingAgent.Base/Security`、Host 安全中间件、插件合规规则、`docs/05-security-compliance` |
+| 前端（可兼任） | `src/src/BankingAgent.Host/wwwroot`；`docs/08-frontend/prototype` 仅为设计资产 |
 
 ```
                        ┌─────────────────┐
@@ -60,7 +73,7 @@
 | 维度 | 内容 |
 |------|------|
 | **架构设计** | 系统总体架构、技术选型、ADR 撰写、模块边界 |
-| **跨域协调** | 串联业务、AI、平台、AI 四方，处理架构冲突 |
+| **跨域协调** | 串联业务、AI、平台、合规四方，处理架构冲突 |
 | **代码 Review** | 核心模块的代码必须 Architect 签字 |
 | **事故 IC** | P0 事故默认 IC（事故指挥官） |
 | **合规对齐** | 与安全/合规对接架构层面合规设计 |
@@ -68,9 +81,9 @@
 
 **能力要求**：
 - ✅ 5+ 年后端 / 架构经验
-- ✅ DDD、Clean Architecture、微服务、事件驱动
-- ✅ C# .NET 8 / Python / 多语言
-- ✅ Kubernetes / PostgreSQL / Redis / Kafka
+- ✅ .NET 8、模块化单体、插件边界、事件与安全设计
+- 🎯 Target：Clean Architecture、微服务、Python、多语言
+- 🎯 Target：Kubernetes / PostgreSQL / Redis / Kafka
 - ✅ 安全与合规基础知识
 - ⚠️ 不要求精通 AI / 前端 / 移动端
 
@@ -93,7 +106,7 @@
 
 | 维度 | 内容 |
 |------|------|
-| **业务实现** | 各 Bounded Context 的应用服务、聚合、领域事件 |
+| **业务实现** | 当前四插件及 MockBank 的场景服务、Agent、规则和数据贡献器 |
 | **API 设计** | REST API、OpenAPI 文档 |
 | **数据库** | Schema 设计、Migration、查询优化 |
 | **单元/集成测试** | 业务代码覆盖率 ≥ 80% |
@@ -102,7 +115,7 @@
 
 **能力要求**：
 - ✅ 3+ 年 C# .NET 经验
-- ✅ EF Core / Dapper / PostgreSQL
+- ✅ EF Core / SQLite；🎯 Target：PostgreSQL
 - ✅ REST / OpenAPI / 中间件
 - ✅ DDD 基础
 - ⚠️ 不要求精通架构选型、K8s
@@ -126,15 +139,15 @@
 
 | 维度 | 内容 |
 |------|------|
-| **AI Service** | Python AI 服务（LLM 调用、Prompt 工程、RAG、Function Call） |
-| **多 Agent** | Agent 编排、记忆系统、跨场景联动 |
+| **当前 AI 能力** | Base 中的可选 LLM 意图识别、规则降级、AgentRouter/AgentOrchestrator 与插件 Agent |
+| **Target AI Service** | 独立 Python/FastAPI、Prompt 工程、RAG、Function Call |
 | **数据** | 数据 Schema（事件 Schema、用户记忆）、向量库 |
 | **FeatureFlag** | AI 相关功能开关（产品决策落地） |
 | **模型评估** | 黄金集构建、A/B 测试、效果监控 |
 | **产品协作** | 与产品紧密对接，对业务结果负责 |
 
 **能力要求**：
-- ✅ 3+ 年 Python 经验
+- ✅ 当前需能维护 C# AI/Agent 组件；🎯 Target：Python/FastAPI
 - ✅ LLM / Prompt 工程 / RAG / Vector DB
 - ✅ 多 Agent 框架（LangChain / AutoGen / 自研）
 - ✅ PostgreSQL + pgvector
@@ -159,8 +172,8 @@
 
 | 维度 | 内容 |
 |------|------|
-| **K8s 集群** | 生产 / 预发 / 测试集群维护、升级、调优 |
-| **CI/CD** | 流水线（GitHub Actions / GitLab CI）、镜像构建、发布脚本 |
+| **当前工程基线** | .NET 8 构建、测试、插件校验、Host/MockBank 启动配置 |
+| **Target 平台** | K8s 集群、镜像、灰度、完整可观测性与高可用数据库 |
 | **可观测性** | Prometheus / Grafana / ELK / Jaeger 维护 |
 | **数据库运维** | PG 高可用、Redis、备份、监控 |
 | **On-call** | 基础设施相关事故的 SME |
@@ -226,9 +239,8 @@
 | 维度 | 内容 |
 |------|------|
 | **IM Bot** | 微信 / 支付宝 / 飞书 机器人 SDK 接入 |
-| **H5 / Web** | 用户对话界面、卡片组件 |
-| **Admin / Auditor 后台** | 客服工作台、审计查询、风控监控 |
-| **组件库** | 通用 UI 组件（React/Next.js） |
+| **当前 Web** | 维护 Host `wwwroot` 静态控制台 |
+| **Target H5/Admin** | Next.js/Tailwind 对话界面、客服/审计后台与组件库 |
 | **API 对接** | 调用 REST API、SSE 流式对话 |
 
 **能力要求**：
@@ -238,7 +250,7 @@
 - ⚠️ 不要求精通架构
 
 **文档所有权**：
-- 暂无主文档（视情况补 `08-frontend/`）
+- 主：`08-frontend/`（Current/Target 口径）
 - 辅：所有 API 文档 Review、UI 规范
 
 ---

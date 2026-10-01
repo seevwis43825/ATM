@@ -1,11 +1,13 @@
 # 模块边界与依赖规则（Module Boundaries）
 
-> **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前实现对齐 · **所有者**：架构师 · **版本**：v1.1
+> **最后更新**：2026-10-01
+>
+> **边界**：本文件的 Current 规则描述现有项目引用与运行期装配；Clean Architecture 多项目拆分、独立 Context Schema 和 Python 服务均为 Target。
 
 ---
 
-## 1. 目标
+## 1. 边界目标
 
 - **禁止耦合**：模块之间不允许直接服务调用
 - **强制解耦**：所有跨模块通信走 **事件总线** 或 **显式接口**
@@ -14,7 +16,27 @@
 
 ---
 
-## 2. 项目代码结构
+## 2. 当前项目结构（Current）
+
+```
+src/
+├── src/
+│   ├── BankingAgent.Host/             # ASP.NET Core 宿主、Minimal API、wwwroot
+│   ├── BankingAgent.Base/             # Agent、AI、数据、安全、事件、插件加载、核心银行客户端
+│   └── BankingAgent.Plugin.Sdk/       # 插件/Agent/事件/核心银行共享契约
+├── plugins/
+│   ├── BankingAgent.Plugin.Transfer/
+│   ├── BankingAgent.Plugin.BillAnalysis/
+│   ├── BankingAgent.Plugin.CardManagement/
+│   └── BankingAgent.Plugin.Wealth/
+├── mock-bank/MockBank.Api/            # 独立模拟核心银行进程
+├── templates/banking-plugin/          # 插件模板
+└── UnitTests/、E2ETest/、LoadTest/、StressTest/ 等测试/工具项目
+```
+
+当前命名空间分别为 `BankingAgent.Base.*`、`BankingAgent.PluginSdk`、`BankingAgent.Plugin.<Name>`、`BankingAgent.Host.*` 和 `MockBank.Api.*`。不存在 `Core.*`、`Contexts/*`、`Bootstrap`、`Shared.Contracts` 或 `AIService` 目录。
+
+## 3. 目标代码结构（Target，尚未落地）
 
 ```
 src/
@@ -67,9 +89,22 @@ src/
 
 ---
 
-## 3. 依赖规则
+## 4. 当前依赖规则（Current）
 
-### 3.1 允许的依赖
+| From | To | 当前方式 |
+|---|---|---|
+| Host | Base、Plugin.Sdk | 编译期 `ProjectReference` |
+| Host | 四个插件 | 仅 MSBuild 构建顺序；运行期扫描 `plugins/` DLL，不编译依赖插件类型 |
+| Base | Plugin.Sdk | 编译期 `ProjectReference` |
+| Plugin | Base、Plugin.Sdk | 编译期引用基础能力与契约 |
+| Plugin A | Plugin B | 禁止项目引用；通过 `DomainEvent` 或 manifest 依赖声明 |
+| Base/Plugin | MockBank.Api | 通过 `ICoreBankClient` HTTP 契约，不引用其实现项目 |
+
+Sdk 是最内层契约程序集。Base 不应引用具体插件；插件之间也不应共享具体实现类型。当前插件会共享 Base 的 `BankingDbContext`、合规、审计和核心银行客户端，这与“每个 Context 完全独立基础设施”的 Target 仍有差距。
+
+## 5. 目标依赖规则（Target）
+
+### 5.1 允许的依赖
 
 | From | To | 方式 |
 |------|-----|------|
@@ -80,7 +115,7 @@ src/
 | Agent Core | AIService | ✅ gRPC（类型契约） |
 | Agent Core | PostgreSQL | ✅（但每个 Context 用自己的 Schema） |
 
-### 3.2 禁止的依赖
+### 5.2 禁止的依赖
 
 | From | To | 禁止原因 |
 |------|-----|---------|
@@ -91,7 +126,7 @@ src/
 | 前端 | PostgreSQL 直接 | 跨域违规 |
 | Bounded Context | 另一个 Bounded Context 的 Controller | 跨进程边界未设计 |
 
-### 3.3 强制规则
+### 5.3 强制规则
 
 ```csharp
 // ✅ 正确：通过接口调用
@@ -111,7 +146,17 @@ public class TransferApplicationService
 
 ---
 
-## 4. 数据库 Schema 隔离
+## 6. 数据边界
+
+### 6.1 Current
+
+- 默认 Provider 是 SQLite，连接串为 `Data Source=bankingagent.db`，初始化为 `EnsureCreated`。
+- 审计使用独立 `AuditDbContext`；SQLite 默认派生 `bankingagent.audit.db`。
+- 当前只有 Transfer 插件实现 `IEntitySetContributor`，分区名 `plugin_transfer`，实体表 `transfer_records`。
+- PostgreSQL 模式下贡献器分区映射为 Schema；SQLite 不支持 Schema，只有逻辑分区。
+- BillAnalysis、CardManagement、Wealth 当前不拥有独立插件表；它们主要通过 MockBank.Api 查询/更新进程内模拟数据。
+
+### 6.2 Target：每个 Context 独立 Schema
 
 每个 Bounded Context 在 PostgreSQL 中有独立的 Schema：
 
@@ -132,7 +177,7 @@ CREATE SCHEMA core;              -- 核心（FeatureFlag 等）
 
 ---
 
-## 5. 命名规范
+## 7. 命名规范（Target；Current 以实际命名空间为准）
 
 | 类型 | 规则 | 示例 |
 |------|------|------|
@@ -150,7 +195,7 @@ CREATE SCHEMA core;              -- 核心（FeatureFlag 等）
 
 ---
 
-## 6. 跨模块通信示例
+## 8. 跨模块通信示例（Target 示例，不是当前类路径）
 
 ### 6.1 通过事件总线（推荐）
 
@@ -210,7 +255,7 @@ public class TransferExecutionService
 
 ---
 
-## 7. 拆分原则（何时考虑拆分 Context）
+## 9. 拆分原则（Target）
 
 | 信号 | 阈值 |
 |------|------|
@@ -220,13 +265,13 @@ public class TransferExecutionService
 | 模块负载差异 > 10× | 拆 |
 | 团队需要独立扩展该模块 | 拆 |
 
-**当前 MVP 阶段**：所有模块在同一进程
+**当前基线**：四个业务插件与 Base 在 Host 同一进程，MockBank.Api 单独运行
 **Q4+**：CrossScenario / Conversation 优先拆出
 **1 年后**：完整微服务化
 
 ---
 
-## 8. 关联文档
+## 10. 关联文档
 
 - **架构总览**：[`00-overview.md`](00-overview.md)
 - **架构决策**：[`04-architecture-decisions.md`](04-architecture-decisions.md)

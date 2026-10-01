@@ -5,7 +5,26 @@
 
 ---
 
+## 0. 现状与目标边界
+
+> **Current（源码可验证）**：当前可运行主线为 .NET 8 模块化单体 `BankingAgent.Host`（HTTP `localhost:5243`）调用 `MockBank.Api`（HTTP `localhost:5200`）。默认使用 SQLite 文件库、`EnsureCreated` 初始化和进程内事件总线；宿主内置静态控制台。仓库未提供已部署的 K8s、PostgreSQL HA、Redis、Kafka、Service Mesh 或云上生产环境证据。
+>
+> **Target / Runbook（规划）**：下文 K8s、ACK/TKE、PostgreSQL HA、Redis、Kafka、Kong、Istio、云资源规格、域名、备份与 RTO/RPO 均为生产目标或示例配置，不代表已经采购、部署或演练。执行前必须由实际环境负责人补齐地址、凭据、资源清单和验证记录。
+
+### 0.1 当前运行拓扑
+
+```text
+客户端
+  └─HTTP→ BankingAgent.Host :5243
+             ├─HTTP→ MockBank.Api :5200
+             ├─SQLite（业务表）
+             ├─SQLite audit_events（独立 DbContext）
+             └─HMAC 链 JSONL（logs/audit-chain.log）
+```
+
 ## 1. 总体拓扑
+
+> **Target**：本节为生产目标拓扑。
 
 ```
                               ┌────────────────────────┐
@@ -49,7 +68,7 @@
 
 ---
 
-## 2. 集群架构
+## 2. 集群架构（Target）
 
 ### 2.1 生产环境（K8s on 阿里云 ACK）
 
@@ -79,7 +98,7 @@
 
 ---
 
-## 3. K8s 命名空间与资源
+## 3. K8s 命名空间与资源（Target 示例）
 
 ### 3.1 命名空间
 
@@ -182,7 +201,7 @@ spec:
 
 ---
 
-## 4. 数据层
+## 4. 数据层（Target）
 
 ### 4.1 PostgreSQL
 
@@ -212,7 +231,7 @@ spec:
 
 ---
 
-## 5. 网络
+## 5. 网络（Target）
 
 ### 5.1 Ingress（Kong / APISIX）
 
@@ -258,13 +277,13 @@ spec:
 
 ---
 
-## 6. 监控与日志
+## 6. 监控与日志（Target）
 
 详见 [`02-monitoring-observability.md`](02-monitoring-observability.md)。
 
 ---
 
-## 7. 备份与容灾
+## 7. 备份与容灾（Target）
 
 ### 7.1 数据库备份
 
@@ -282,6 +301,8 @@ spec:
 | L2 | K8s 集群故障 | < 15 分钟 | < 5 分钟 |
 | L3 | 数据库故障 | < 30 分钟 | < 1 分钟 |
 | L4 | 区域级灾难 | < 4 小时 | < 1 小时 |
+
+> 以上指标尚无当前环境的部署或演练证据，不能作为现行 SLA。
 
 ---
 

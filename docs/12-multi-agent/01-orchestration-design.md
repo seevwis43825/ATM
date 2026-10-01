@@ -200,8 +200,12 @@ SessionStart → PlanCreated → StepStarted → AgentInvoked
 
 | 端点 | 用途 |
 |------|------|
+| `POST /api/orchestrate` | 当前 Supervisor 编排入口；执行 AdaptiveStrategy 生成的多步计划 |
 | `GET /api/trajectory/{sessionId}` | 回放指定会话的完整轨迹 |
 | `GET /api/trajectory?limit=200` | 查看最近事件流 |
+
+> 以上三个端点均是 **Current 实现**，不是 Harness 目标态占位。轨迹当前仍为内存实现，
+> 宿主重启后丢失。Cordis 章节保留为设计对照，用于说明运行时可组合能力的演进方向。
 
 ### 3.5 分叉与回放
 
