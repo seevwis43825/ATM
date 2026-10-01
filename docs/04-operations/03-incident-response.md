@@ -5,9 +5,15 @@
 
 ---
 
+## 0. 适用状态
+
+> **Current**：当前仓库仅能验证本地 `BankingAgent.Host :5243`、`MockBank.Api :5200`、SQLite、健康检查和应用日志；未发现已启用的 PagerDuty/飞书告警、K8s 回滚、FeatureFlag 管理平台、PostgreSQL 主从、Prometheus/ELK 或正式 on-call 排班证据。
+>
+> **Target / Runbook**：本文是生产事故响应预案。响应时限、MTTR、轮值人数、通知渠道、监管报告时限及命令均需由组织和法务确认；涉及 K8s、PostgreSQL HA、LLM 双供应商的步骤只能在对应目标设施落地后执行。
+
 ## 1. 目标
 
-**MTTR（Mean Time To Recover）≤ 30 分钟**（P0/P1）
+**目标 MTTR（Mean Time To Recover）≤ 30 分钟**（P0/P1；尚无演练数据证明）
 
 把事故从「救火」变成「流程化、可演练、可改进」的工程实践。
 
@@ -45,7 +51,7 @@
 | **Communications Lead (CL)** | 对外同步状态 | 产品或 PM |
 | **Scribe** | 实时记录 Timeline | 自动机器人 + 人工补充 |
 
-### 3.2 On-call 轮值
+### 3.2 On-call 轮值（Target）
 
 - **5 人轮值**，每人值班 7×24 一周
 - 值班福利：调休 1 天
@@ -67,7 +73,7 @@
    监控告警       定级+通知       止血+隔离       根因+回滚      改进+归档
 ```
 
-### 4.1 检测（Detect）
+### 4.1 检测（Detect，Target）
 
 - Prometheus / AlertManager 自动告警
 - 用户投诉（客服系统转入）
@@ -119,6 +125,8 @@
 
 ## 5. 关键 Runbook
 
+> 以下为目标环境 Runbook 模板。当前本地环境优先使用 `/health*`、应用控制台日志、SQLite 文件备份和进程重启排查；不要在未确认集群、命名空间和数据库类型时直接执行示例命令。
+
 ### 5.1 转账大面积失败
 
 ```yaml
@@ -163,6 +171,8 @@ prevention:
 
 ### 5.3 数据库主从切换
 
+> **Target only**：当前默认数据库为 SQLite，不存在 PostgreSQL 主从或 Patroni。
+
 ```yaml
 trigger: pg_replication_lag_seconds > 30 / 主库不可用
 severity: P0
@@ -203,7 +213,7 @@ trigger: 用户反馈智能体做错事 / 风控告警检测到可疑交易
 severity: P0（如涉及资金）/ P1（其他）
 actions:
   - 立即冻结相关账户（人工 + 系统）
-  - 拉取该用户最近 1 小时的所有 trace 与 audit log
+  - 拉取该用户最近 1 小时的审计 JSONL 与 `audit_events`；目标追踪平台落地后再关联 trace
   - 回滚可疑交易（与运营同事协作）
   - 评估是否需要回滚对应功能开关
 ```

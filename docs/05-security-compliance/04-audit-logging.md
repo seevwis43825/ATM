@@ -5,9 +5,15 @@
 
 ---
 
+## 0. 当前实现与目标边界
+
+> **Current（源码可验证）**：`AuditLogger` 先生成 HMAC-SHA256 链签名，再追加 JSONL 文件，并写入独立 `AuditDbContext` 的 `audit_events` 表；SQLite 下为独立表，PostgreSQL 配置下映射到 `audit` Schema。仓储接口只暴露 Append/Query/Verify/Count，不提供 Update/Delete。文件或数据库写失败均记录 Critical；异常被捕获，**不会阻断业务流程**，因此双写并非原子事务，也不保证两端总是一致。
+>
+> **Target**：PostgreSQL 分区、数据库禁止改删 trigger、WORM/OSS 异地归档、KMS 签名存储、ClickHouse/Elasticsearch、完整审计 API、指标告警与五年留存均尚未落地。下文相关内容是生产设计或 Runbook。
+
 ## 1. 目的
 
-为 AI Banking Agent 系统的所有**有合规意义**的操作提供**不可篡改、可追溯、可查询**的审计日志，满足：
+目标是为 AI Banking Agent 系统的所有**有合规意义**的操作提供可验证完整性、可追溯、可查询的审计日志。当前 HMAC 链能检测篡改，但在 WORM 落地前不能等同于物理不可篡改。
 
 1. **合规要求**（《网络安全法》《个保法》《商业银行法》《反洗钱法》）
 2. **事故取证**（发生争议、纠纷、犯罪时）
@@ -121,11 +127,11 @@
    ├── ① 业务表写入（事务）
    └── ② 审计日志写入（独立通道）
 
-【设计原则】审计日志必须**事务外**或**独立连接**写入，
-避免主业务失败导致审计丢失。
+【当前行为】JSONL 与 `audit_events` 独立双写；任一写入失败只记
+Critical，不回滚或阻断业务。生产需增加可靠队列/补偿、对账与告警闭环。
 ```
 
-### 4.2 三层存储
+### 4.2 三层存储（Target）
 
 | 层 | 存储 | 保留期 | 用途 |
 |----|------|--------|------|
@@ -133,7 +139,7 @@
 | **温** | ClickHouse / OSS + Elasticsearch | 1 年 | 调查分析 |
 | **冷** | OSS 归档 + 异地灾备 | 5 年（合规）| 长期保留 |
 
-### 4.3 表结构（PostgreSQL）
+### 4.3 表结构（Target PostgreSQL）
 
 ```sql
 CREATE SCHEMA audit;
@@ -178,7 +184,7 @@ CREATE TABLE audit.events_2026_09 PARTITION OF audit.events
     FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
 ```
 
-### 4.4 不可篡改设计
+### 4.4 不可篡改设计（Target）
 
 ```sql
 -- 数据库 trigger：禁止 audit 表的 UPDATE / DELETE
@@ -198,16 +204,16 @@ CREATE TRIGGER no_delete BEFORE DELETE ON audit.events
 
 **应用层只允许 INSERT，不提供 UPDATE/DELETE API。**
 
-### 4.5 异地只读归档
+### 4.5 异地只读归档（Target，未实现）
 
 - 每日归档到异地 OSS（启用对象锁定 Object Lock）
 - OSS Bucket 启用 **WORM（Write Once Read Many）** 模式
 - 保留期 ≥ 5 年，无法手动删除
 
-### 4.6 完整性校验（每日）
+### 4.6 完整性校验（Current + Target）
 
-- 对当日审计日志计算 HMAC 签名
-- 签名同步到独立 KMS 存储
+- 当前每条记录使用 HMAC-SHA256 并链接前一条签名，可由代码校验链断裂
+- Target：签名/锚点同步到独立 KMS 或可信时间戳服务，并每日自动校验告警
 - 如发现不匹配，发出告警
 
 ---
@@ -298,7 +304,7 @@ public class AuditBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TR
 
 ---
 
-## 6. 查询与导出
+## 6. 查询与导出（Target API）
 
 ### 6.1 查询接口
 
@@ -323,7 +329,7 @@ public class AuditBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TR
 
 ---
 
-## 7. 监控与告警
+## 7. 监控与告警（Target）
 
 ### 7.1 审计本身监控
 
@@ -400,7 +406,8 @@ public class AuditBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TR
 - [ ] 必填字段已校验（§3.4）
 - [ ] 数据库 trigger 防 UPDATE/DELETE 生效（§4.4）
 - [ ] OSS WORM 异地归档已启用（§4.5）
-- [ ] HMAC 签名已实现（§4.6）
+- [x] HMAC 链签名已实现（§4.6）
+- [x] JSONL + `audit_events` 双写已实现（失败不阻断）
 - [ ] 查询接口已实现 + 权限控制（§6.1）
 - [ ] 监控告警已配置（§7）
 - [ ] 留存期配置正确（§8.1）
