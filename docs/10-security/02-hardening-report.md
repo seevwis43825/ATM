@@ -326,7 +326,7 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 | **JWT + RBAC** | ✅ | 8 项端到端断言 |
 | **越权防护** | ✅ | userId 强制取自令牌 |
 | **速率限制** | ✅ | 令牌桶双维度 |
-| **L1-L4 脱敏** | ✅ | 30 项单元测试 |
+| **L1-L4 脱敏** | ✅ | 29 项单元测试 |
 | **审计链签名** | ✅ | HMAC 链 JSONL |
 | **审计独立表双写** | ✅ | `audit_events`；失败记 Critical、不阻断业务 |
 | **人工回环** | ✅ | 资金操作强制 |

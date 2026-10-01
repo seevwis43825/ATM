@@ -173,7 +173,7 @@
 - **G22-G25 RegTech**：审计 + 合规矩阵 → 我们的 Compliance 模块
 - **I32 自主链上 Agent**：4 类架构 → 我们的 Plug-in Registry
 
-详见 [`../papers/papers_summary.md`](../papers/papers_summary.md)
+详见 [`papers/papers_summary.md`](../../papers/papers_summary.md)
 
 ---
 

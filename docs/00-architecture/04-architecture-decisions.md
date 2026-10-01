@@ -274,7 +274,7 @@ public interface IBankingAgent
 
 1. 复制 [`template.md`](template.md)（如不存在可参考 Nygard 模板）
 2. 编号递增
-3. 在 README.md 索引表中追加
+3. 在本文“索引”表中追加
 4. 提交 PR → 全体 5 人 Review → 通过
 
 ---

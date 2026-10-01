@@ -128,16 +128,16 @@ src/
 
 下列是历史/目标决策主题；是否“已定”只以 [`../../00-architecture/04-architecture-decisions.md`](../../00-architecture/04-architecture-decisions.md) 的 Current/Target/Historical 标记为准：
 
-- [ ] ADR-001：模块化单体（Modular Monolith）✅ 已定
-- [ ] ADR-002：Clean Architecture 演进（Target）
-- [ ] ADR-003：可观测性技术栈（Target）
-- [ ] ADR-004：外部事件总线（Target；当前为进程内实现）
-- [ ] ADR-005：PostgreSQL 生产化（Target；当前默认 SQLite）
-- [ ] ADR-006：插件化机制 ✅ 已定
-- [ ] ADR-007：LLM 选型（Qwen3 + DeepSeek 双供应商）✅ 已定
-- [ ] ADR-008：HITL 强制规则 ✅ 已定
-- [ ] ADR-009：审计日志（不可篡改）✅ 已定
-- [ ] ADR-010：FeatureFlag 体系 ✅ 已定
+- [x] ADR-0001：模块化单体（Current）
+- [ ] ADR-0002：未来微服务演进（Target）
+- [x] ADR-0003：当前进程内事件总线；持久化总线为 Target
+- [ ] ADR-0004：C# + Python 双语言栈（Target）
+- [ ] ADR-0005：国内 LLM 可选接入（Target / 可选）
+- [ ] ADR-0006：PostgreSQL + pgvector（Target；当前默认 SQLite）
+- [ ] ADR-0007：Kong / APISIX 网关（Target / 待决策）
+- [ ] ADR-0008：人工回环（Partial，已落基础能力但仍需补齐场景）
+- [x] ADR-0009：可插拔 Agent 注册（Current）
+- [ ] ADR-0010：FeatureFlag 体系（Target / 待决策；当前只有 manifest 元数据）
 
 后续需补的：
 - [ ] ADR-011：何时拆分为微服务

@@ -646,8 +646,9 @@ Invoke-RestMethod http://localhost:5243/api/chat -Method Post `
 **或者**用测试项目（已处理编码问题）：
 
 ```powershell
-cd G:\cunchu\大学\poject\ATM\src
-dotnet run --project E2ETest
+# 在仓库根目录执行；先启动 MockBank(:5200) 与 Host(:5243)
+dotnet run --project src/E2ETest/E2ETest.csproj -- `
+  http://localhost:5243 http://localhost:5200
 ```
 
 ---

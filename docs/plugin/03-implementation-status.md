@@ -53,7 +53,7 @@
 |---|------|------|---------|---------|
 | ADR-001 | 模块化单体 | ✅ | 宿主 + 插件独立程序集，进程内调用 | 一致 |
 | ADR-002 | DDD + Clean Architecture | 🟡 | 分层清晰（Contracts/Agents/Data/Security） | 未做完整 DDD：无聚合仓储分离、无领域事件溯源 |
-| ADR-003 | 可观测性（Prom+ELK+Jaeger） | ❌ | 仅 `ILogger` 控制台 + 审计文件 | 未接入 Metrics/Tracing。理由：本地演示无监控栈 |
+| ADR-003 | 可观测性（Prom+ELK+Jaeger） | ❌ | `ILogger` 控制台；审计独立走 JSONL + `audit_events` 双写 | 未接入 Metrics/Tracing。理由：本地演示无监控栈 |
 | ADR-004 | 事件总线 MediatR → Kafka | 🟡 | 自研 `InMemoryEventBus` | 未用 MediatR。进程内，不跨实例。迁移路径见下 |
 | ADR-005 | PostgreSQL 16 + pgvector | 🟡 | 默认 SQLite，PG 可配置切换 | 未装 pgvector（无向量检索需求）。切换见 `00-quick-start.md` §8 |
 | ADR-006 | 插件化机制 | ✅ | 可回收 `AssemblyLoadContext` | 一致，且额外实现了程序集卸载 |
@@ -89,7 +89,7 @@
 | **账号枚举防护** | ✅ | 登录失败统一返回 401，不区分「用户不存在」与「密码错误」 | 代码实现 |
 | **令牌过期处理** | ✅ | 30 分钟有效期 + 30 秒时钟偏移容差 | 单元级 |
 | **MFA / OTP** | ❌ | 未实现 | 生产必须补 |
-| **L1-L4 数据分级** | ✅ | `DataClassification` 枚举 + `DataMasker` | 单元测试 30 项 |
+| **L1-L4 数据分级** | ✅ | `DataClassification` 枚举 + `DataMasker` | 单元测试 29 项 |
 | **L4 永不返回明文** | ✅ | `DataMasker.Apply` 对 L4 返回 `********` | 单元测试 |
 | **审计 HMAC 链式签名** | ✅ | 链式哈希，读/算/写原子化 | 压测 200 并发：链首唯一、无分叉、全链可达 200/200 |
 | **审计文件写入并发安全** | ✅ | `SemaphoreSlim` 串行化 | 压测 200 并发：200 行无撕裂 |
