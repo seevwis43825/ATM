@@ -1,6 +1,6 @@
 # 统一术语表（Glossary）
 
-> **状态**：维护中 · **所有者**：架构师 + 业务开发 · **最后更新**：2026-09-21
+> **状态**：维护中 · **所有者**：架构师 + 业务开发 · **最后更新**：2026-10-01
 > **目的**：消除跨团队沟通中的术语歧义
 
 ---
@@ -137,9 +137,11 @@
 
 | 代号 | 含义 |
 |------|------|
-| **核心核心核心（Core Core Core）** | 不可变核心层 |
-| **Agent Core** | .NET 业务核心服务名 |
-| **AI Service** | Python AI 微服务名 |
+| **BankingAgent.Base** | 当前共享运行时：数据、安全、Agent 编排等 |
+| **BankingAgent.Plugin.Sdk** | 当前插件公共契约 |
+| **BankingAgent.Host** | 当前 .NET 8 宿主、API 与静态控制台 |
+| **MockBank.Api** | 当前独立模拟核心银行服务，默认端口 5200 |
+| **AI Service** | Target：未来可能引入的独立 AI 服务；当前仓库无 Python/FastAPI 服务 |
 | **PluginRegistry** | 插件注册中心 |
 | **Guardrails** | 合规拦截 |
 | **Audit** | 横切审计 |
@@ -152,13 +154,25 @@
 
 ```
 src/
-├── Core/                   # 不可变核心
-├── Contexts/               # Bounded Contexts
-├── AIService/              # AI Service (Python)
-├── Bootstrap/              # 启动装配
-├── Shared/                 # 共享内核
-└── tests/                  # 测试
+├── BankingAgent.slnx
+├── src/
+│   ├── BankingAgent.Base/
+│   ├── BankingAgent.Plugin.Sdk/
+│   └── BankingAgent.Host/
+│       └── wwwroot/                        # 当前静态控制台
+├── plugins/
+│   ├── BankingAgent.Plugin.Transfer/
+│   ├── BankingAgent.Plugin.BillAnalysis/
+│   ├── BankingAgent.Plugin.CardManagement/
+│   └── BankingAgent.Plugin.Wealth/
+├── mock-bank/MockBank.Api/
+├── UnitTests/                              # xUnit 测试项目
+├── E2ETest/                                # 独立可执行程序
+├── StressTest/                             # 独立可执行程序
+└── LoadTest/                               # 独立可执行程序
 ```
+
+仓库当前没有 `src/agent-core`、`src/ai-service`、`AIService` 或 `Bootstrap` 项目。
 
 ---
 

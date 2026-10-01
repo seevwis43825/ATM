@@ -1,8 +1,9 @@
 # ⚙️ 平台 / Platform Engineer 分册
 
 > **角色定位**：基础设施、CI/CD、环境的守护者
-> **主战场**：`04-operations/` `deploy/` `monitoring/`
-> **更新时间**：2026-09-21
+> **主战场**：`src/BankingAgent.slnx` 仓库现有 CI/脚本与运行配置、`docs/04-operations/`
+> **更新时间**：2026-10-01
+> **口径**：当前先保障 .NET 8 解决方案、Host/MockBank 和测试程序；K8s、Helm、Terraform、PostgreSQL HA 与完整观测平台均为 Target。
 
 ---
 
@@ -57,55 +58,23 @@
 
 ## 3. 你负责的代码模块
 
-```
-infra/                                         ← 【你的主战场】
-├── k8s/
-│   ├── base/                                  # Kustomize base
-│   ├── overlays/
-│   │   ├── dev/
-│   │   ├── staging/
-│   │   └── prod/
-│   └── charts/                                # Helm charts
-├── terraform/                                 # IaC（可选，云资源）
-├── monitoring/
-│   ├── prometheus/
-│   │   ├── prometheus.yaml
-│   │   ├── alert-rules.yaml                   # 告警规则
-│   │   └── recording-rules.yaml
-│   ├── grafana/
-│   │   └── dashboards/                        # Dashboard JSON
-│   └── alerts/                                # AlertManager 配置
-├── logging/
-│   ├── filebeat/
-│   └── logstash/
-├── tracing/
-│   └── jaeger/
-├── ci-cd/
-│   ├── .github/workflows/                     # GitHub Actions
-│   ├── .gitlab-ci.yml                         # GitLab CI
-│   └── scripts/                              # 发布、回滚脚本
-├── docker/
-│   ├── docker-compose.yml                     # 本地开发
-│   ├── docker-compose.test.yml
-│   └── dockerfiles/
-├── backup/
-│   ├── pg-backup/
-│   ├── redis-backup/
-│   └── oss-sync/
-└── ops-toolkit/                               # 运维工具箱
-    ├── rollback-deploy.sh
-    ├── enable-feature-flag.sh
-    ├── freeze-account.sh
-    ├── restore-db-pitr.sh
-    ├── dr-switchover.sh
-    └── break-glass.sh
-```
+当前责任面：
+
+- `src/BankingAgent.slnx` 的 restore/build/test 基线；
+- 四插件构建顺序、Host 输出目录与 PluginValidator；
+- Host `:5243`、MockBank `:5200` 的启动配置；
+- 默认 SQLite + EnsureCreated 的开发体验，以及 EF Core Migration 生产化路径；
+- `E2ETest`、`StressTest`、`LoadTest` 独立程序的运行编排和结果留证。
+
+**Target**：`infra/k8s`、Helm、Terraform、Prometheus/Grafana、ELK、Jaeger、PostgreSQL HA、Redis/Kafka、备份与 GitOps。只有仓库出现真实目录和流水线后，才能视为当前平台资产。
 
 ---
 
 ## 4. 你的工作职责
 
 ### 4.1 集群与基础设施
+
+> **Target 职责**；当前仓库未证明存在对应集群。
 
 - 生产 K8s 集群维护（升级、调优）
 - 预发 / 测试集群维护
@@ -115,6 +84,8 @@ infra/                                         ← 【你的主战场】
 
 ### 4.2 CI/CD
 
+> 当前先维护实际仓库 CI；镜像、Helm 与自动部署是 Target。
+
 - 流水线维护（GitHub Actions / GitLab CI）
 - 镜像构建 + 推送
 - Helm Chart 版本管理
@@ -122,6 +93,8 @@ infra/                                         ← 【你的主战场】
 - 手动灰度发布到生产
 
 ### 4.3 可观测性
+
+> **Target 职责**。
 
 - Prometheus + Grafana 维护
 - ELK 日志栈维护
@@ -131,7 +104,8 @@ infra/                                         ← 【你的主战场】
 
 ### 4.4 数据库运维
 
-- PostgreSQL 备份与恢复
+- 当前：SQLite 开发基线、EF Core 配置与迁移命令可复现
+- Target：PostgreSQL 备份与恢复
 - Redis 持久化
 - 慢查询治理
 - Schema Migration 协助
@@ -183,7 +157,7 @@ infra/                                         ← 【你的主战场】
 
 ---
 
-## 7. 你必须维护的关键 SLA
+## 7. 目标生产 SLA（Target，尚无当前部署证据）
 
 | 指标 | 目标 |
 |------|------|
@@ -197,7 +171,7 @@ infra/                                         ← 【你的主战场】
 
 ---
 
-## 8. 你的"严"（必须为的）
+## 8. 生产运行纪律（Target）
 
 1. **生产操作必须双人复核**（除紧急 On-call）
 2. **所有变更走 GitOps**（Git 是唯一真相源）
@@ -217,7 +191,8 @@ infra/                                         ← 【你的主战场】
 | **Helm + Kustomize** | K8s 配置管理 | helm.sh |
 | **Argo Rollouts** | 蓝绿/灰度发布 | argoproj.io |
 | **Docker** | 容器 | docker.com |
-| **PostgreSQL + Patroni** | 数据库 HA | patroni.readthedocs.io |
+| **当前：SQLite + EF Core** | 本地持久化与模型验证 | 微软文档 |
+| **Target：PostgreSQL + Patroni** | 数据库 HA | patroni.readthedocs.io |
 | **Redis Cluster** | 缓存 | redis.io |
 | **Kafka** | 消息队列 | kafka.apache.org |
 | **Prometheus + Grafana** | 监控 | prometheus.io |
@@ -228,7 +203,7 @@ infra/                                         ← 【你的主战场】
 
 ---
 
-## 10. 关键 Runbook（你必须能熟练操作）
+## 10. 目标平台 Runbook（Target）
 
 | 场景 | 操作 | RTO |
 |------|------|-----|

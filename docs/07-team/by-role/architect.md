@@ -1,8 +1,9 @@
 # 🏛️ 架构师 / Architect 分册
 
 > **角色定位**：技术决策者 · 跨领域串联者
-> **主战场**：`00-architecture/` `01-domain/` `07-team/`
-> **更新时间**：2026-09-21
+> **主战场**：`src/src/BankingAgent.Base/` `src/src/BankingAgent.Plugin.Sdk/` `src/src/BankingAgent.Host/` `docs/00-architecture/`
+> **更新时间**：2026-10-01
+> **口径**：先维护当前 .NET 8 模块化单体；独立服务、K8s 与生产平台职责均为 Target。
 
 ---
 
@@ -57,27 +58,15 @@
 
 ```
 src/
-├── agent-core/
-│   ├── Architecture/                ← 【你】架构师核心区
-│   │   ├── Conventions/             # 强制编码约定
-│   │   └── Bootstrap/               # 启动配置
-│   ├── BuildingBlocks/              ← 【你】通用构建块
-│   │   ├── EventBus/                # MediatR 抽象
-│   │   ├── PluginRegistry/          # 插件注册中心
-│   │   ├── FeatureFlag/             # 功能开关
-│   │   ├── ComplianceGuard/         # 合规拦截器
-│   │   ├── Audit/                   # 审计接口
-│   │   └── Persistence/             # 持久化抽象
-│   └── {Module}/                    # 【其他角色】业务模块
-│       ├── Transfer/
-│       ├── BillAnalysis/
-│       ├── Wealth/
-│       ├── CardManagement/
-│       └── ...
-├── ai-service/                      ← 【AI 角色】
-├── admin-web/                       ← 【前端角色】
-└── deploy/                          ← 【平台角色】
+├── src/BankingAgent.Base/           # 共享运行时、数据、安全、Agent 编排
+├── src/BankingAgent.Plugin.Sdk/     # 插件契约与扩展边界
+├── src/BankingAgent.Host/           # 组合根、API、静态控制台
+├── plugins/                         # 四个业务插件
+├── mock-bank/MockBank.Api/          # 独立模拟银行
+└── UnitTests/                       # 当前 xUnit 测试
 ```
+
+**Target**：如果未来通过 ADR 引入独立 AI 服务、Next.js 管理台、K8s 或更细的 Clean Architecture 分层，再为其建立真实目录和所有权；当前不存在 `agent-core`、`ai-service`、`Bootstrap`。
 
 ---
 
@@ -137,13 +126,13 @@ src/
 
 ## 7. 你的关键决策清单（启动期）
 
-启动 3 个月内必须做出的决策：
+下列是历史/目标决策主题；是否“已定”只以 [`../../00-architecture/04-architecture-decisions.md`](../../00-architecture/04-architecture-decisions.md) 的 Current/Target/Historical 标记为准：
 
 - [ ] ADR-001：模块化单体（Modular Monolith）✅ 已定
-- [ ] ADR-002：DDD + Clean Architecture ✅ 已定
-- [ ] ADR-003：可观测性技术栈（Prometheus + ELK + Jaeger）✅ 已定
-- [ ] ADR-004：事件总线（MediatR → 未来 Kafka）✅ 已定
-- [ ] ADR-005：数据库选型（PostgreSQL 16 + pgvector）✅ 已定
+- [ ] ADR-002：Clean Architecture 演进（Target）
+- [ ] ADR-003：可观测性技术栈（Target）
+- [ ] ADR-004：外部事件总线（Target；当前为进程内实现）
+- [ ] ADR-005：PostgreSQL 生产化（Target；当前默认 SQLite）
 - [ ] ADR-006：插件化机制 ✅ 已定
 - [ ] ADR-007：LLM 选型（Qwen3 + DeepSeek 双供应商）✅ 已定
 - [ ] ADR-008：HITL 强制规则 ✅ 已定
@@ -161,8 +150,8 @@ src/
 ## 8. 你负责的"严"（必须为的）
 
 1. **模块依赖只能向下** — UI → Application → Infrastructure，绝不反向
-2. **跨模块只能通过 EventBus** — 绝不直接调用
-3. **核心代码必须 Architect 签字** — BuildingBlocks/、Architecture/、Compliance/
+2. **跨模块依赖遵守已落地契约** — 优先 Sdk 接口、Agent、事件和贡献器，不虚构不存在的层
+3. **核心代码加强 Review** — Base、Sdk、Host 组合根与安全边界
 4. **新功能必须插件化** — 严禁改 Core
 5. **关键操作必须 HITL** — 转账/卡片/理财/跨场景
 6. **ADR 优先于口口相传** — 所有决策必须有据

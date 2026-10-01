@@ -1,8 +1,9 @@
 # 💼 业务开发 / Backend Developer 分册
 
 > **角色定位**：业务核心代码的主要作者
-> **主战场**：`01-domain/` `02-api/` `src/agent-core/Modules/`
-> **更新时间**：2026-09-21
+> **主战场**：`src/plugins/` `src/mock-bank/MockBank.Api/` `src/UnitTests/`
+> **更新时间**：2026-10-01
+> **口径**：当前实现为四个 C# 插件 + Base/Sdk/Host；下文分层、PostgreSQL 和 Testcontainers 要求标为 Target。
 
 ---
 
@@ -13,7 +14,7 @@
 你的代码直接关系**用户资金安全 + 业务正确性**，所以你必须：
 - 严守模块边界（架构师定的规则）
 - 严守领域模型（不写贫血模型）
-- 严守测试覆盖率（≥ 80%）
+- 为行为变更补测试；80% 是目标阈值，不冒充当前 CI 门禁
 - 严守审计埋点（合规要求）
 
 ---
@@ -60,21 +61,18 @@
 
 ```
 src/
-├── agent-core/                            ← 【你的主战场】
-│   ├── Transfer/                          # 转账场景
-│   │   ├── Transfer.API/                  # API 层
-│   │   ├── Transfer.Application/          # 应用服务
-│   │   ├── Transfer.Domain/               # 领域模型
-│   │   ├── Transfer.Infrastructure/       # 基础设施
-│   │   └── Transfer.Integration.Tests/    # 集成测试
-│   ├── BillAnalysis/                      # 账单分析
-│   ├── Wealth/                            # 理财
-│   ├── CardManagement/                    # 卡片管理
-│   ├── Subscription/                      # 订阅/代扣
-│   ├── CrossScenario/                     # 跨场景联动
-│   └── AgentOrchestration/                # 编排（与 AI 协作）
-└── admin-web/                             # 【前端角色，但业务理解是你】
+├── plugins/
+│   ├── BankingAgent.Plugin.Transfer/
+│   ├── BankingAgent.Plugin.BillAnalysis/
+│   ├── BankingAgent.Plugin.CardManagement/
+│   └── BankingAgent.Plugin.Wealth/
+├── mock-bank/MockBank.Api/                # 模拟核心银行端点与服务
+├── src/BankingAgent.Base/                 # 需谨慎修改的共享能力
+├── src/BankingAgent.Plugin.Sdk/           # 公共插件契约
+└── UnitTests/                             # 当前 xUnit 测试
 ```
+
+**Target**：复杂插件可逐步采用 Domain/Application/Infrastructure 分层；不要把尚不存在的 `agent-core/Modules`、Subscription 或 CrossScenario 目录当作当前主战场。
 
 ---
 
@@ -94,18 +92,18 @@ src/
    git checkout -b feature/<ticket>-<short-name>
    ↓
 5. 编码（遵循 coding-standards.md）
-   ├─ 聚合根 + 值对象 + 领域事件
-   ├─ 应用服务（CQRS）
-   ├─ API 端点（OpenAPI）
-   └─ 数据库 Migration
+   ├─ 对应插件中的 Agent/服务/规则/数据贡献器
+   ├─ 必要的 Sdk 契约或 Base 共享能力（谨慎评审）
+   ├─ Host/MockBank API（仅在职责属于入口或模拟系统时）
+   └─ 数据库模型变化；生产化时使用 EF Core Migration 类
    ↓
-6. 单元测试（覆盖率 ≥ 80%）
+6. 在 src/UnitTests 增补单元测试；覆盖率目标不冒充当前 CI 门禁
    ↓
 7. 集成测试（API + DB + EventBus）
    ↓
 8. 审计埋点（关键操作）
    ↓
-9. Feature Flag 包裹（新功能默认关闭）
+9. 若功能需灰度，先实现运行时 FeatureFlag；当前 manifest 字段仅是元数据
    ↓
 10. 自测通过 → Push → 创建 PR
    ↓
@@ -127,7 +125,7 @@ src/
 ### 6.1 每周
 
 - ≥ **3 个业务 PR**（含单元测试）
-- ≥ **80%** 新代码覆盖率
+- 新行为有对应测试；覆盖率逐步向 **80% Target** 靠拢
 - API 文档同步更新（OpenAPI 自动生成）
 - 关键路径审计埋点完整
 
@@ -153,16 +151,16 @@ src/
 
 ## 7. 你必须遵守的"硬规则"
 
-1. **模块依赖只能向下** — UI → Application → Domain ← Infrastructure
-2. **跨模块只通过 EventBus** — 严禁直接调用其他模块的服务
-3. **新功能必须 FeatureFlag 关闭** — 默认 OFF，灰度打开
-4. **关键操作必须审计埋点** — 转账、卡片、理财、订阅
-5. **不直接调用 DB** — 必须通过 Repository / Aggregate
-6. **不写贫血模型** — 业务逻辑在领域对象中，不在 Service 中
+1. **遵守当前模块边界** — Host 负责入口，Base 提供共享能力，Sdk 定义契约，插件承载场景
+2. **跨模块通过已落地契约** — Sdk 接口、Agent、事件或贡献器
+3. **不能把 manifest FeatureFlags 当作运行时开关** — 灰度发布前需先落地真正的拦截服务
+4. **关键操作必须审计埋点** — 按当前已实现的场景逐项验证，不引用尚未实现的订阅模块
+5. **数据访问集中管理** — 当前插件可通过 `BankingDbContext`/贡献器持久化；复杂化后再引入 Repository
+6. **业务规则放在明确的领域或场景组件中** — 不机械套用尚未落地的聚合结构
 7. **不绕过 ComplianceGuard** — 所有写操作必须经过它
 8. **不泄露 PII** — 日志中永不出现明文 PII
-9. **不硬编码 LLM Prompt** — Prompt 在配置中心 / ai-service
-10. **必须有单元测试** — 覆盖率 ≥ 80%
+9. **不硬编码密钥或敏感 Prompt 数据** — 当前 LLM 配置走 Host 配置/环境变量；独立 AI Service 为 Target
+10. **必须有单元测试** — 80% 是目标，是否达标以实际覆盖率报告为准
 
 ---
 
@@ -172,27 +170,25 @@ src/
 |------|------|---------|
 | **C# .NET 8** | 主语言 | 微软官方文档 |
 | **EF Core 8** | ORM | 微软官方文档 |
-| **MediatR** | 进程内事件总线 | GitHub Wiki |
-| **Polly** | 熔断/重试 | GitHub Wiki |
-| **Serilog** | 日志 | Serilog.net |
-| **xUnit + FluentAssertions** | 单元测试 | xUnit.net |
-| **Testcontainers** | 集成测试 | testcontainers.com |
+| **当前：Base/Sdk 插件契约** | 插件注册、Agent、事件、贡献器 | 仓库源码 |
+| **当前：ASP.NET Core 日志** | 结构化日志 | 微软文档 |
+| **当前：xUnit** | 单元测试 | xUnit.net |
+| **Target：Testcontainers** | PostgreSQL 集成测试 | testcontainers.com |
 | **SpecFlow** | BDD（可选） | specflow.org |
 
 ---
 
 ## 9. 你的"严"（测试要求）
 
-每个 PR 必须通过的检查（CI 强制）：
+每个 PR 的当前检查基线（仅把仓库真实 CI 作业称为强制门禁）：
 
 - [ ] 编译成功（dotnet build）
 - [ ] 单元测试通过（dotnet test）
-- [ ] 代码覆盖率 ≥ 80%（新代码）
-- [ ] SonarQube 无高危阈值
-- [ ] 无 secrets（GitLeaks）
+- [ ] 新行为有对应测试，测试数量引用运行输出
+- [ ] 无硬编码 secret 或明文敏感数据
 - [ ] OpenAPI 文档同步
 - [ ] PR 模板全部勾选
-- [ ] ≥ 1 个 Reviewer（核心模块要架构师）
+- [ ] ≥ 1 个 Reviewer；Base/Sdk/Host 边界变更请架构角色参与
 
 ---
 
