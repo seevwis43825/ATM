@@ -1,11 +1,43 @@
 # C4 架构模型 - Level 2：容器视图（Containers）
 
-> **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前实现对齐 · **所有者**：架构师 · **版本**：v1.1
+> **最后更新**：2026-10-01
+>
+> **边界**：C4 的 Container 指可运行/部署单元。Current 只有两个 Web 进程及其本地依赖；K8s、网关、Next.js、Python、PostgreSQL、Redis、Kafka 均为 Target。
 
 ---
 
-## 1. 容器视图总览
+## 1. 当前容器视图（Current）
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ BankingAgent.Host（ASP.NET Core/.NET 8，:5243）          │
+│ ├─ Minimal API + wwwroot 静态 UI                         │
+│ ├─ BankingAgent.Base                                     │
+│ ├─ BankingAgent.Plugin.Sdk                               │
+│ └─ 四个运行期加载插件                                    │
+└───────────────┬──────────────────┬───────────────────────┘
+                │ HTTP             │ EF Core
+                ▼                  ▼
+┌───────────────────────────┐   SQLite（默认）
+│ MockBank.Api（.NET 8，    │   bankingagent.db +
+│ :5200，进程内 MockBankStore）│   bankingagent.audit.db
+└───────────────────────────┘
+
+可选：Host 通过 HTTPS 调用 OpenAI-compatible LLM，仅增强意图分类。
+```
+
+`BankingAgent.Base`、`BankingAgent.Plugin.Sdk` 和四个插件是项目/程序集边界，但随 Host 在同一进程运行，不是独立网络容器。
+
+## 2. 当前容器清单（Current）
+
+| 容器 | 技术 | 职责 | 默认端口/存储 |
+|---|---|---|---|
+| `BankingAgent.Host` | ASP.NET Core Minimal API, .NET 8 | API、静态 UI、认证、插件装配、Agent 路由/编排 | `5243` |
+| `MockBank.Api` | ASP.NET Core Minimal API, .NET 8 | 模拟账户、转账、账单、卡片、理财核心接口 | `5200`，进程内数据 |
+| SQLite | EF Core SQLite | Host 业务与审计持久化 | 默认两个本地文件 |
+
+## 3. 目标容器视图（Target）
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -61,7 +93,7 @@
 
 ---
 
-## 2. 容器清单
+## 4. 目标容器清单（Target）
 
 ### 2.1 前端容器
 
@@ -96,7 +128,7 @@
 
 ---
 
-## 3. 容器间通信矩阵
+## 5. 目标容器间通信矩阵（Target）
 
 | From → To | 协议 | 鉴权 | 备注 |
 |-----------|------|------|------|
@@ -113,7 +145,7 @@
 
 ---
 
-## 4. 数据流向详解
+## 6. 目标数据流向详解（Target）
 
 ### 4.1 用户对话请求
 
@@ -154,7 +186,7 @@
 
 ---
 
-## 5. 部署拓扑（生产环境）
+## 7. 目标部署拓扑（Target，尚未落地）
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -187,7 +219,17 @@
 
 ---
 
-## 6. 关联文档
+## 8. Current 通信补充
+
+| From → To | 协议/机制 | 说明 |
+|---|---|---|
+| 静态 UI → Host | HTTP JSON | 同一 Host 提供页面和 API |
+| Host → MockBank.Api | HTTP | `ICoreBankClient`，默认 BaseUrl `http://localhost:5200` |
+| 插件 → 插件 | `IEventPublisher` | 进程内 `InMemoryEventBus`；当前仅明确发布 `transfer.completed` |
+| Host/Base → SQLite | EF Core | 默认 `EnsureCreated`；生产可配置 Migrate |
+| Host → LLM | OpenAI-compatible HTTPS | 可选；未配置密钥时不调用 |
+
+## 9. 关联文档
 
 - **Level 1 上下文**：[`01-c4-context.md`](01-c4-context.md)
 - **Level 3 组件视图**：[`03-c4-components.md`](03-c4-components.md)

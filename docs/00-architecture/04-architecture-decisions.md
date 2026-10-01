@@ -1,7 +1,9 @@
 # 架构决策记录（ADR - Architecture Decision Records）
 
-> **状态**：维护中 · **所有者**：架构师 · **最后更新**：2026-09-21
+> **状态**：维护中 · **所有者**：架构师 · **最后更新**：2026-10-01
 > **格式参考**：Michael Nygard 的 ADR 模板
+>
+> **解释规则**：`CURRENT` 表示已由当前源码落实；`PARTIAL` 表示仅部分落实；`TARGET` 表示保留的目标决策，不能作为现状依据。原“已通过”不等于已经实现。
 
 ---
 
@@ -19,23 +21,23 @@
 
 | 编号 | 标题 | 状态 | 日期 |
 |------|------|------|------|
-| [ADR-0001](#adr-0001) | 采用模块化单体架构 | ✅ 已通过 | 2026-09-21 |
-| [ADR-0002](#adr-0002) | 未来可演进为微服务 | ✅ 已通过 | 2026-09-21 |
-| [ADR-0003](#adr-0003) | 事件总线：进程内 MediatR → 未来 Kafka | ✅ 已通过 | 2026-09-21 |
-| [ADR-0004](#adr-0004) | 双语言栈：C# .NET 8 + Python 3.11 | ✅ 已通过 | 2026-09-21 |
-| [ADR-0005](#adr-0005) | LLM 主用国内模型（Qwen3/DeepSeek） | ✅ 已通过 | 2026-09-21 |
-| [ADR-0006](#adr-0006) | 数据库选型 PostgreSQL 16 + pgvector | ✅ 已通过 | 2026-09-21 |
-| [ADR-0007](#adr-0007) | API 网关使用 Kong / APISIX | 🟡 评审中 | 2026-09-21 |
-| [ADR-0008](#adr-0008) | 强制人工回环（Human-in-the-Loop） | ✅ 已通过 | 2026-09-21 |
-| [ADR-0009](#adr-0009) | 可插拔 Agent 注册机制 | ✅ 已通过 | 2026-09-21 |
-| [ADR-0010](#adr-0010) | 功能开关系统（FeatureFlag） | 🟡 评审中 | 2026-09-21 |
+| [ADR-0001](#adr-0001) | 采用模块化单体架构 | **CURRENT** | 2026-09-21 |
+| [ADR-0002](#adr-0002) | 未来可演进为微服务 | **TARGET** | 2026-09-21 |
+| [ADR-0003](#adr-0003) | 事件总线：进程内 → 未来持久化总线 | **CURRENT / TARGET** | 2026-09-21 |
+| [ADR-0004](#adr-0004) | 双语言栈：C# .NET 8 + Python 3.11 | **TARGET** | 2026-09-21 |
+| [ADR-0005](#adr-0005) | LLM 主用国内模型 | **TARGET / 可选接入** | 2026-09-21 |
+| [ADR-0006](#adr-0006) | PostgreSQL 16 + pgvector | **TARGET** | 2026-09-21 |
+| [ADR-0007](#adr-0007) | API 网关使用 Kong / APISIX | **TARGET / 待决策** | 2026-09-21 |
+| [ADR-0008](#adr-0008) | 人工回环 | **PARTIAL** | 2026-09-21 |
+| [ADR-0009](#adr-0009) | 可插拔 Agent 注册机制 | **CURRENT** | 2026-09-21 |
+| [ADR-0010](#adr-0010) | 功能开关系统 | **TARGET / 待决策** | 2026-09-21 |
 
 ---
 
 ## ADR-0001：采用模块化单体架构
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**CURRENT**
 
 ### 背景
 5 人小团队开发一个 AI Banking Agent 系统。需要支持"功能随时增加"，同时控制运维复杂度。
@@ -44,7 +46,7 @@
 | 方案 | 优点 | 缺点 |
 |------|------|------|
 | A. 传统单体（一个进程一个部署包） | 简单 | 模块边界不清 → 难以扩展 |
-| B. **模块化单体（Monorepo + 多模块）** ✅ | 边界清晰、独立部署组件、共享进程 | 仍受单进程资源限制 |
+| B. **模块化单体（Monorepo + 多项目/插件）** ✅ | 边界清晰、共享 Host 进程 | 仍受单进程资源限制 |
 | C. 微服务（每个 Context 一个服务） | 完全独立扩展 | 5 人无法维护分布式系统 |
 | D. Serverless（FaaS） | 自动扩缩容 | 冷启动 + 调试困难 |
 
@@ -66,7 +68,7 @@
 ## ADR-0002：未来可演进为微服务
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**TARGET**
 
 ### 背景
 ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coordinator）预期负载高、性能要求严。
@@ -93,17 +95,17 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 
 ---
 
-## ADR-0003：事件总线：进程内 MediatR → 未来 Kafka
+## ADR-0003：进程内事件总线 → 未来持久化消息总线
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**CURRENT / TARGET**
 
 ### 决策
-- **当前**：使用 MediatR 进程内事件总线
-- **未来**：跨服务通信切换为 Kafka
+- **Current**：使用 `IEventPublisher` + `InMemoryEventBus`，同步调用 `IDomainEventHandler`；不是 MediatR。事件只保留内存历史，重启丢失。
+- **Target**：拆分服务后再评估 Kafka 或其他持久化消息总线；当前未部署 Kafka。
 
 ### 理由
-- 进程内总线性能最优（纳秒级）
+- 进程内实现简单，无外部中间件
 - 不引入分布式事务复杂度
 - 通过 `IEventBus` 接口抽象 → 切换 Kafka 不影响业务代码
 
@@ -115,11 +117,14 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 ## ADR-0004：双语言栈：C# .NET 8 + Python 3.11
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**TARGET（未实现）**
 
 ### 决策
 - **C# .NET 8**：业务核心（API、Context、EventBus、Compliance）
 - **Python 3.11**：AI Service（LLM 网关、Skill、嵌入、Agent 编排）
+
+### Current 差异
+仓库当前仅有 .NET 8 实现；没有 Python 项目、FastAPI 服务、gRPC AI Service、LangGraph 或 HuggingFace 运行单元。当前编排由 `BankingAgent.Base.Agents.AgentOrchestrator` 实现。
 
 ### 理由
 - .NET 强类型适合金融业务的合规、审计、可追溯
@@ -137,11 +142,14 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 ## ADR-0005：LLM 主用国内模型（Qwen3/DeepSeek）
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**TARGET / 可选接入**
 
 ### 决策
 - **主用**：通义千问 Qwen3 / DeepSeek-V3（境内）
 - **备选**：OpenAI GPT-4o（兜底）
+
+### Current 差异
+默认不依赖 LLM。`LlmIntentClassifier` 仅在配置 OpenAI-compatible `Ai:ApiKey` 时调用模型，否则使用插件关键词规则；模型失败也回退规则。
 
 ### 理由
 - 数据本地化合规（生成式 AI 暂行办法）
@@ -155,12 +163,15 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 ## ADR-0006：数据库选型 PostgreSQL 16 + pgvector
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**TARGET**
 
 ### 决策
 - 主库：**PostgreSQL 16**（含 pgvector 扩展）
 - 缓存：**Redis 7**
 - 事件：**Kafka 3.x**（生产环境）
+
+### Current 差异
+默认是 SQLite + `EnsureCreated`；代码支持 PostgreSQL/SQL Server 与 `Migrate`，但 pgvector、Redis、Kafka 均未形成当前服务。
 
 ### 理由
 - pgvector 单一数据库支持关系+向量，减少基础设施
@@ -184,7 +195,7 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 ## ADR-0008：强制人工回环（Human-in-the-Loop）
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**PARTIAL**
 
 ### 决策
 **所有高风险操作必须有人工回环**（参考 Ryt Bank A01）：
@@ -199,8 +210,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 | 任何对外 API 调用 | 视金额 |
 
 ### 实现
-- Guardrails Agent 强制拦截
-- APP/IM 推送确认卡片
+- Current：`ComplianceGuard` 在 Transfer 中可返回 `RequiresHumanApproval`，Host 提供 `/api/chat/confirm`
+- Target：独立 Guardrails Agent、APP/IM 确认卡片以及覆盖所有列举操作
 - 超时默认拒绝
 
 ### 依据法规
@@ -212,24 +223,24 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 ## ADR-0009：可插拔 Agent 注册机制
 
 **日期**：2026-09-21
-**状态**：✅ 已通过
+**状态**：**CURRENT**
 
 ### 决策
-新 Agent/功能通过实现接口 + 注册到 PluginRegistry 加入系统，**无需改动核心代码**。
+新 Agent/功能通过 `IPluginEntryPoint.ConfigureServices` 注册 `IBankingAgent`，由 `PluginRegistry` 扫描 `BankingAgent.Plugin.*.dll` 并装配到 Host。
 
 ### 接口定义
 ```csharp
-public interface IAgentPlugin
+public interface IPluginEntryPoint
 {
-    string Name { get; }
-    string Version { get; }
-    Task<PluginResponse> ExecuteAsync(PluginContext context);
+    PluginManifest GetManifest();
+    void ConfigureServices(IServiceCollection services, IPluginContext context);
 }
 
-public interface IBoundedContext
+public interface IBankingAgent
 {
-    string Name { get; }
-    void Register(IEventBus bus, IServiceProvider sp);
+    AgentId Id { get; }
+    IReadOnlyList<string> SupportedIntents { get; }
+    Task<AgentResult> ExecuteAsync(AgentRequest request, CancellationToken ct = default);
 }
 ```
 
@@ -240,7 +251,7 @@ public interface IBoundedContext
 ## ADR-0010：功能开关系统（FeatureFlag）
 
 **日期**：2026-09-21
-**状态**：🟡 评审中
+**状态**：**TARGET / 待决策**
 
 ### 决策
 每个新功能必须有 FeatureFlag 控制：
@@ -253,6 +264,9 @@ public interface IBoundedContext
 - 数据库存储规则
 - Redis 缓存，10 秒 TTL
 - 通过 AOP / Middleware 拦截
+
+### Current 差异
+`PluginManifest.FeatureFlags` 目前只是元数据声明；仓库没有 `IFeatureFlagService`、数据库规则、Redis 缓存或灰度拦截实现。
 
 ---
 

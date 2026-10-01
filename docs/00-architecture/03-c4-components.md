@@ -1,13 +1,37 @@
 # C4 架构模型 - Level 3：组件视图（Components）
 
-> **状态**：评审中 · **所有者**：架构师 · **版本**：v1.0
-> **最后更新**：2026-09-21
+> **状态**：与当前实现对齐 · **所有者**：架构师 · **版本**：v1.1
+> **最后更新**：2026-10-01
 
-本文展示 **Agent Core (.NET)** 容器内部的关键组件。AI Service (Python) 的组件详见 [AI Service 单独设计文档](../03-development/01-coding-standards.md#python-部分)。
+本文先展示 `BankingAgent.Host` 进程内的 **Current** 组件。后半部分保留的细粒度领域组件均为 **Target**；仓库中没有 Python AI Service。
 
 ---
 
-## 1. Agent Core 容器组件图
+## 1. 当前组件图（Current）
+
+```
+BankingAgent.Host
+├─ Minimal API / JWT 中间件 / 速率限制 / 安全响应头 / wwwroot
+├─ PluginRegistry（扫描 plugins/，装配服务、生命周期、签名校验）
+├─ AgentRouter（规则意图到单个 Agent 的前缀路由）
+├─ AgentOrchestrator + AdaptiveStrategy + InMemoryTrajectoryLog
+├─ IIntentClassifier
+│  └─ LlmIntentClassifier（LLM 可用时调用，否则规则；异常回退规则）
+├─ BankingAgent.Base
+│  ├─ ComplianceGuard / IAuditLogger
+│  ├─ ICoreBankClient
+│  ├─ BankingDbContext / AuditDbContext / DatabaseInitializer
+│  └─ IEventPublisher → InMemoryEventBus
+└─ 插件 Agent
+   ├─ TransferAgent（含 TransferRecord 持久化、合规、人工确认、事件发布）
+   ├─ BillAnalysisAgent（账单查询；监听 transfer.completed）
+   ├─ CardManagementAgent（查询/状态变更）
+   └─ 理财Agent（产品与余额只读查询）
+```
+
+Current 没有 MediatR、FeatureFlag 服务、LangGraph、Semantic Kernel、Redis 对话状态、Vector DB、Subscription/CrossScenario/Memory Context 或独立 Conversation Context。
+
+## 2. 目标组件图（Target）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -73,12 +97,12 @@
 
 ---
 
-## 2. Core Layer 组件（不可变）
+## 3. 目标 Core Layer 组件（Target）
 
 | 组件 | 职责 | 技术实现 |
 |------|------|---------|
-| **EventBus** | 进程内事件分发、解耦模块 | MediatR + 中间件 |
-| **PluginRegistry** | 注册/查找可插拔能力 | DI 容器 + 命名约定 |
+| **EventBus** | 进程内事件分发、解耦模块 | Current 为自研 `InMemoryEventBus`；未来可替换 |
+| **PluginRegistry** | 注册/查找可插拔能力 | Current 为目录扫描 + `AssemblyLoadContext` + DI |
 | **FeatureFlag** | 动态功能开关 | DB + 缓存，10 秒刷新 |
 | **Guardrails (Compliance)** | 输入/输出合规拦截 | 规则链 + LLM Judge |
 
@@ -86,7 +110,7 @@
 
 ---
 
-## 3. Bounded Context 组件
+## 4. 目标 Bounded Context 组件（Target，除同名插件外未实现）
 
 ### 3.1 AgentOrchestration Context
 
@@ -172,19 +196,20 @@
 
 ---
 
-## 4. 模块依赖规则
+## 5. 当前依赖与装配规则（Current）
 
 详见 [`05-module-boundaries.md`](05-module-boundaries.md)
 
-**核心原则**：
-- ✅ 允许：Bounded Context → Core（EventBus、Guardrails）
-- ✅ 允许：Bounded Context → 其他 Bounded Context（通过接口或事件）
-- ❌ 禁止：Core → Bounded Context（Core 是被调用方）
-- ❌ 禁止：Bounded Context 之间直接调用服务（必须走接口抽象）
+**源码事实**：
+- `BankingAgent.Host` 编译期引用 `BankingAgent.Base` 与 `BankingAgent.Plugin.Sdk`；对四个插件仅声明构建顺序，运行期从 `plugins/` 扫描。
+- `BankingAgent.Base` 引用 `BankingAgent.Plugin.Sdk`；Sdk 不引用 Base 或插件。
+- 各插件引用 Base 与 Sdk；插件之间不建立项目引用。
+- CardManagement 在 manifest 中声明对 Transfer 的运行期版本依赖，但不直接调用其类型。
+- 插件共享 Base 提供的 `ICoreBankClient`、`ComplianceGuard`、数据库、审计与事件发布器。
 
 ---
 
-## 5. 关联文档
+## 6. 关联文档
 
 - **Level 1 上下文**：[`01-c4-context.md`](01-c4-context.md)
 - **Level 2 容器视图**：[`02-c4-containers.md`](02-c4-containers.md)
