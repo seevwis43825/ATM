@@ -127,18 +127,25 @@ git clone https://github.com/seevwis43825/ATM.git
 cd ATM
 ```
 
-后续命令都在 `ATM` 仓库根目录执行：
+首次运行先进入宿主目录保存 DeepSeek Key，再返回 `ATM` 仓库根目录：
 
 ```bash
-# 1. 编译（从仓库根目录）
+# 1. 配置 DeepSeek API Key（首次运行或更换 Key 时执行）
+cd src/src/BankingAgent.Host
+dotnet user-secrets set "Ai:ApiKey" "自己的 DeepSeek API Key"
+cd ../../..
+
+# 2. 编译
 dotnet build src/BankingAgent.slnx -c Release
 
-# 2. 启动模拟银行（:5200）—— 另开终端
+# 3. 终端一：启动模拟银行（:5200）
 dotnet run --project src/mock-bank/MockBank.Api -c Release
 
-# 3. 启动 AI 宿主（:5243）—— 再开终端
+# 4. 终端二：启动 AI 宿主（:5243）
 dotnet run --project src/src/BankingAgent.Host -c Release
 ```
+
+`appsettings.json` 已配置 DeepSeek 模型及相关参数，因此这里只需设置 Key；同一个 Key 后续无需重复设置。
 
 然后打开 **<http://localhost:5243>** 使用内置对话控制台（登录 → 发消息 → 人工确认）。
 
@@ -279,20 +286,18 @@ dotnet new banking-plugin -n BankingAgent.Plugin.YourFeature \
 
 **默认不接入也能完整运行** —— 意图识别走规则表（插件自报的关键词）。
 
-### 最省事的填法（推荐）
+### 推荐：使用 .NET User Secrets
 
-打开 `src/src/BankingAgent.Host/appsettings.Development.json`，把 `Ai:ApiKey` 填上，重启宿主即可。
-该文件已被 `.gitignore` 忽略，**密钥不会被提交**；`BaseUrl` / `Model` 已预填 DeepSeek，
-换厂商只改这两行（通义千问、智谱、本地 Ollama 的地址都写在该文件的注释里）。
+从仓库根目录执行：
 
-```jsonc
-"Ai": {
-  "Enabled": true,
-  "BaseUrl": "https://api.deepseek.com/v1",
-  "Model": "deepseek-chat",
-  "ApiKey": ""          // ← 只改这一行
-}
+```bash
+dotnet user-secrets set "Ai:ApiKey" "自己的 DeepSeek API Key" --project src/src/BankingAgent.Host/BankingAgent.Host.csproj
 ```
+
+宿主项目已经声明 `UserSecretsId`，无需另外执行 `dotnet user-secrets init`。
+`appsettings.json` 已经配置 DeepSeek 的 `BaseUrl`、`deepseek-chat` 模型及相关参数，
+所以使用 DeepSeek 时只需设置 Key。User Secrets 保存在当前操作系统用户的本地配置目录，
+不会创建仓库内文件，也不会被 Git 提交。设置完成后重启宿主即可生效。
 
 ### 或者用环境变量
 
@@ -301,7 +306,7 @@ $env:Ai__ApiKey = "sk-xxx"
 dotnet run --project src/src/BankingAgent.Host -c Release
 ```
 
-> 优先级：**环境变量 > appsettings.Development.json**。
+> 优先级：**环境变量 > User Secrets > appsettings.Development.json > appsettings.json**。
 > 若发现"填了却没生效"，先用 `Test-Path Env:Ai__ApiKey` 确认终端里没有残留的同名变量（空值同样会覆盖配置文件）。
 
 | 配置项 | 说明 |
@@ -309,7 +314,7 @@ dotnet run --project src/src/BankingAgent.Host -c Release
 | `Ai:Enabled` | 总开关，默认 `true`；关闭后完全不调用模型 |
 | `Ai:BaseUrl` | OpenAI 兼容基地址，默认 `https://api.deepseek.com/v1` |
 | `Ai:Model` | 模型名，默认 `deepseek-chat` |
-| `Ai:ApiKey` | **只允许环境变量注入**（`Ai__ApiKey`），禁止写入 appsettings.json |
+| `Ai:ApiKey` | 使用 User Secrets（推荐）或环境变量 `Ai__ApiKey` 注入，禁止写入入库配置 |
 | `Ai:TimeoutSeconds` | 生成超时，默认 8 秒；连接超时取其一半（上限 3 秒） |
 
 可直接替换的端点：通义千问 `https://dashscope.aliyuncs.com/compatible-mode/v1`、
