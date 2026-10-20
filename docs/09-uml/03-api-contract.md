@@ -29,21 +29,27 @@ Base URL：`http://localhost:5243`
 | POST | `/api/plugins/{pluginId}/start` | 是 | admin | 启用插件 |
 | POST | `/api/chat` | 是 | 已认证 | 单跳对话入口 |
 | POST | `/api/chat/confirm` | 是 | 已认证 | 转账人工确认 |
+| POST | `/api/ai/probe` | 是 | 已认证 | **AI 连通性自检**：真实调一次模型并回报模型名/原始输出/归一化输出/是否命中已知意图/耗时 |
 
-公开白名单由 `Program.IsPublic` 定义：所有 `/health*` 探针与 `/api/auth/token`。
+公开白名单由 `HostSecurity.IsPublic` 定义：所有 `/health*` 探针与 `/api/auth/token`。
 
 ## 2. Current MockBank 端点矩阵
 
-Base URL：`http://localhost:5200`，业务前缀为 `/api/corebank/v1`。MockBank 是开发/演示模拟器。
+Base URL：`http://localhost:5200`，业务前缀为 `/api/corebank/v1`。MockBank 是开发/演示模拟器，
+**模拟 3 家银行，每家一个独立 SQLite 数据库文件**。
 
 | 方法 | 路径 | 符号来源 |
 |---|---|---|
 | GET | `/health` | `OpsEndpoints.GetHealth` |
 | GET | `/api/corebank/v1/_admin/stats` | `OpsEndpoints.GetAdminStats` |
+| POST | `/api/corebank/v1/_admin/reset` | `BankEndpoints.PostReset` |
 | GET | `/openapi/v1.json` | `OpsEndpoints.GetOpenApiDocument` |
 | GET | `/api/corebank/v1/accounts` | `AccountEndpoints.GetAccounts` |
 | GET | `/api/corebank/v1/accounts/{accountNo}/balance` | `AccountEndpoints.GetBalance` |
 | GET | `/api/corebank/v1/accounts/{accountNo}/limit` | `AccountEndpoints.GetLimit` |
+| GET | `/api/corebank/v1/customers/{userId}` | `CustomerEndpoints.GetCustomer` |
+| GET | `/api/corebank/v1/banks` | `BankEndpoints.GetBanks` |
+| GET | `/api/corebank/v1/banks/{bankCode}` | `BankEndpoints.GetBank` |
 | GET | `/api/corebank/v1/beneficiaries?keyword=` | `TransferEndpoints.GetBeneficiaries` |
 | POST | `/api/corebank/v1/transfers` | `TransferEndpoints.PostTransfer` |
 | GET | `/api/corebank/v1/transactions` | `TransferEndpoints.GetTransactions` |
@@ -56,6 +62,10 @@ Base URL：`http://localhost:5200`，业务前缀为 `/api/corebank/v1`。MockBa
 | GET | `/api/corebank/v1/products` | `WealthEndpoints.GetProducts` |
 | GET | `/api/corebank/v1/products/{code}` | `WealthEndpoints.GetProduct` |
 | POST | `/api/corebank/v1/wealth/subscribe` | `WealthEndpoints.PostSubscribe` |
+| GET | `/api/corebank/v1/funds` | `FundEndpoints.GetFunds` |
+| GET | `/api/corebank/v1/funds/rankings` | `FundEndpoints.GetFundRankings` |
+| GET | `/api/corebank/v1/funds/{code}` | `FundEndpoints.GetFund` |
+| GET | `/api/corebank/v1/funds/{code}/nav` | `FundEndpoints.GetFundNav` |
 
 插件通过 `ICoreBankClient` 访问 MockBank/真实 CBS，不直接引用 MockBank DTO。
 
@@ -106,7 +116,7 @@ Base URL：`http://localhost:5200`，业务前缀为 `/api/corebank/v1`。MockBa
 |---|---|---|
 | `message` | string | 自然语言输入 |
 | `userId` | string | 仅用于本人一致性/代客目标校验，不是身份来源 |
-| `sessionId` | string | 当前转账幂等键来源；每笔操作应唯一 |
+| `sessionId` | string | 会话 ID。幂等键由「会话 + 付款方 + 收款方 + 金额」合成，因此同一会话可发生多笔不同转账 |
 | `slots` | object | 可选预抽取槽位 |
 | `impersonationReason` | string | 代客时必填 |
 
@@ -138,12 +148,19 @@ Base URL：`http://localhost:5200`，业务前缀为 `/api/corebank/v1`。MockBa
 - 当前事件契约是 `DomainEvent`，总线是 `InMemoryEventBus`，主要事件为 `transfer.completed`。
 - Manifest 的 `featureFlags` 仅声明；运行时强制服务未实现，不能作为安全控制。
 
+<a id="5-幂等性契约"></a>
+
 ## 8. 幂等性
 
-转账使用 `AgentRequest.SessionId`（为空时生成 GUID）作为 `TransferRecord.IdempotencyKey`，
-数据库有唯一索引；串行重复请求返回原流水。测试套件每次运行生成唯一 sessionId，连续重跑无需清库。
+转账的 `TransferRecord.IdempotencyKey` 由**「会话 + 付款方 + 收款方 + 金额」**合成
+（`TransferAgent.BuildIdempotencyKey`；会话为空时退化为随机 GUID），数据库有唯一索引。
 
-已知边界：同一 `sessionId` 不应复用于不同转账；并发同键仍需持久化抢占；
+这样定的原因：直接用 `SessionId` 当键，等于**一个会话里只能发生一次转账** ——
+多轮对话的「先转 500，再改成 800」第二次会被当成重复提交而静默跳过。
+现在的语义是：**重复提交同样的转账**被拦截，**改了金额或对象**则正常执行。
+测试套件每次运行生成唯一 sessionId，连续重跑无需清库。
+
+已知边界：并发同键仍需持久化抢占（唯一索引只保证不出现重复行，拦不住扣款已发生）；
 `CoreBankClient` 尚未把幂等键传给 CBS。
 
 ## 9. 限流契约
@@ -164,7 +181,7 @@ Base URL：`http://localhost:5200`，业务前缀为 `/api/corebank/v1`。MockBa
 
 ## 10. 审计、加密与 Migration
 
-- 审计使用 HMAC 链式签名，双写 JSONL 与独立审计数据库；异地 WORM 待实现。
+- 审计使用 HMAC 链式签名，双写 JSONL 与独立审计数据库：JSONL + 链签名为**权威记录**（请求返回前同步落盘），审计库为**可检索副本**（有界队列批量异步提交，读前 flush）；异地 WORM 待实现。
 - `TransferRecord` 的 L3 字段已标注 `[Encrypted]`，字段加密转换器已接入。
 - 基线 Migration、设计时插件发现与 Schema 初始化已存在。
 

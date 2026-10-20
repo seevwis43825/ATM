@@ -46,6 +46,8 @@ public sealed class DatabaseInitializer(
                 "数据库已用 EnsureCreated {Action}（无迁移历史，仅限开发环境）。生产请改用 Migrate 模式。",
                 created ? "创建" : "校验");
 
+            await EnableSqliteWriteAheadLogAsync(db, ct);
+
             // 审计库是**独立的 DbContext**（物理隔离），EnsureCreated 只作用于
             // 被调用的那个上下文。若不一并初始化，audit_events 表根本不存在，
             // 审计落库会持续失败 —— 而且失败被 catch 吞掉，只留一条 Critical 日志，
@@ -111,11 +113,41 @@ public sealed class DatabaseInitializer(
 
             var created = await auditDb.Database.EnsureCreatedAsync(ct);
             logger.LogInformation("审计库初始化完成（{Action}）", created ? "已建表" : "已存在");
+
+            await EnableSqliteWriteAheadLogAsync(auditDb, ct);
         }
         catch (Exception ex)
         {
             // 审计库建不出来属于合规风险，必须显式告警，不能静默
             logger.LogError(ex, "审计库初始化失败，审计记录将无法落库");
+        }
+    }
+
+    /// <summary>
+    /// 把 SQLite 库切到 WAL（预写日志）模式。
+    ///
+    /// 为什么必须开：SQLite 默认用 rollback journal，一次写事务会**锁住整个库**，
+    /// 而且每次提交都要 fsync。审计写入在请求关键路径上时，这两项会把吞吐压到
+    /// 每秒几十次。WAL 模式下读写不互斥、提交不需 fsync，批量提交的成本被大幅摊薄。
+    ///
+    /// WAL 是**库文件的持久属性**（记在文件头里），启动时设一次即可；
+    /// 非 SQLite Provider 直接跳过。
+    /// </summary>
+    /// <param name="db">数据库上下文。</param>
+    /// <param name="ct">取消令牌。</param>
+    private async Task EnableSqliteWriteAheadLogAsync(DbContext db, CancellationToken ct)
+    {
+        if (!db.Database.IsSqlite()) return;
+
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;", ct);
+            await db.Database.ExecuteSqlRawAsync("PRAGMA synchronous=NORMAL;", ct);
+        }
+        catch (Exception ex)
+        {
+            // 切模式失败不影响功能：只是并发写更容易撞锁，退化成等待与报错而已。
+            logger.LogWarning(ex, "切换 SQLite WAL 模式失败");
         }
     }
 

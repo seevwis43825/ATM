@@ -7,14 +7,18 @@
 //   3. 候选意图不硬编码，而是从「已注册 Agent（即插件）」自报的
 //      意图前缀与触发关键词生成 —— 新增插件零改动即可被模型认识。
 //
+// 本文件修掉的一个真故障：
+//   原来模型回答 unknown 时，Validate 会返回字符串 "unknown"（非 null），
+//   于是 ClassifyAsync 把它当成「模型成功识别了」，直接返回，
+//   早已算好的规则表结果被整个丢弃 —— 用户只会看到「已转人工客服」。
+//   模型判不准，本来正是规则表该上场的时候。现在 unknown 与「输出不可用」
+//   一样，都会退回规则表。
+//
 // 数据边界：送模型前对用户输入做强制脱敏（账号/手机号/身份证），
 // 与 DataMasker 的「所有 LLM 上下文都必须经过此处理」一致。
 
 using System.Diagnostics;
-using System.Text;
-using System.Text.RegularExpressions;
 using BankingAgent.Base.Agents;
-using BankingAgent.Base.Security;
 using BankingAgent.Base.Security.Audit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,15 +30,6 @@ public sealed class LlmIntentClassifier : IIntentClassifier
 {
     /// <summary>无法判定时使用的意图标识。</summary>
     public const string UnknownIntent = "unknown";
-
-    /// <summary>18 位身份证（先于账号匹配，避免被长数字规则误伤）。</summary>
-    private static readonly Regex IdCardDigits = new(@"(?<!\d)\d{18}(?!\d)", RegexOptions.Compiled);
-
-    /// <summary>11 位手机号。</summary>
-    private static readonly Regex MobileDigits = new(@"(?<!\d)1[3-9]\d{9}(?!\d)", RegexOptions.Compiled);
-
-    /// <summary>12-19 位账号 / 卡号。</summary>
-    private static readonly Regex AccountDigits = new(@"(?<!\d)\d{12,19}(?!\d)", RegexOptions.Compiled);
 
     private readonly ILlmClient _llm;
     private readonly AgentRouter _router;
@@ -65,7 +60,9 @@ public sealed class LlmIntentClassifier : IIntentClassifier
             return new IntentDecision(UnknownIntent, "rule", 0, "输入为空");
         }
 
-        // 规则结果既用于降级，也用于校验模型输出是否越界
+        // 规则结果既用于降级，也用于校验模型输出是否越界。
+        // 注意：它必须在调模型**之前**算好 —— 模型一旦答 unknown，
+        // 这份结果就是唯一的救命稻草。
         var ruleIntent = _router.InferIntentFromInput(userInput);
 
         if (!_llm.IsAvailable)
@@ -75,13 +72,15 @@ public sealed class LlmIntentClassifier : IIntentClassifier
         }
 
         var safeInput = Sanitize(userInput, _options.Value.MaxInputChars);
-        var allowed = CollectIntents(out var candidateList);
+        var candidates = IntentPromptBuilder.CollectCandidates(_router);
+        var allowed = IntentPromptBuilder.BuildAllowedSet(candidates);
 
         var sw = Stopwatch.StartNew();
         string? raw;
         try
         {
-            raw = await _llm.CompleteAsync(BuildSystemPrompt(candidateList), safeInput, ct);
+            raw = await _llm.CompleteAsync(
+                IntentPromptBuilder.BuildSystemPrompt(candidates), safeInput, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -89,106 +88,78 @@ public sealed class LlmIntentClassifier : IIntentClassifier
         }
         sw.Stop();
 
-        var parsed = Validate(raw, allowed);
+        var verdict = Validate(raw, allowed);
 
-        await WriteAuditAsync(parsed, safeInput, raw, _llm.Model, sw.ElapsedMilliseconds, ct);
+        await WriteAuditAsync(verdict.Intent, safeInput, raw, _llm.Model, sw.ElapsedMilliseconds, ct);
 
-        if (parsed is not null)
+        if (verdict.Intent is not null)
         {
             _logger.LogInformation("意图识别：{Intent}（模型 {Model}，{Elapsed}ms）",
-                parsed, _llm.Model, sw.ElapsedMilliseconds);
-            return new IntentDecision(parsed, "llm", 0.9);
+                verdict.Intent, _llm.Model, sw.ElapsedMilliseconds);
+            return new IntentDecision(verdict.Intent, "llm", 0.9, verdict.Reason);
         }
 
-        // 模型超时 / 答非所问 / 输出越界 —— 一律退回规则表，
-        // 绝不因为模型的问题让用户收到「无法处理」
-        _logger.LogWarning("模型输出无法映射到已知意图，降级规则表：{Raw}", Truncate(raw ?? "", 80));
+        // 模型超时 / 答非所问 / 输出越界 / 明确表示 unknown —— 一律退回规则表，
+        // 绝不因为模型的问题让用户收到「无法处理」。
+        var fallback = ruleIntent ?? UnknownIntent;
+        _logger.LogWarning(
+            "模型未能给出可用意图（{Reason}），降级规则表 → {Intent}",
+            verdict.Reason, fallback);
+
         return new IntentDecision(
-            ruleIntent ?? UnknownIntent, "rule", ruleIntent is null ? 0 : 0.6, "模型输出不可用");
+            fallback,
+            "rule",
+            fallback == UnknownIntent ? 0 : 0.6,
+            verdict.Reason);
     }
 
     /// <summary>
-    /// 收集候选意图：从已注册 Agent 自报的意图前缀与触发关键词生成。
-    /// 每个 Agent 只展示「第一个（场景级）」意图，让模型在场景粒度上作答，
-    /// 而不是逼它在"列卡 / 改状态"这类动作粒度上猜。
+    /// 校验模型输出：必须是已注册意图之一，否则视为不可用。
+    ///
+    /// 关键点：模型回答 unknown 时，这里返回 null 而不是 "unknown" ——
+    /// 让调用方知道「模型没给出可用答案」，从而启用规则表兜底。
     /// </summary>
-    private HashSet<string> CollectIntents(out List<(string Intent, string Name, IReadOnlyList<string> Keywords)> candidates)
+    private static ModelVerdict Validate(string? raw, HashSet<string> allowed)
     {
-        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        candidates = [];
-
-        foreach (var agent in _router.Agents)
+        if (string.IsNullOrWhiteSpace(raw))
         {
-            var intents = agent.SupportedIntents
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .ToList();
-            if (intents.Count == 0) continue;
-
-            // 全部声明都算合法输出（路由按前缀匹配，动作级意图同样能被接住）
-            foreach (var intent in intents) allowed.Add(intent);
-
-            candidates.Add((intents[0], agent.Name, agent.TriggerKeywords));
+            return new ModelVerdict(null, "模型无输出");
         }
-
-        return allowed;
-    }
-
-    /// <summary>组装系统提示：任务说明 + 候选清单 + 输出格式约束。</summary>
-    private static string BuildSystemPrompt(
-        List<(string Intent, string Name, IReadOnlyList<string> Keywords)> candidates)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("你是银行智能助手的意图识别模块。把用户的话映射到下面某一个意图。");
-        sb.AppendLine();
-        sb.AppendLine("可选意图：");
-        foreach (var (intent, name, keywords) in candidates)
-        {
-            sb.Append("- ").Append(intent).Append("（").Append(name.Trim()).Append('）');
-            if (keywords.Count > 0)
-            {
-                sb.Append("　常见说法：").Append(string.Join('、', keywords.Take(6)));
-            }
-            sb.AppendLine();
-        }
-
-        sb.AppendLine();
-        sb.AppendLine("输出要求：");
-        sb.AppendLine("1. 只输出一个意图标识本身，不要输出解释、标点、引号或多余文字。");
-        sb.AppendLine($"2. 无法判断时只输出 {UnknownIntent}。");
-        sb.AppendLine("3. 提到给某人或某账户转出资金、汇款、打钱的，归为转账类意图。");
-        return sb.ToString();
-    }
-
-    /// <summary>校验模型输出：必须是已注册意图之一，否则视为不可用。</summary>
-    private static string? Validate(string? raw, HashSet<string> allowed)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
 
         // 容错：去掉常见包裹（引号、反引号、句号、换行）
         var cleaned = raw.Trim().Trim('"', '\'', '`', '。', '.', '\n', '\r', ' ');
-        if (cleaned.Equals(UnknownIntent, StringComparison.OrdinalIgnoreCase)) return UnknownIntent;
-        if (allowed.Contains(cleaned)) return cleaned;
+        if (cleaned.Length == 0)
+        {
+            return new ModelVerdict(null, "模型输出为空");
+        }
+
+        if (cleaned.Equals(UnknownIntent, StringComparison.OrdinalIgnoreCase))
+        {
+            return new ModelVerdict(null, "模型表示无法判断");
+        }
+
+        if (allowed.Contains(cleaned))
+        {
+            return new ModelVerdict(cleaned, "模型命中已知意图");
+        }
 
         // 模型偶尔会多写一句解释，从中找出出现过的已知意图（最长优先）
         var hit = allowed
             .Where(i => cleaned.Contains(i, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(i => i.Length)
             .FirstOrDefault();
-        return hit;
+
+        return hit is not null
+            ? new ModelVerdict(hit, "模型输出中包含已知意图")
+            : new ModelVerdict(null, "模型输出了未知意图");
     }
 
     /// <summary>
     /// 送模型前的强制脱敏。账号、手机号、身份证不得离开系统边界，
     /// 而意图识别并不需要这些原文。
     /// </summary>
-    private static string Sanitize(string input, int maxChars)
-    {
-        var masked = IdCardDigits.Replace(input, m => DataMasker.MaskIdCard(m.Value));
-        masked = MobileDigits.Replace(masked, m => DataMasker.MaskPhone(m.Value));
-        masked = AccountDigits.Replace(masked, m => DataMasker.MaskAccount(m.Value));
-
-        return masked.Length <= maxChars ? masked : masked[..maxChars];
-    }
+    private static string Sanitize(string input, int maxChars) =>
+        SensitiveTextMasker.Mask(input, maxChars);
 
     /// <summary>写审计：模型调用必须留痕（模型名、是否降级、脱敏后的输入）。</summary>
     private async Task WriteAuditAsync(
@@ -217,4 +188,9 @@ public sealed class LlmIntentClassifier : IIntentClassifier
 
     private static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..max] + "...";
+
+    /// <summary>模型输出的校验结论。</summary>
+    /// <param name="Intent">识别到的意图；null 表示不可用，应降级规则表。</param>
+    /// <param name="Reason">判定原因，写入审计与日志。</param>
+    private sealed record ModelVerdict(string? Intent, string Reason);
 }

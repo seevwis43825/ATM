@@ -4,15 +4,21 @@
 >
 > 架构：**模块化单体 + 插件化扩展 + 领域驱动设计 + 事件驱动**
 > 技术栈：.NET 8（C#）、EF Core、SQLite / PostgreSQL、ASP.NET Core Minimal API
-> 当前状态：**可运行基座**。单元测试 149 项已实测通过；端到端与并发压测由 CI 持续验证。
+> 当前状态：**可运行基座**。单元测试 187 项已实测通过；端到端（70 断言）与并发压测（31 项）已在本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
 
 ---
 
 ## 一句话介绍
 
-用户打开对话界面，说一句“给张三转 500 块，备注房租”，Agent 理解意图、自主规划、调用银行工具、生成确认卡片，用户点头才真正执行。账单分析、卡片管理、理财同理。
+用户打开对话界面，说一句"给张三转 500 块，备注房租"，Agent 理解意图、自主规划、调用银行工具、生成确认卡片，用户点头才真正执行。账单分析、卡片管理、理财同理。
 
-**核心设计立场：Agent 没有执行权。** 资金类操作一律先返回“待人工确认”，用户显式确认后才会提交副作用。这不是限制，而是金融场景的合规底线。
+**核心设计立场：Agent 没有执行权。** 资金类操作一律先返回"待人工确认"，用户显式确认后才会提交副作用。这不是限制，而是金融场景的合规底线。
+
+**两个近期重点能力**：
+
+- **跨行卡片**：模拟三个彼此独立的银行核心系统（工行 / 建行 / 招行），**每家银行一个独立数据库文件**。一个客户在三家行各有一张卡，一次查询全部返回；跨行转账按行间清算双边记账。→ [`docs/13-database/02-multi-bank-databases.md`](docs/13-database/02-multi-bank-databases.md)
+- **理财 + 公募基金**：除银行自营理财外，还还原了**公募基金代销清单**——真实 6 位基金代码、基金公司、基金经理、七类基金类型、R1-R5 风险等级、管理/托管/申购/赎回费率、规模、业绩基准、90 个自然日的净值序列与三类排行；风险匹配按**「基金 × 代销行」逐对**判断，R2 客户在评级 R2 的行买 R4 产品会被拦下。
+- **语义驱动**：说"我的卡不见了"会真的去挂失，而不是回一张卡片列表；说"改成 800"能接上上一轮的转账意图。→ [`docs/plugin/03-implementation-status.md`](docs/plugin/03-implementation-status.md)
 
 ---
 
@@ -48,24 +54,29 @@
 BankingAgent.Host :5243  宿主（零业务逻辑）
   - 扫描 plugins/ 目录加载插件
   - JWT 鉴权 + RBAC + 速率限制
-  - 审计链（JSONL 文件 + 独立审计库双写）
+  - 审计链（JSONL + 链签名（**权威记录**，请求返回前同步落盘）+ `audit_events`（**可检索副本**，有界队列批量异步提交，读前 flush））
   - /api/chat 对话入口
+  - /api/ai/probe AI 连通性自检
 
 BankingAgent.Base  框架层（零业务）
   - PluginRegistry     可回收 AssemblyLoadContext 加载
-  - AgentRouter        最长前缀意图路由
+  - AgentRouter        最长前缀意图路由 + 规则表加权消歧
   - InMemoryEventBus   插件间零耦合通信
   - BankingDbContext   插件分区隔离 + 字段级加密
+  - AiConnectivityProbe 让「AI 通没通」成为可验证事实
+  - SessionMemory      多轮省略句的上下文继承
   - ComplianceGuard / AuditLogger / DataMasker / 限流
 
 plugins/  4 个插件 DLL（独立编译、独立部署）
-  - banking.transfer  转账（L3，强制人工回环）
+  - banking.transfer  转账（L3，强制人工回环，支持跨行）
   - banking.bill      账单（只读，强制脱敏）
-  - banking.card      卡片（写操作，依赖声明）
-  - banking.wealth    理财（只读：产品查询与推荐、余额查询）
+  - banking.card      卡片（写操作，依赖声明，语义驱动状态变更）
+  - banking.wealth    理财（只读：产品查询与推荐、余额查询、公募基金）
 
-MockBank.Api :5200  模拟银行核心系统（独立进程）
-  3 客户 / 6 账户 / 90+ 流水 / 理财产品 / 卡状态变更
+MockBank.Api :5200  多银行模拟核心系统（独立进程）
+  3 家银行，每家一个独立 SQLite 数据库文件
+  3 客户 / 9 账户 / 12 跨行卡片 / 150+ 流水 / 理财产品 / 公募基金
+  跨行转账（双边记账 + 行间清算）
   6 种故障注入（仅 Development，见下文安全说明）
 ```
 
@@ -79,14 +90,15 @@ ATM/
 │   ├── BankingAgent.slnx                   解决方案（.slnx 需 SDK 9.0.200+）
 │   ├── src/
 │   │   ├── BankingAgent.Plugin.Sdk/        插件契约（唯一稳定依赖面）
-│   │   ├── BankingAgent.Base/              框架层：Agents/Data/Security/Plugins/Events
-│   │   └── BankingAgent.Host/              宿主：装配 + 端点 + 中间件
+│   │   ├── BankingAgent.Base/              框架层：Agents/Ai/Data/Security/Plugins/Events
+│   │   └── BankingAgent.Host/              宿主：装配 + 端点（Endpoints/ 按职责分文件）
 │   ├── plugins/                            4 个业务插件（各自独立程序集）
-│   ├── mock-bank/MockBank.Api/             模拟银行（:5200）
+│   ├── mock-bank/MockBank.Api/             多银行模拟核心系统（:5200）
+│   │   └── data/                           各行独立数据库文件（运行后生成）
 │   ├── templates/banking-plugin/           [*] dotnet new 插件脚手架
 │   ├── PluginValidator/                    [*] 插件契约校验器（CI 门禁）
-│   ├── UnitTests/                          单元测试（当前 149 项）
-│   ├── E2ETest/                            端到端场景测试
+│   ├── UnitTests/                          单元测试（当前 187 项）
+│   ├── E2ETest/                            端到端场景测试（17 个场景）
 │   ├── StressTest/                         并发与稳定性压测
 │   ├── LoadTest/                           容量阶梯加压
 │   ├── CryptoSelfTest/                     密码学自检（ML-KEM/ML-DSA）
@@ -173,7 +185,8 @@ curl http://localhost:5243/health        # 含真实数据库健康检查
 ### 跑测试
 
 ```bash
-dotnet test src/UnitTests/UnitTests.csproj                    # 当前 149 项单元测试
+# 单元测试
+dotnet test src/UnitTests/UnitTests.csproj                    # 当前 187 项单元测试
 
 # 以下需要两个服务已启动
 dotnet run --project src/E2ETest   -- http://localhost:5243 http://localhost:5200
@@ -184,7 +197,7 @@ dotnet run --project src/LoadTest  -- http://localhost:5243 http://localhost:520
 dotnet run --project src/PluginValidator -- src/src/BankingAgent.Host/bin/Release/net8.0/plugins
 ```
 
-> **重跑前置**：转账幂等键会落库。测试套件本身已使用每次运行唯一的 sessionId，连续重跑无需手动清库；
+> **重跑前置**：转账幂等键会落库（键 = 会话 + 付款方 + 收款方 + 金额）。测试套件本身已使用每次运行唯一的 sessionId，连续重跑无需手动清库；
 > 但若你复用同一个 sessionId，第二次会被幂等拦截。必要时删除 `src/src/BankingAgent.Host/bankingagent*.db*` 清库。
 
 ---
@@ -195,7 +208,7 @@ dotnet run --project src/PluginValidator -- src/src/BankingAgent.Host/bin/Releas
 
 | 方法 | 路径 | 用途 | 鉴权 |
 |---|---|---|---|
-| GET | `/health` | 完整健康状态（含数据库真实探活） | 公开 |
+| GET | `/health` | 完整健康状态（含数据库真实探活 + AI 连通性自检结果） | 公开 |
 | GET | `/health/ready` | 就绪探针（数据库不可用返回 503） | 公开 |
 | GET | `/health/live` | 存活探针（不查数据库） | 公开 |
 | POST | `/api/auth/token` | 获取 JWT 令牌 | 公开（限流 5/分钟） |
@@ -203,6 +216,7 @@ dotnet run --project src/PluginValidator -- src/src/BankingAgent.Host/bin/Releas
 | POST | `/api/chat` | **对话入口** | 需令牌 |
 | POST | `/api/chat/confirm` | 人工确认 / 拒绝敏感操作 | 需令牌 |
 | POST | `/api/orchestrate` | 多 Agent 编排（Supervisor） | 需令牌 |
+| POST | `/api/ai/probe` | **AI 连通性自检**（真实调一次模型并回报结果） | 需令牌 |
 | GET | `/api/plugins` | 插件清单 | 需令牌 |
 | GET | `/api/plugins/agents` | 路由表（Agent 与意图） | 需令牌 |
 | GET | `/api/plugins/compliance` | 已加载合规规则 | 需令牌 |
@@ -211,6 +225,14 @@ dotnet run --project src/PluginValidator -- src/src/BankingAgent.Host/bin/Releas
 | POST | `/api/plugins/{id}/start` | 启用插件 | 仅管理员 |
 | GET | `/api/trajectory/{sessionId}` | 轨迹回放 | 需令牌 |
 | GET | `/api/trajectory` | 最近轨迹 | 需令牌 |
+
+> **模拟银行（:5200）新增端点**：
+>
+> - `GET /api/corebank/v1/banks`（银行目录，含各行独立库文件与数据规模）、`GET /api/corebank/v1/banks/{bankCode}`、`POST /api/corebank/v1/_admin/reset`（重置各行数据库并重写种子）
+> - `GET /api/corebank/v1/customers/{userId}`（客户档案，含**行内**风险评级，用于理财风险匹配）
+> - `GET /api/corebank/v1/funds`（公募基金代销清单）、`/funds/{code}`、`/funds/{code}/nav`、`/funds/rankings`
+>
+> 完整清单见 [`docs/plugin/02-api-reference.md`](docs/plugin/02-api-reference.md)。
 
 ### 试一次对话
 
@@ -237,13 +259,22 @@ curl -s -X POST http://localhost:5243/api/chat \
 |---|---|---|
 | **Agent 无执行权** | 资金操作返回 `PendingApproval`，用户确认后才提交 | ✅ 端到端验证 |
 | **三级风险分级** | 合规规则决定 ALLOW / REQUIRE_APPROVAL / DENY | ✅ 4 条内置规则 |
-| **全链路审计** | HMAC 链式签名，写入 JSONL **与独立审计库**（双写） | ✅ 实测签名链逐条衔接 |
+| **全链路审计** | HMAC 链式签名，JSONL + 链签名（**权威记录**，请求返回前同步落盘）+ `audit_events`（**可检索副本**，有界队列批量异步提交，读前 flush） | ✅ 实测签名链逐条衔接 |
 | **数据脱敏** | L1-L4 分级，L4 永不返回明文 | ✅ 29 项单测 |
 | **字段级加密** | `[Encrypted]` 标注，支持确定性加密（可等值查询） | ✅ 已标注 L3 字段 |
 | **插件化扩展** | 新场景 = 新插件，无需改宿主 | ✅ 模板 + 校验器 + 实测 |
 | **数据库迁移** | 基线迁移 + 设计时插件发现 + 自动建 Schema | ✅ 已生成 |
 | **多 Agent 编排** | Supervisor 编排器 + 轨迹日志（支持回放/分叉） | 🟡 缺 LLM 规划 |
 | **意图识别** | 规则表（插件自报关键词）打底；配置 `Ai:ApiKey` 后由**大模型**判定，失败自动降级 | ✅ 两种模式均可运行 |
+| **意图分场景/动作两层** | 场景决定路由，动作决定分支（只读 vs 写） | ✅ 已实现 |
+| **语义驱动写操作** | 「我的卡不见了」→ 挂失；「别挂失」→ 不动 | ✅ 单元测试锁定 |
+| **AI 连通性可验证** | `POST /api/ai/probe` 真实调模型并回报链路结果 | ✅ 已实现 |
+| **多轮上下文** | 「改成 800」能接上上一轮的意图与收款人 | ✅ 端到端验证 |
+| **跨行卡片** | 3 家银行各自独立数据库，卡片一次跨库聚合返回 | ✅ 端到端验证 |
+| **跨行转账清算** | 双边记账、渠道标记「跨行转账」、双边流水号 | ✅ 端到端验证 |
+| **公募基金代销** | 20 只基金主档 + 90 日净值序列 + 三类排行 | ✅ 端到端验证 |
+| **理财风险匹配** | 按「基金 × 代销行」逐对比对客户行内评级 | ✅ 端到端验证 |
+| **代码形式的触发** | 只报一个 6 位基金代码也能路由到理财 | ✅ 端到端验证 |
 | **收款人解析** | 说「给李华转 500」即按姓名解析收款账户，无需背账号 | ✅ 端到端验证 |
 
 ---
@@ -324,10 +355,70 @@ dotnet run --project src/src/BankingAgent.Host -c Release
 **接入后的行为（已实测）**
 
 - 候选意图**不是硬编码**的，而是从已注册 Agent（插件）自报的意图与触发关键词生成 → 新增插件零改动即可被模型认识；
+- 提示词里的**场景消歧规则也是自动生成的**：每个 Agent 的关键词被归到它自己的场景名下，模型据此知道「账单」和「卡」同时出现时该选哪个；
 - 送模型前对用户输入**强制脱敏**（账号 / 手机号 / 身份证），意图识别并不需要这些原文；
-- 模型超时、欠费、答非所问、输出越界 → 一律降级规则表，接口不返回失败；
-- 每次模型调用写审计：`Operation=llm.intent.classify`，含模型名、是否降级、脱敏后的输入；
-- 自检：`GET /health` 的 `ai` 字段会告诉你当前走的是 `rule` 还是 `llm+rule`。
+- 模型超时、欠费、答非所问、输出越界、**回答 unknown** → 一律降级规则表，接口不返回失败；
+  （早期实现里模型答 unknown 会把已经算好的规则表结果整个丢弃，用户只会看到「已转人工客服」——已修复并有单元测试锁定）
+- 每次模型调用写审计：`Operation=llm.intent.classify`，含模型名、是否降级、脱敏后的输入。
+
+### 怎么确认「AI 真的通了」
+
+`GET /health` 的 `ai` 字段只说明"配置了没有"，**不能证明模型真的可用**。因此提供了一个自检端点：
+
+```bash
+# 真实调用一次模型，把整条链路摊开给你看
+curl -X POST http://localhost:5243/api/ai/probe \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"我上个月花了多少钱"}'
+```
+
+```json
+{
+  "modelConfigured": true,
+  "callSucceeded": true,
+  "mappedToKnownIntent": true,
+  "model": "deepseek-chat",
+  "rawOutput": "bill.summary",
+  "resolvedIntent": "bill.summary",
+  "elapsedMs": 412,
+  "summary": "模型连通，测试句被识别为 bill.summary"
+}
+```
+
+自检走的是**与真实意图识别完全相同的提示词**（`IntentPromptBuilder`），
+因此「探针通过」就等于「真实链路通」。探针结果会留在 `/health` 的 `ai.lastProbe` 里。
+
+### 意图分两层：场景与动作
+
+| 层 | 取值示例 | 决定什么 |
+|---|---|---|
+| **场景** | `card` / `bill` / `transfer` / `wealth` | 路由到哪个 Agent |
+| **动作** | `card.status` / `transfer.execute` / `bill.summary` | Agent 走只读分支还是写分支 |
+
+过去这两层被压成同一个字符串，产生了一个很隐蔽的故障：
+模型已经判定意图是 `card.status`（要改卡状态），但 Agent 内部仍然只按
+「原文里有没有『挂失』两个字」来决定要不要写 —— 于是用户说「我的卡不见了」时，
+**语义识别对了，功能却没触发**。
+
+现在：
+
+- 模型负责**场景与动作**（`IntentContext` 拆层）；
+- 各插件用**语义解析器**决定具体动作（`CardStatusResolver` 认得「丢了 / 不见了 / 被冻了 / 找回来了」），
+  且**只认原文里明确表达的动作**——「卡不能用了」这种含糊说法不触发写操作，宁可漏判不可错判；
+- 模型判不出时，规则表按**关键词长度加权 + 否定词剔除**兜底（「不要转账」里的「转账」不算命中）。
+
+### 多轮上下文
+
+「给李华转 500」之后接一句「改成 800」，第二句没有任何业务关键词。
+`SessionMemory` 记住上一轮的意图、原话与槽位（**按用户隔离**，会话标识由客户端提供，
+不与用户绑定就能跨用户读到上下文），第二句因此能路由到转账 Agent，
+并从上一句里补出收款人。
+
+> 幂等键因此也改了：早期直接拿 `sessionId` 当键，等于**一个会话里只能发生一次转账**，
+> 多轮的「先转 500 再改成 800」第二次会被静默跳过。
+> 现在键是「会话 + 操作要素（付款方 / 收款方 / 金额）」：
+> 重复提交**同样的**转账仍被幂等拦截，改了金额则正常执行。
 
 ---
 

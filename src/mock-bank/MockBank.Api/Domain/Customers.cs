@@ -21,8 +21,15 @@ public enum RiskLevel
 /// <summary>银行客户（自然人）实体，模拟核心系统的客户主档。</summary>
 public sealed record Customer
 {
-    /// <summary>客户号，全局唯一（演示数据形如 u_demo01）。</summary>
+    /// <summary>
+    /// 客户号，全局唯一（演示数据形如 u_demo01）。
+    /// 同一个自然人在多家银行开户时，各行使用**各自**的客户主档，
+    /// 但沿用同一个客户号，以便跨行聚合查询能识别出「同一个人」。
+    /// </summary>
     public required string UserId { get; init; }
+
+    /// <summary>客户号所属银行的行代码（如 ICBC）。</summary>
+    public required string BankCode { get; init; }
 
     /// <summary>客户姓名。</summary>
     public required string Name { get; init; }

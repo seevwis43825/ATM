@@ -7,7 +7,7 @@
 
 ## 0. 现状与目标边界
 
-> **Current（源码可验证）**：宿主使用 .NET 控制台日志，并提供 `/health`、`/health/ready`、`/health/live`；健康检查会实际查询数据库。审计另走 HMAC 链 JSONL 与 `audit_events` 双写。仓库中未发现 Prometheus 指标端点、Grafana Dashboard、AlertManager 规则、ELK/Filebeat、OpenTelemetry/Jaeger 上报或生产告警路由的落地配置。
+> **Current（源码可验证）**：宿主使用 .NET 控制台日志，并提供 `/health`、`/health/ready`、`/health/live`；健康检查会实际查询数据库。审计另走 HMAC 链 JSONL（权威记录）与 `audit_events`（可检索副本，批量异步提交）双写。仓库中未发现 Prometheus 指标端点、Grafana Dashboard、AlertManager 规则、ELK/Filebeat、OpenTelemetry/Jaeger 上报或生产告警路由的落地配置。
 >
 > **Target / Runbook（规划）**：本文其余指标名、阈值、保留期、Dashboard、告警和值班流程是生产可观测性目标。上线前需以实际埋点、部署清单、告警试触发和留存策略作为验收证据。
 

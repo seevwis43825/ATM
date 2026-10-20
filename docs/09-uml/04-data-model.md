@@ -22,6 +22,23 @@
 
 默认宿主配置是 SQLite + `EnsureCreated`。PostgreSQL 模型、设计时插件发现、插件 Schema 映射和 `Migrate` 初始化路径均已实现。
 
+### 1.1 边界澄清：宿主的库 ≠ 模拟银行的库
+
+本文描述的是**宿主**（`BankingAgent.Host`）自己的数据层。它和模拟银行（`MockBank.Api`）的库是**两套完全独立的东西**，不要混为一谈：
+
+| | 宿主库 | 模拟银行库 |
+|---|---|---|
+| 位置 | `src/src/BankingAgent.Host/bankingagent.db` | `src/mock-bank/MockBank.Api/App_Data/mockbank_*.db` |
+| 归属 | `BankingDbContext` + `AuditDbContext` | 每家银行一个 `BankDbContext` |
+| 装什么 | 插件业务表（`transfer_records`）、审计表（`audit_events`） | 客户、账户、卡、流水、理财产品、公募基金 |
+| 谁写 | 插件（经 `IEntitySetContributor`） | Mock Bank 自身；宿主只通过 HTTP 契约读 |
+| 数量 | 2 个（业务库 + 审计库） | 3 个（工行 / 建行 / 招行，各一个独立文件） |
+
+模拟银行的多银行多数据库设计（含跨行转账的双边记账）详见
+[`../13-database/02-multi-bank-databases.md`](../13-database/02-multi-bank-databases.md)。
+
+<a id="1-er-图"></a>
+
 ## 2. Current：ER 图
 
 ```mermaid
@@ -146,15 +163,35 @@ flowchart LR
 
 这些关系不建立外键，原因是数据权威和生命周期属于核心系统。插件库保存的是转账执行记录，不能通过级联删除清除历史。
 
-## 4. Current：`audit_events` 与 JSONL 双写
+## 4. Current：`audit_events` 与 JSONL 双写（权威 + 可检索副本）
 
 审计已经落库，不是规划表。`AuditLogger.WriteAsync` 的顺序是：
 
 ```text
-构造链式签名 → 写 JSONL 文件 → 写 IAuditRepository / audit_events
+构造链式签名 → 写 JSONL 文件（同步，权威）→ 事件入有界队列
+                                              ↓
+                              AuditDbWriter 攒批 → 写 audit_events（异步，可检索副本）
 ```
 
-文件提供离线证据链，数据库提供按操作者哈希、场景和时间检索的能力。数据库写入失败不会回滚业务流程，但会记录 `Critical` 日志。
+**两路的权威性不同，这是本轮改动带来的关键语义**：
+
+- **JSONL + 链签名是权威记录**。请求返回前同步落盘；审计的**可篡改性**由链式签名保证
+  （任何篡改都会导致链断裂），不依赖数据库。
+- **`audit_events` 是可检索副本**。事件先入有界队列，由后台写入器攒批（默认 200 条）
+  一次事务提交。之所以必须批量：逐条同步提交意味着每条事件付一次 SQLite 事务提交成本
+  （含 fsync），而审计写在请求关键路径上，进程内实测逐条 **142~233 条/秒**、
+  批量 **2989~4129 条/秒**（快 17.7~25.7 倍，见 `docs/11-performance/01-capacity-test-report.md`）。
+- **检索有 Provider 差异**（2026-10-20 修复）：EF 的 SQLite provider 拒绝翻译
+  `DateTimeOffset` 的 ORDER BY，会让 `QueryAsync` / `VerifyChainAsync` 直接抛
+  `NotSupportedException`。现按 Provider 分支：SQLite 排序放内存（**不改存储格式**，
+  存量审计库照常可读），PostgreSQL（`timestamptz`）保持库内排序。
+  覆盖测试：`src/UnitTests/AuditBatchedWriterTests.cs`。
+- **读路径先 flush**：`BatchedAuditRepository` 在查询/计数/验链前调用 `FlushAsync`，
+  保证"写完立刻查"能查到，不出现读己所写不一致。
+- **队列有界且满了背压等待，绝不丢审计记录**；停机时 drain，不留审计尾巴。
+
+数据库写入失败不会回滚业务流程，但会记录 `Critical` 日志。
+崩溃时最多丢失尚未批量提交的**数据库副本**尾部，JSONL 与签名链完好无损。
 
 ### 4.1 审计库隔离
 
@@ -188,6 +225,8 @@ flowchart LR
 - `RequestId`。
 
 文件和数据库均保存操作者 ID 的哈希，不保存明文 `ActorId`。仓储接口不暴露 UPDATE/DELETE。
+
+<a id="5-插件分区策略"></a>
 
 ## 5. Current：Provider 与插件分区
 
@@ -257,8 +296,10 @@ src/src/BankingAgent.Base/Data/Migrations
 5. `Amount` 等未标记 `[Encrypted]` 的字段不会由字段加密转换器处理。
 6. `[Encrypted(Searchable = true)]` 使用确定性加密，会泄露“两个密文是否来自相同明文”的等值关系；只应用于确需查询/索引的字段。
 7. `AuditDbContext` 目前没有独立 Migration，仍由 `EnsureCreated` 初始化。
-8. JSONL 与数据库双写不是分布式事务；数据库写失败时文件可能已有记录。
+8. JSONL 与数据库双写不是分布式事务；数据库写失败时文件可能已有记录。数据库副本为**批量异步提交**，崩溃时可能落后于文件（JSONL 与链签名仍完整）。
 9. 当前只有一个业务表贡献器，尚未以多个持久化插件做生产规模验证。
+
+<a id="9-已知缺口与改进项"></a>
 
 ## 8. Target：后续数据模型增强
 

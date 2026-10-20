@@ -22,14 +22,14 @@ public static class TransferEndpoints
         var group = app.MapGroup(RoutePrefix).WithTags("转账与流水");
 
         group.MapPost("/transfers", PostTransfer)
-            .WithMetadata(new ApiOperationMetadata("PostTransfer", "行内转账：校验账户状态、单日限额与余额后记账，返回核心系统交易流水号。支持 X-Mock-Scenario 故障注入。", "行内转账：校验账户状态、单日限额与余额后记账，返回核心系统交易流水号。支持 X-Mock-Scenario 故障注入。", ["转账与流水"], typeof(TransferRequest)))
+            .WithMetadata(new ApiOperationMetadata("PostTransfer", "转账：校验账户状态、单日限额与余额后记账，支持行内与跨行（付款行与收款行不同）两种场景，返回双边流水号。支持 X-Mock-Scenario 故障注入。", "转账：校验账户状态、单日限额与余额后记账，支持行内与跨行（付款行与收款行不同）两种场景，返回双边流水号。支持 X-Mock-Scenario 故障注入。", ["转账与流水"], typeof(TransferRequest)))
             .Accepts<TransferRequest>("application/json")
             .Produces<TransferResponse>(StatusCodes.Status200OK)
             .Produces<ApiErrorResponse>(StatusCodes.Status400BadRequest)
             .Produces<ApiErrorResponse>(StatusCodes.Status404NotFound);
 
         group.MapGet("/beneficiaries", GetBeneficiaries)
-            .WithMetadata(new ApiOperationMetadata("GetBeneficiaries", "按姓名或手机号检索行内收款人，返回可用于行内转账的储蓄账户。", "按姓名或手机号检索行内收款人，返回可用于行内转账的储蓄账户。", ["转账与流水"]))
+            .WithMetadata(new ApiOperationMetadata("GetBeneficiaries", "按姓名或手机号检索收款人，返回可用于转账的储蓄账户。跨行同名客户会返回多条，每条带开户行代码与名称。", "按姓名或手机号检索收款人，返回可用于转账的储蓄账户。跨行同名客户会返回多条，每条带开户行代码与名称。", ["转账与流水"]))
             .Produces<IReadOnlyList<BeneficiaryResponse>>(StatusCodes.Status200OK);
 
         group.MapGet("/transactions", GetTransactions)
@@ -79,7 +79,7 @@ public static class TransferEndpoints
             statusCode: outcome.StatusCode);
     }
 
-    /// <summary>GET /api/corebank/v1/beneficiaries — 按姓名或手机号检索行内收款人。</summary>
+    /// <summary>GET /api/corebank/v1/beneficiaries — 按姓名或手机号检索收款人。</summary>
     /// <param name="keyword">姓名或手机号片段。</param>
     /// <param name="store">账本。</param>
     /// <returns>匹配到的收款账户列表；关键词为空时返回空列表。</returns>
@@ -92,18 +92,26 @@ public static class TransferEndpoints
 
         var k = keyword.Trim();
         var matches = new List<BeneficiaryResponse>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
 
+        // 客户主档是行内的：同一个人在不同银行各有一份，因此要逐行客户主档检索，
+        // 并且只取该行名下的账户，否则会把同一个人的其他行账户重复列出来。
         foreach (var customer in store.Customers)
         {
             var hit = customer.Name.Contains(k, StringComparison.Ordinal)
                       || customer.Phone.Contains(k, StringComparison.Ordinal);
             if (!hit) continue;
 
-            // 只返回储蓄账户：信用卡账户不能作为行内转账的收款方。
-            matches.AddRange(store.GetAccountsByUser(customer.UserId)
-                .Where(a => a.AccountType == AccountType.Savings)
-                .Select(a => new BeneficiaryResponse(
-                    customer.Name, a.AccountNo, a.AccountTypeText, a.BranchName)));
+            // 只返回储蓄账户：信用卡账户不能作为转账的收款方。
+            foreach (var account in store.GetAccountsByUser(customer.UserId, customer.BankCode)
+                         .Where(a => a.AccountType == AccountType.Savings))
+            {
+                if (!seen.Add(account.AccountNo)) continue;
+
+                matches.Add(new BeneficiaryResponse(
+                    customer.Name, account.AccountNo, account.AccountTypeText,
+                    customer.BankCode, BankCatalog.FullNameOf(customer.BankCode), account.BranchName));
+            }
         }
 
         return Results.Ok(matches);
@@ -202,7 +210,8 @@ public static class TransferEndpoints
             statusCode: StatusCodes.Status400BadRequest);
 
     private static TransactionResponse ToResponse(BankTransaction transaction) =>
-        new(transaction.TxNo, transaction.UserId, transaction.AccountNo, transaction.DirectionText,
+        new(transaction.TxNo, transaction.BankCode, BankCatalog.FullNameOf(transaction.BankCode),
+            transaction.UserId, transaction.AccountNo, transaction.DirectionText,
             transaction.Amount, transaction.SignedAmount, transaction.Category, transaction.Merchant,
             transaction.CounterpartyName, transaction.CounterpartyAccountNo, transaction.ChannelText,
             transaction.Remark, transaction.Currency, transaction.Timestamp);

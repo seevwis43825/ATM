@@ -3,10 +3,12 @@
 
 namespace BankingAgent.Base.Data;
 
+using BankingAgent.Base.Security.Audit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 /// <summary>数据库基础设施装配扩展。</summary>
 public static class DatabaseServiceCollectionExtensions
@@ -56,7 +58,24 @@ public static class DatabaseServiceCollectionExtensions
         // "Cannot consume scoped service from singleton" 并拒绝启动。
         // EfAuditRepository 本身无状态，每次调用通过 IDbContextFactory
         // 新建 DbContext，因此是线程安全且适合单例的。
-        services.AddSingleton<IAuditRepository, EfAuditRepository>();
+        services.AddSingleton<EfAuditRepository>();
+
+        // 审计库写入改为「入队 + 后台批量提交」。
+        // 为什么：逐条同步提交意味着每条审计事件付一次 SQLite 事务提交成本（含 fsync），
+        // 而审计写在请求关键路径上，实测把宿主吞吐压到每秒二十来次
+        // （对照：同一台机器上 /health 探针能跑 1100+ req/s）。
+        // 权威记录仍然是同步的（HMAC 链式签名 + JSONL 归档），数据库只是可检索副本。
+        //
+        // 注意依赖方向：批量写入器依赖的是**具体的** EfAuditRepository（真正的落库实现），
+        // 而不是 IAuditRepository —— 后者会与装饰器形成循环依赖（装饰器需要写入器，
+        // 写入器又需要仓储），容器启动时直接抛循环依赖异常。
+        services.AddSingleton<AuditDbWriter>(sp => new AuditDbWriter(
+            sp.GetRequiredService<EfAuditRepository>(),
+            sp.GetRequiredService<ILogger<AuditDbWriter>>()));
+        services.AddHostedService(sp => sp.GetRequiredService<AuditDbWriter>());
+        services.AddSingleton<IAuditRepository>(sp => new BatchedAuditRepository(
+            sp.GetRequiredService<EfAuditRepository>(),
+            sp.GetRequiredService<AuditDbWriter>()));
 
         // ===== 4. 工作单元与初始化器 =====
         services.AddScoped<UnitOfWork>();

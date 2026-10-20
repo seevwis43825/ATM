@@ -171,10 +171,31 @@ public sealed class CoreBankClient(
             UserId = c.UserId,
             CardType = c.CardType,
             Status = c.Status,
+            BankCode = c.BankCode,
+            BankName = c.BankName,
             BoundPhone = c.BoundPhone,
             DailyLimit = c.DailyLimit,
             AccountNo = c.AccountNo
         }).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<BankSnapshot>> ListBanksAsync(CancellationToken ct = default)
+    {
+        var resp = await httpClient.GetAsync(Url("/banks"), ct);
+        if (!resp.IsSuccessStatusCode) return [];
+
+        // /banks 返回的是带嵌套统计字段的概览体，这里只取银行基本信息部分。
+        var overviews = await resp.Content.ReadFromJsonAsync<List<BankOverviewDto>>(JsonOpts, ct) ?? [];
+        return overviews
+            .Where(o => o.Bank is not null)
+            .Select(o => new BankSnapshot
+            {
+                BankCode = o.Bank!.BankCode,
+                BankName = o.Bank.BankName,
+                ShortName = o.Bank.ShortName
+            })
+            .ToList();
     }
 
     /// <inheritdoc />
@@ -191,6 +212,7 @@ public sealed class CoreBankClient(
             Name = b.Name,
             AccountNo = b.AccountNo,
             AccountType = b.AccountType,
+            BankCode = b.BankCode,
             BankName = b.BankName
         }).ToList();
     }
@@ -212,10 +234,33 @@ public sealed class CoreBankClient(
             UserId = dto.UserId,
             CardType = dto.CardType,
             Status = dto.Status,
+            BankCode = dto.BankCode,
+            BankName = dto.BankName,
             BoundPhone = dto.BoundPhone,
             DailyLimit = dto.DailyLimit,
             AccountNo = dto.AccountNo
         };
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<CustomerSnapshot>> GetCustomersAsync(
+        string userId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId)) return [];
+
+        var resp = await httpClient.GetAsync(Url($"/customers/{Uri.EscapeDataString(userId)}"), ct);
+        if (!resp.IsSuccessStatusCode) return [];
+
+        var list = await resp.Content.ReadFromJsonAsync<List<CustomerDto>>(JsonOpts, ct) ?? [];
+        return list.Select(c => new CustomerSnapshot
+        {
+            UserId = c.UserId,
+            BankCode = c.BankCode,
+            BankName = c.BankName,
+            Name = c.Name,
+            RiskLevel = c.RiskLevel,
+            CustomerLevel = c.CustomerLevel
+        }).ToList();
     }
 
     /// <inheritdoc />
@@ -257,13 +302,98 @@ public sealed class CoreBankClient(
         return new SubscriptionResult { Success = true, SubscriptionNo = ok?.SubscriptionNo ?? ok?.OrderNo };
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<FundSnapshot>> ListFundsAsync(
+        FundQuery query, CancellationToken ct = default)
+    {
+        var parameters = new List<string>();
+        AppendQuery(parameters, "category", query.Category);
+        AppendQuery(parameters, "riskLevel", query.RiskLevel);
+        AppendQuery(parameters, "company", query.Company);
+        AppendQuery(parameters, "keyword", query.Keyword);
+        AppendQuery(parameters, "bankCode", query.BankCode);
+        if (query.Limit > 0) parameters.Add($"limit={query.Limit}");
+
+        var url = Url("/funds") + (parameters.Count > 0 ? "?" + string.Join("&", parameters) : string.Empty);
+        var resp = await httpClient.GetAsync(url, ct);
+        if (!resp.IsSuccessStatusCode) return [];
+
+        var list = await resp.Content.ReadFromJsonAsync<List<FundDto>>(JsonOpts, ct) ?? [];
+        return list.Select(MapFund).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<FundSnapshot?> GetFundAsync(string fundCode, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(fundCode)) return null;
+
+        var resp = await httpClient.GetAsync(Url($"/funds/{Uri.EscapeDataString(fundCode)}"), ct);
+        if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+        if (!resp.IsSuccessStatusCode) return null;
+
+        var dto = await resp.Content.ReadFromJsonAsync<FundDto>(JsonOpts, ct);
+        return dto is null ? null : MapFund(dto);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<FundNavPointSnapshot>> GetFundNavAsync(
+        string fundCode, int days, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(fundCode)) return [];
+
+        var url = Url($"/funds/{Uri.EscapeDataString(fundCode)}/nav?days={Math.Max(0, days)}");
+        var resp = await httpClient.GetAsync(url, ct);
+        if (!resp.IsSuccessStatusCode) return [];
+
+        var dto = await resp.Content.ReadFromJsonAsync<FundNavResponseDto>(JsonOpts, ct);
+        return (dto?.NavPoints ?? []).Select(p => new FundNavPointSnapshot
+        {
+            FundCode = p.FundCode,
+            NavDate = p.NavDate,
+            UnitNav = p.UnitNav,
+            AccumulatedNav = p.AccumulatedNav,
+            DailyGrowthRate = p.DailyGrowthRate,
+        }).ToList();
+    }
+
     // ===== DTO 映射 =====
+
+    private static void AppendQuery(List<string> parameters, string name, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        parameters.Add($"{name}={Uri.EscapeDataString(value)}");
+    }
+
+    private static FundSnapshot MapFund(FundDto f) => new()
+    {
+        FundCode = f.FundCode,
+        FundName = f.FundName,
+        FundFullName = f.FundFullName,
+        Category = f.Category,
+        RiskLevel = f.RiskLevel,
+        FundCompany = f.FundCompany,
+        FundManager = f.FundManager,
+        NavDate = f.NavDate,
+        UnitNav = f.UnitNav,
+        AccumulatedNav = f.AccumulatedNav,
+        DailyGrowthRate = f.DailyGrowthRate,
+        MonthlyReturn = f.MonthlyReturn,
+        YearlyReturn = f.YearlyReturn,
+        SinceInceptionReturn = f.SinceInceptionReturn,
+        FundScale = f.FundScale,
+        SubscriptionStatus = f.SubscriptionStatus,
+        MinPurchaseAmount = f.MinPurchaseAmount,
+        DistributorBankCodes = f.DistributorBankCodes,
+        RiskNote = f.RiskNote,
+    };
 
     private static AccountSnapshot Map(AccountDto a) => new()
     {
         AccountNo = a.AccountNo,
         UserId = a.UserId,
         HolderName = a.HolderName,
+        BankCode = a.BankCode,
+        BankName = a.BankName,
         AccountType = a.AccountType,
         Balance = a.Balance,
         CreditLimit = a.CreditLimit,
@@ -337,6 +467,8 @@ internal sealed class AccountDto
     public string AccountNo { get; set; } = "";
     public string UserId { get; set; } = "";
     public string HolderName { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public string BankName { get; set; } = "";
     public string AccountType { get; set; } = "储蓄卡";
     public decimal Balance { get; set; }
     public decimal? CreditLimit { get; set; }
@@ -362,9 +494,36 @@ internal sealed class CardDto
     public string UserId { get; set; } = "";
     public string CardType { get; set; } = "";
     public string Status { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public string BankName { get; set; } = "";
     public string? BoundPhone { get; set; }
     public decimal DailyLimit { get; set; }
     public string AccountNo { get; set; } = "";
+}
+
+/// <summary>银行目录项（/banks 响应体中的银行基本信息部分）。</summary>
+internal sealed class BankDto
+{
+    public string BankCode { get; set; } = "";
+    public string BankName { get; set; } = "";
+    public string ShortName { get; set; } = "";
+}
+
+/// <summary>银行概览（/banks 响应体）。</summary>
+internal sealed class BankOverviewDto
+{
+    public BankDto? Bank { get; set; }
+}
+
+/// <summary>客户档案（/customers/{userId} 响应体）。</summary>
+internal sealed class CustomerDto
+{
+    public string UserId { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public string BankName { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string RiskLevel { get; set; } = "";
+    public string CustomerLevel { get; set; } = "";
 }
 
 internal sealed class ProductDto
@@ -384,6 +543,7 @@ internal sealed class BeneficiaryDto
     public string Name { get; set; } = "";
     public string AccountNo { get; set; } = "";
     public string AccountType { get; set; } = "储蓄账户";
+    public string BankCode { get; set; } = "";
     public string BankName { get; set; } = "";
 }
 
@@ -400,6 +560,46 @@ internal sealed class StatementDto
     public int TransactionCount { get; set; }
     public List<CategoryDto>? Categories { get; set; }
     public List<DailyDto>? DailyTrend { get; set; }
+}
+
+/// <summary>公募基金（与 Mock Bank 的 FundResponse 对齐）。</summary>
+internal sealed class FundDto
+{
+    public string FundCode { get; set; } = "";
+    public string FundName { get; set; } = "";
+    public string FundFullName { get; set; } = "";
+    public string Category { get; set; } = "";
+    public string RiskLevel { get; set; } = "";
+    public string FundCompany { get; set; } = "";
+    public string FundManager { get; set; } = "";
+    public DateTime NavDate { get; set; }
+    public decimal UnitNav { get; set; }
+    public decimal AccumulatedNav { get; set; }
+    public decimal DailyGrowthRate { get; set; }
+    public decimal MonthlyReturn { get; set; }
+    public decimal YearlyReturn { get; set; }
+    public decimal SinceInceptionReturn { get; set; }
+    public decimal FundScale { get; set; }
+    public string SubscriptionStatus { get; set; } = "";
+    public decimal MinPurchaseAmount { get; set; }
+    public string DistributorBankCodes { get; set; } = "";
+    public string RiskNote { get; set; } = "";
+}
+
+/// <summary>基金净值历史点（与 Mock Bank 的 FundNavPointResponse 对齐）。</summary>
+internal sealed class FundNavPointDto
+{
+    public string FundCode { get; set; } = "";
+    public DateTime NavDate { get; set; }
+    public decimal UnitNav { get; set; }
+    public decimal AccumulatedNav { get; set; }
+    public decimal DailyGrowthRate { get; set; }
+}
+
+/// <summary>基金详情 + 净值序列（与 Mock Bank 的 FundNavResponse 对齐）。</summary>
+internal sealed class FundNavResponseDto
+{
+    public List<FundNavPointDto>? NavPoints { get; set; }
 }
 
 internal sealed class CategoryDto

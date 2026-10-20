@@ -2,36 +2,51 @@
 
 > **用途**：诚实记录「设计文档里写的」与「代码里实际有的」之间的差异
 > **原则**：不美化。未实现就说未实现，并说明原因与补齐路径
-> **更新**：2026-09-28
+> **更新**：2026-10-20
 
 ---
 
-## 0. 本轮变更摘要（2026-09-28）
+## 0. 本轮变更摘要（2026-10-20）
 
-本轮修掉了 **6 个「静默失效」缺陷** —— 共同特征是：编译通过、运行不报错、
-测试也不红，只有数据落盘或真正调用时才发现没生效。
+本轮做了四件事：**跨行卡片（多银行 + 多数据库）**、**公募基金数据**、
+**AI 语义链路连通**、**可读性重构**。前两项与第三项各自修掉了一批
+「编译通过、运行不报错、测试也不红，只有真正调用才暴露」的缺陷。
+
+### 0.1 语义链路：识别对了却没做出对应功能
+
+这是本轮最核心的问题 —— **「AI 功能没有实际作用」** 的根因不止一个：
 
 | # | 缺陷 | 为什么之前没被发现 | 现在的验证方式 |
 |---|------|------------------|--------------|
-| 1 | **字段级加密链路完全失效** | 工厂没传 `ICryptoService`，`ApplyFieldEncryption` 首行即 `return`，无日志 | `DatabaseLayerTests`：有 crypto 时转换器存在、无 crypto 时不存在（反向断言） |
-| 2 | **`[Encrypted]` 特性从未被检测** | 代码查模型注解，但没有任何地方 `SetAnnotation`，分支永不可达 | 同上 |
-| 3 | **多 Schema 隔离不生效** | `HasDefaultSchema` 是全局设置，循环内调用只有最后一次生效 | `DatabaseLayerTests`：两个贡献器各自 Schema，且与注册顺序无关 |
-| 4 | **EF 模型缓存键过窄** | 默认只按 DbContext 类型缓存，而模型随「插件集合 + 是否加密」变化 | 新增 `IModelCacheKeyFactory`；该缺陷是写测试时才暴露的 |
-| 5 | **审计库从未初始化** | 审计是独立 DbContext，`EnsureCreated` 只作用于被调用的那个；写入失败被 catch 成一条日志 | `AuditPersistenceTests`：真建库、真写、真查 |
-| 6 | **`EnsureCreated` 按整库判断** | 两个 DbContext 共用一个 SQLite 文件时，后建的整体跳过，建不出自己模型的表 | 实测：先业务库后审计库，最终只剩 `audit_events`，业务表反而消失 |
+| 1 | **模型答 unknown 时，规则表结果被整个丢弃** | `Validate` 对 unknown 返回字符串 `"unknown"` 而非 null，被上层当成「模型成功识别」，于是早已算好的规则表结果被覆盖。用户只看到「已转人工客服」 | `IntentRecognitionTests`：模型答 unknown 必须回退规则表 |
+| 2 | **动作级意图没有驱动 Agent 分支** | 模型已经判定 `card.status`（要改卡状态），但 Agent 内部仍然只按「原文里有没有『挂失』两个字」决定写不写。于是「我的卡不见了」**语义识别对了，功能却没触发** | `IntentRecognitionTests` + 端到端场景 13 |
+| 3 | **规则表只做最长关键词匹配** | 「查一下我上个月卡里的账单」被「卡」抢走，判成卡片而不是账单 | `IntentRecognitionTests`：更长关键词优先 |
+| 4 | **否定词被当成命中** | 「不要转账」里的「转账」照样命中，违反用户本意 | `IntentRecognitionTests`：否定词不计分 |
+| 5 | **未知意图是死胡同** | 兜底文案只有「已转人工客服」，既没说清哪里没听懂，也没告诉他能干什么 | 端到端场景 14：返回能力清单 |
+| 6 | **AI 是否连通不可验证** | 只能看日志里"调过模型"就算通了，无法证明模型真的返回了可用意图 | `POST /api/ai/probe` 真实调一次模型并回报链路结果 |
+| 7 | **一个会话里只能发生一次转账** | `sessionId` 被直接当幂等键，多轮的「先转 500 再改成 800」第二次被静默跳过 | 幂等键改为「会话 + 操作要素」；端到端场景 15 |
+| 8 | **多轮省略句无法识别** | 第二句「改成 800」没有任何业务关键词，识别不出来 | `SessionMemory` 记住上一轮意图与原话；端到端场景 15 |
 
-另修复两个配置级问题：
+### 0.2 多银行与多数据库
 
-- **密钥入库**：`appsettings.Development.json` 一直被 git 跟踪（尽管 `.gitignore` 有规则），
-  内含真实 AES-256 主密钥。现已解除跟踪 + 提供 `.example` 模板 + Development 派生密钥兜底。
-- **限流档位被全局参数削弱**：Strict（认证）档桶容量原本从全局 `BurstCapacity` 推导，
-  为缓解普通接口突发而调大全局值后，登录防爆破能力被同步削弱
-  （实测 10 次连取令牌全部放行）。现各档桶容量受自身每分钟许可数约束，
-  全局值只能收紧不能放宽。
+| # | 缺陷 / 需求 | 现在的验证方式 |
+|---|------------|--------------|
+| 9 | **跨行卡片**需要多行数据，原先是单库单行 | 3 家银行各一个独立 SQLite 文件；端到端场景 11 |
+| 10 | **流水号与种子数据重号** | 流水号序号来自内存计数器，重启后从 0 开始，与种子里的流水撞号 → `UNIQUE constraint failed: transactions.TxNo`，表现为「重启后转账接口必然 500」 |
+| 11 | **SQLite 时间区间比较出错** | `DateTimeOffset` 默认按带偏移的文本存储，跨偏移量比较结果错误，账单按月统计会算错。已统一转 UTC `DateTime` 存储 |
+| 12 | **并发访问同一库文件时「库被锁」** | 演示环境「宿主调 Mock Bank」与「E2E 脚本直连」并发访问是常态。已切 WAL 模式 + `Default Timeout=30` |
+| 13 | **`EnsureCreated()` 不演进结构** | 库已存在时它什么都不做也不报错，「模型加了表、旧库没有」会在第一次查询新表时才炸 `no such table`，错误指向业务查询，排查方向被带偏。已改为检测缺表 → 重建该行库 → 重写种子并告警 |
 
-> **通用教训**：这类缺陷无法靠 review 发现，只能靠**针对失败模式的显式断言**
-> （尤其是反向断言，例如「没有 crypto 时不应有转换器」）
-> 以及**容器装配校验**（`ValidateOnBuild` + `ValidateScopes`）兜住。
+### 0.3 可读性
+
+- 删除脚手架残留 `BankingAgent.Base/Class1.cs`；
+- 消除同一接口的两套实现（`SimpleDbContextFactory` 与 `BankingDbContextFactory` 都实现 `IDbContextFactory<BankingDbContext>`，生产用后者、测试用前者）—— 现只保留 `BankingDbContextFactory`；
+- 宿主 `Program.cs` 从 697 行拆成「装配文件 + `Endpoints/` 按职责分文件 + `Contracts/` 契约」；
+- 插件内新增语义解析器与基类辅助，消除各 Agent 重复的意图判断样板。
+
+> **通用教训**：这一轮的缺陷全部属于「**看起来能跑**」那一类。语义链路的问题不会让接口报错，
+> 它只会让用户得到一个「说得通但不对」的答案。唯一的检出方式是
+> **针对具体失败场景写断言**，而不是「跑通就算过」。
 
 ---
 
@@ -47,31 +62,48 @@
 
 ## 2. 架构决策（ADR）实现情况
 
-对应 [`../00-architecture/04-architecture-decisions.md`](../00-architecture/04-architecture-decisions.md)
+> **ADR 编号的唯一登记册**是 [`../09-uml/02-architecture-decision-record.md`](../09-uml/02-architecture-decision-record.md)
+> （实现阶段新增的 ADR-011 ~ ADR-029）。本节**只引用编号，不另行分配** ——
+> 两处各自分配编号会让「ADR-019」这类引用拿到两个互斥的答案。
+
+### 2.1 顶层 ADR（ADR-001 ~ ADR-010）落地情况
+
+顶层决策见 [`../00-architecture/04-architecture-decisions.md`](../00-architecture/04-architecture-decisions.md)。
 
 | # | 决策 | 状态 | 实际做法 | 差异说明 |
 |---|------|------|---------|---------|
-| ADR-001 | 模块化单体 | ✅ | 宿主 + 插件独立程序集，进程内调用 | 一致 |
-| ADR-002 | DDD + Clean Architecture | 🟡 | 分层清晰（Contracts/Agents/Data/Security） | 未做完整 DDD：无聚合仓储分离、无领域事件溯源 |
-| ADR-003 | 可观测性（Prom+ELK+Jaeger） | ❌ | `ILogger` 控制台；审计独立走 JSONL + `audit_events` 双写 | 未接入 Metrics/Tracing。理由：本地演示无监控栈 |
-| ADR-004 | 事件总线 MediatR → Kafka | 🟡 | 自研 `InMemoryEventBus` | 未用 MediatR。进程内，不跨实例。迁移路径见下 |
-| ADR-005 | PostgreSQL 16 + pgvector | 🟡 | 默认 SQLite，PG 可配置切换 | 未装 pgvector（无向量检索需求）。切换见 `00-quick-start.md` §8 |
-| ADR-006 | 插件化机制 | ✅ | 可回收 `AssemblyLoadContext` | 一致，且额外实现了程序集卸载 |
-| ADR-007 | LLM 意图分类（OpenAI 兼容） | 🟡 | 规则表打底 + 可选模型判定 | 接入点与降级已实现：`Base/Ai/LlmIntentClassifier.cs`；未配置 `Ai:ApiKey` 时运行时走规则表 |
-| ADR-008 | HITL 强制规则 | ✅ | `PendingApproval` + `/api/chat/confirm` | 一致，端到端测试已验证 |
-| ADR-009 | 审计不可篡改 | 🟡 | HMAC 链式签名 + JSONL 文件 + 独立审计库表 | 已落独立审计库；未做异地 WORM 归档 |
-| ADR-010 | FeatureFlag 体系 | 🟡 | Manifest 声明了开关名 | **未在运行时强制**。新代码无 FeatureFlag 包裹 |
+| ADR-0001 | 模块化单体 | ✅ | 宿主 + 插件独立程序集，进程内调用 | 一致 |
+| ADR-0002 | 未来可演进为微服务 | 🟡 | 分层清晰（Contracts/Agents/Data/Security） | 未做完整 DDD：无聚合仓储分离、无领域事件溯源；微服务演进路径未启动 |
+| ADR-0003 | 事件总线：进程内 MediatR → 未来 Kafka | 🟡 | 自研 `InMemoryEventBus`（见 [ADR-020](../09-uml/02-architecture-decision-record.md#adr-020)） | 未用 MediatR。进程内，不跨实例。迁移路径已写死 |
+| ADR-0004 | 双语言栈：C# .NET 8 + Python 3.11 | 🟡 | 仅 .NET 主线；Python AI Service 已不在主线 | 早期 MVP 方案，Node/Python 版已删除 |
+| ADR-0005 | LLM 主用国内模型 | 🟡 | OpenAI 兼容协议，默认 DeepSeek，可切通义/智谱/Ollama | 接口统一后模型可选型，与决策一致 |
+| ADR-0006 | 数据库选型 PostgreSQL 16 + pgvector | 🟡 | 默认 SQLite，PG 可配置切换 | 未装 pgvector（无向量检索需求）。切换见 `00-quick-start.md` §8 |
+| ADR-0007 | API 网关 | ❌ | 宿主直接暴露端点 | 未引入网关层 |
+| ADR-0008 | 强制人工回环 HITL | ✅ | `PendingApproval` + `/api/chat/confirm` | 一致，端到端测试已验证 |
+| ADR-0009 | 可插拔 Agent 注册机制 | ✅ | 可回收 `AssemblyLoadContext`（见 [ADR-012](../09-uml/02-architecture-decision-record.md#adr-012)） | 一致，且额外实现了程序集卸载 |
+| ADR-0010 | FeatureFlag 体系 | 🟡 | Manifest 声明了开关名 | **未在运行时强制**。新代码无 FeatureFlag 包裹 |
 
-### 需要补齐的 ADR（新发现）
+### 2.2 实现阶段新增的 ADR（ADR-011 ~ ADR-029）
 
-以下决策在实现过程中产生，未写入原 ADR 文件：
+以下决策在编码过程中产生，完整背景、备选方案与影响见
+[`../09-uml/02-architecture-decision-record.md`](../09-uml/02-architecture-decision-record.md)。此处只列一句话摘要。
 
-| 新增 | 决策 | 原因 |
-|------|------|------|
-| **ADR-011** | 自研 `SimpleDbContextFactory` 替代 EF 内置工厂 | EF 的 `DbContextFactory<T>` 要求 DbContext 只有一个接受 `DbContextOptions` 的构造函数，而本项目需注入插件贡献器集合、当前用户、时钟 |
-| **ADR-012** | 插件上下文用 `PluginContributorRegistry` 静态注册表 | 桥接工厂创建路径的依赖回填，避免工厂无法注入集合的问题 |
-| **ADR-013** | `SlotReader` 统一处理 `JsonElement` 槽位 | JSON 反序列化后槽位是 `JsonElement`，直接强转失败。集中处理避免每个插件重复实现 |
-| **ADR-014** | `AgentRouter` 最长前缀优先路由 | 避免 `transfer` 抢占 `transfer.receive` 的路由 |
+| 编号 | 决策 | 一句话原因 |
+|------|------|-----------|
+| [ADR-011](../09-uml/02-architecture-decision-record.md#adr-011) | 自研 `BankingDbContextFactory` 替代 EF 内置工厂 | EF 的 `DbContextFactory<T>` 要求 DbContext 只有一个接受 `DbContextOptions` 的构造函数，而本项目需注入插件贡献器集合、当前用户、时钟、加密服务与诊断拦截器 |
+| [ADR-012](../09-uml/02-architecture-decision-record.md#adr-012) | 插件上下文用 `PluginContributorRegistry` 静态注册表 | 桥接工厂创建路径的依赖回填，避免工厂无法注入集合的问题 |
+| [ADR-013](../09-uml/02-architecture-decision-record.md#adr-013) | `SlotReader` 统一处理 `JsonElement` 槽位 | JSON 反序列化后槽位是 `JsonElement`，直接强转失败。集中处理避免每个插件重复实现 |
+| [ADR-014](../09-uml/02-architecture-decision-record.md#adr-014) | `AgentRouter` 最长前缀优先路由 | 避免 `transfer` 抢占 `transfer.receive` 的路由 |
+| [ADR-015](../09-uml/02-architecture-decision-record.md#adr-015) ~ [ADR-020](../09-uml/02-architecture-decision-record.md#adr-020) | 审计链原子化、文件串行化、JWT HS256、自定义鉴权中间件、双容器装配、内存事件总线 | 均为审计可信度与插件化落地所需的基础机制 |
+| [ADR-021](../09-uml/02-architecture-decision-record.md#adr-021) | 幂等键复用 `SessionId` | ❌ **已被 ADR-024 取代** |
+| [ADR-022](../09-uml/02-architecture-decision-record.md#adr-022) | 意图拆成**场景**与**动作**两层 | 过去两层压成一个字符串，模型判出 `card.status` 也没人用，Agent 只能自己按字面词猜分支，导致「识别对了但功能没触发」 |
+| [ADR-023](../09-uml/02-architecture-decision-record.md#adr-023) | 写操作的**具体动作由插件语义解析器判定** | 写操作有副作用，判定必须以用户原话为准。宁可漏判不可错判（「卡不能用了」不触发写操作） |
+| [ADR-024](../09-uml/02-architecture-decision-record.md#adr-024) | 幂等键 =「会话 + 操作要素」 | 直接用 `sessionId` 等于一个会话只能发生一次转账，多轮的「先转 500 再改成 800」第二次会被静默跳过 |
+| [ADR-025](../09-uml/02-architecture-decision-record.md#adr-025) | 模拟银行拆成**多家银行 × 各自独立数据库** | 跨行卡片必须由多个彼此隔离的核心系统支撑；单库加 `bank_code` 只是「一家银行的多个网点」 |
+| [ADR-026](../09-uml/02-architecture-decision-record.md#adr-026) | 跨行加锁按**行代码字典序**固定顺序 | 两笔方向相反的跨行转账会互相等待。按固定顺序取锁是消除死锁的标准做法 |
+| [ADR-027](../09-uml/02-architecture-decision-record.md#adr-027) | 会话记忆按**用户 + 会话**双键存储 | 会话标识由客户端提供，不与用户绑定就能跨用户读到上下文 |
+| [ADR-028](../09-uml/02-architecture-decision-record.md#adr-028) | 插件可自报**正则触发条件**（`TriggerPatterns`），且**仅在关键词全不命中时**才用 | 固定关键词表达不了「用户只报一个 6 位基金代码」；但正则不能抢走关键词场景，因此做成兜底而非优先 |
+| [ADR-029](../09-uml/02-architecture-decision-record.md#adr-029) | 客户风险评级由**核心系统**提供 | 客户评级是**行内**评级，理财风险匹配必须按实际申购的那一行的评级判断 |
 
 ---
 
@@ -94,9 +126,9 @@
 | **审计 HMAC 链式签名** | ✅ | 链式哈希，读/算/写原子化 | 压测 200 并发：链首唯一、无分叉、全链可达 200/200 |
 | **审计文件写入并发安全** | ✅ | `SemaphoreSlim` 串行化 | 压测 200 并发：200 行无撕裂 |
 | **审计用户 ID 哈希** | ✅ | SHA256 前 12 位 | 单元测试 + 压测 |
-| **审计落独立库表** | ✅ | `IAuditRepository` + `EfAuditRepository`，JSONL 与专用审计库**双写** | 实测 `audit_events` 已落库、签名链逐条衔接（首条 `prev` 为 NULL，签名输入以 `GENESIS` 为前序）；`ActorHash` 为 SHA256 前 12 位，无明文用户 ID |
+| **审计落独立库表** | ✅ | `IAuditRepository` + `EfAuditRepository`：**JSONL + 链签名为权威记录**（同步落盘），专用审计库为**可检索副本**（有界队列 + 后台批量提交，读前 flush） | 实测 `audit_events` 已落库、签名链逐条衔接（首条 `prev` 为 NULL，签名输入以 `GENESIS` 为前序）；`ActorHash` 为 SHA256 前 12 位，无明文用户 ID。进程内 A/B：逐条 142~233 条/秒 vs 批量 2989~4129 条/秒 |
 | **审计异地 WORM 归档** | ❌ | 未实现 | 生产必须补 |
-| **合规守卫机制** | ✅ | `ComplianceGuard` + `IComplianceRule` | 单元测试 20 项 |
+| **合规守卫机制** | ✅ | `ComplianceGuard` + `IComplianceRule` | 单元测试 26 项 |
 | **合规规则覆盖度** | 🟡 | 4 条（设计中 14 条） | 见下方缺口清单 |
 | **参数可配置** | ✅ | 全部阈值来自 `appsettings.json` | 单元测试验证 |
 | **用户权利响应接口** | ❌ | 未实现 | 个保法 §46-47 要求 |
@@ -139,7 +171,7 @@
 
 | 能力 | 状态 | 说明 |
 |------|------|------|
-| 插件分区隔离 | ✅ | 每个贡献器的实体逐个 `ToTable(name, schema)`（不再用全局 `HasDefaultSchema`，避免"最后一次生效"）；迁移中已固化 `schema: "plugin_transfer"`。SQLite 无 Schema 概念，退化为表名前缀 |
+| 插件分区隔离 | ✅ | 每个贡献者的实体逐个 `ToTable(name, schema)`（不再用全局 `HasDefaultSchema`，避免"最后一次生效"）；迁移中已固化 `schema: "plugin_transfer"`。**SQLite 下不做任何 Schema 隔离**（无 Schema 概念，代码直接跳过），表名也不加前缀 —— 实测 SQLite 中表名就是 `transfer_records` |
 | 审计字段自动填充 | ✅ | `SaveChanges` 时统一写入 |
 | 乐观并发 | ✅ | `RowVersion` 并发令牌 |
 | 软删除 | ✅ | `IsDeleted` 标记 |
@@ -147,7 +179,7 @@
 | 幂等键 | ✅ | 唯一索引 + 查询前置检查 |
 | **EF Core Migration** | ✅ | 已生成基线迁移 `InitialSchema`（`Base/Data/Migrations/`）；补充了**设计时插件发现**（否则生成的迁移里一个插件表都没有）；设计时默认 Provider 为 PostgreSQL |
 | 数据库加密 | ❌ | 未启用 |
-| 连接池 | ❌ | `SimpleDbContextFactory` 每次 new，无池化 |
+| 连接池 | ❌ | `BankingDbContextFactory` 每次 new，无池化 |
 | 读写分离 | ❌ | 未实现 |
 | 多租户隔离 | ❌ | `TenantId` 字段有，未做 RLS |
 
@@ -169,7 +201,7 @@
 | 循环依赖检测 | ✅ | 实现有，测试未覆盖 |
 | 版本兼容校验 | ✅ | 实现有，测试未覆盖 |
 | 程序集可回收卸载 | ✅ | `UnloadPlugin` 实现，未开放 HTTP |
-| 启停热插拔 | ✅ | `/api/plugins/{id}/stop|start` |
+| 启停热插拔 | ✅ | `/api/plugins/{id}/stop\|start` |
 | 插件数据分区 | ✅ | `plugin_transfer` |
 | 插件脚手架 | ✅ | `dotnet new banking-plugin`（`src/templates/banking-plugin`） |
 | 插件契约校验 | ✅ | `PluginValidator` 反射校验，已接入 CI 阻断门禁 |
@@ -190,15 +222,19 @@
 | 能力 | 状态 | 说明 |
 |------|------|------|
 | Agent 抽象与基类 | ✅ | 自动计时/审计/异常兜底 |
-| 意图路由 | ✅ | 最长前缀优先 |
-| 意图识别 | ✅ | 规则表（Agent 自报 `TriggerKeywords`）打底；配 `Ai:ApiKey` 后由大模型判定，超时/输出越界自动降级；候选意图由插件自报生成 |
+| 意图路由 | ✅ | 最长前缀优先（场景层） |
+| 意图识别 | ✅ | 规则表（Agent 自报 `TriggerKeywords`）打底；配 `Ai:ApiKey` 后由大模型判定，超时/输出越界/**回答 unknown** 均自动降级；候选意图与消歧规则都由插件自报生成 |
+| 意图分场景/动作两层 | ✅ | `IntentContext`：场景决定路由，动作决定分支 |
+| 语义驱动的写操作 | ✅ | 卡片插件 `CardStatusResolver` 认得「丢了 / 不见了 / 被冻了 / 找回来了」；只认原文里明确表达的动作 |
+| 未知意图兜底 | ✅ | 返回可办理能力清单，而不是一句「已转人工客服」 |
+| AI 连通性自检 | ✅ | `POST /api/ai/probe` 真实调一次模型，回报模型名/原始输出/归一化输出/是否命中已知意图/耗时；`/health` 暴露最近一次结果 |
 | 事件总线 | ✅ | 精确匹配 + 通配 + 死信队列 |
 | 跨插件联动 | ✅ | 转账事件被账单插件订阅（测试验证） |
 | **Supervisor 编排与轨迹** | ✅ | `AgentOrchestrator`、四类步骤与 `InMemoryTrajectoryLog` 已实现；LLM 规划、Spawn/Fork 与多轮协商未实现 |
-| **Agent 记忆/画像** | ❌ | 未实现 |
+| **多轮上下文** | ✅ | `SessionMemory` 记住上一轮意图、原话与槽位；省略句（「改成 800」）能接上一轮；按用户隔离 |
+| **Agent 记忆/画像** | ❌ | 未实现（会话记忆只解决单会话内的上下文，不等于用户画像） |
 | **LLM Function Call** | ❌ | `IAgentTool` 契约已定义，无实现 |
 | **流式响应（SSE）** | ❌ | 一次性返回 |
-| **对话状态管理** | ❌ | `sessionId` 仅作幂等键，无上下文 |
 
 > 当前同时保留单跳 `AgentRouter` 与多跳 `AgentOrchestrator`：Supervisor、并行/串行步骤和轨迹回放已实现；
 > 更深层的协作式能力（LLM 动态规划、Spawn/Fork、辩论与记忆）仍是下一阶段。
@@ -210,15 +246,18 @@
 | 能力 | 状态 |
 |------|------|
 | 账户/余额/限额查询 | ✅ |
-| 转账（含完整校验 + 并发安全） | ✅ |
-| 流水查询（分页 + 筛选） | ✅ |
+| 转账（含完整校验 + 并发安全 + **跨行清算**） | ✅ |
+| 流水查询（分页 + 筛选，跨行聚合） | ✅ |
 | 月度账单（汇总 + 分类 + 日趋势） | ✅ |
-| 卡片查询 + 状态变更 + 限额 | ✅ |
-| 理财产品 + 认购 | ✅ |
+| 卡片查询 + 状态变更 + 限额（**跨行卡片**，带发卡行） | ✅ |
+| 理财产品 + 认购（按行内客户评级校验） | ✅ |
+| 公募基金主档 + 净值序列 + 排行 | ✅ |
+| **多银行核心系统（每行独立数据库文件）** | ✅ |
+| **银行目录端点**（含各行库文件与数据规模） | ✅ |
 | 故障注入（6 种场景；仅 Development，或显式 `MockBank:EnableFaultInjection=true`） | ✅ |
 | OpenAPI 文档 | ✅ |
 | 业务日志文件 | ✅ |
-| 数据持久化 | ❌ 内存，重启重置（符合模拟定位） |
+| 数据持久化 | ✅ **每行一个 SQLite 文件**（重启保留；`ResetOnStartup=true` 或 `POST /api/corebank/v1/_admin/reset` 可重建） |
 | 真实清算对接 | ❌ 按设计不需要 |
 
 ---
@@ -236,7 +275,7 @@
 | 5 | 合规规则补 P0 4 条（高频/日累计/黑名单/制裁） | `Base/Security/Compliance` | ❌ 待做 |
 | 6 | 接 LLM 意图分类 | `Base/Ai/LlmIntentClassifier.cs` | ✅ 已完成（意图）；槽位抽取与编排规划仍为规则 |
 | 7 | FeatureFlag 运行时强制 | `Base` 新增服务 | ❌ 待做 |
-| 8 | 敏感字段加密 + KMS | `Base/Data` | 🟡 加密机制已通（尚无字段标注）；KMS 待做 |
+| 8 | 敏感字段加密 + KMS | `Base/Data` | 🟡 加密机制已通，`TransferRecord` 的用户号 / 付款账号 / 收款账号 / 幂等键 / 备注**已标注 `[Encrypted]`**；KMS 待做 |
 | 9 | 用户权利响应接口（个保法 §46-47） | 新增插件 | ❌ 待做 |
 | 10 | ~~速率限制与防刷~~ | `Host/Middleware` | ✅ 已完成 |
 
@@ -247,15 +286,21 @@
 | ✅ | 速率限制（令牌桶双维度；修复 Strict 档桶容量取自全局 `BurstCapacity` 的缺陷，实测认证档 5 次后 429） | 完成 |
 | ✅ | 主 Agent 编排器（Supervisor，4 种步骤类型） | 完成 |
 | ✅ | 轨迹日志（append-only，支持回放分叉） | 完成 |
-| ✅ | 容量压测（296 QPS 实测） | 完成 |
+| ✅ | 容量压测（2026-10-20 已在当前提交复跑，峰值 198 QPS @ 20 并发、200 并发零错误） | 完成 |
 | ✅ | UML 10 张图 + ADR 11 条 + API 契约 + 数据模型 | 完成 |
 | ✅ | 抗量子密码学评估 + 安全能力盘点 | 完成 |
 | ✅ | 数据库基线迁移 + 迁移一致性 CI 门禁（`has-pending-model-changes`） | 完成 |
-| ✅ | 审计落独立库表（JSONL 与专用审计库双写） | 完成 |
+| ✅ | 审计落独立库表（JSONL 权威 + 专用审计库可检索副本，批量异步提交） | 完成 |
 | ✅ | 字段级加密链路打通（工厂注入 `ICryptoService`） | 完成 |
 | ✅ | 插件脚手架 `dotnet new banking-plugin` + 契约校验 CI 门禁 | 完成 |
 | ✅ | 开发密钥外置（`.example` 模板 + Development 派生兜底） | 完成 |
 | ✅ | MockBank 故障注入安全门禁（仅 Development 或显式开关） | 完成 |
+| ✅ | **性能：审计落库改批量异步提交**（JSONL 权威 + 库为副本，进程内 A/B 快 17.7~25.7 倍） | 完成 |
+| ✅ | **性能：审计库/业务库切 SQLite WAL**（读写不互斥、提交免 fsync） | 完成 |
+| ✅ | **性能：跨行聚合读路径改走内存快照**（读路径不再开 3 库 3 连接，实测快约 5 倍） | 完成 |
+| ✅ | **性能：HttpClient 日志降到 Warning**（每请求省 2 行无价值日志） | 完成 |
+| ✅ | **修 bug：MockBank 重启即崩**（种子守卫读内存快照 → 改查库） | 完成 |
+| ✅ | **修 bug：会话记忆并发下 500**（LINQ 排序 ConcurrentDictionary → 枚举器取快照）+ 5 项并发回归测试 | 完成 |
 
 ### P1 — 规模化前完成
 
@@ -286,34 +331,52 @@
 
 | 测试类型 | 状态 |
 |----------|------|
-| 单元测试（149 项） | ✅ 已实测通过 |
-| 端到端 | ✅ 程序内检查，以最终输出/CI 为准 |
+| 单元测试（187 项） | ✅ 已实测通过（2026-10-20） |
+| 端到端（17 个场景 / 70 断言） | ✅ 已实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`） |
 | 并发压力 | ✅ 程序内检查，以最终输出/CI 为准 |
-| **容量压测（7 级阶梯加压）** | ✅ **296 QPS @ 200 并发，零错误，P99 812ms** |
+| **容量压测（7 级阶梯加压）** | ✅ 2026-10-20 在当前提交复跑：峰值 **198.0 QPS @ 20 并发**，**200 并发 @ 121.9 QPS、错误率 0.00%、P99 3.6s**；审计落库批量提交经**进程内 A/B** 实测快 **17.7~25.7 倍**。⚠️ 本机端到端数字同构建复测离散达 2 倍，**不可作容量承诺**（见 `11-performance/01-capacity-test-report.md`） |
 | 集成测试 | ❌ 未写 |
 | 契约测试 | ❌ 未写 |
 | 安全测试 | 🟡 鉴权/越权/限流已覆盖，缺渗透测试 |
 | 合规场景测试 | 🟡 覆盖人工回环/反洗钱/自转拦截 |
 
-### 单元测试覆盖（`UnitTests` 项目，当前共 149 项）
+### 单元测试覆盖（`UnitTests` 项目，当前共 187 项）
 
-| 测试类 | 断言数 | 覆盖对象 |
-|--------|-------|---------|
-| `ComplianceRuleTests` | 20 | 4 条合规规则的边界值、优先级、守卫编排 |
-| `DataMaskerTests` | 30 | L1-L4 脱敏格式、对象图脱敏、**原文不泄漏回归** |
-| `AuditLoggerTests` | 11 | 链式签名、篡改检测、并发写入完整性 |
-| `SlotReaderTests` | 24 | JSON 槽位各种类型、0 值/负值/空值保留 |
-| `IdempotencyTests` | 9 | 幂等键重复检测、并发竞争 |
-| `PluginVersionTests` | 13 | 语义化版本解析与兼容性判断 |
-| `AgentRouterTests` | 5 | 意图路由、最长前缀优先、未知意图兜底 |
-| `DatabaseLayerTests` | 16 | **字段加密链路**（含反向断言）、**多 Schema 隔离**（含与顺序无关）、设计时插件发现 |
-| `ContainerWiringTests` | 4 | 按宿主装配方式构建容器并 `ValidateOnBuild`/`ValidateScopes`，把「启动即崩」前移到单测 |
-| `AuditPersistenceTests` | 3 | 审计**真建库、真写、真查**，覆盖「文件有内容但库为空」的静默失效 |
+| 测试类 | 覆盖对象 |
+|--------|---------|
+| `ComplianceRuleTests` | 4 条合规规则的边界值、优先级、守卫编排（26 项） |
+| `DataMaskerTests` | L1-L4 脱敏格式、对象图脱敏、**原文不泄漏回归**（29 项） |
+| `AuditLoggerTests` | 链式签名、篡改检测、并发写入完整性 |
+| `SlotReaderTests` | JSON 槽位各种类型、0 值/负值/空值保留 |
+| `FieldEncryptionTests` | `[Encrypted]` 标注的转换器装配与确定性加密行为（8 项） |
+| `IdempotencyTests` | 幂等键重复检测、并发竞争、插件版本解析、Agent 路由 |
+| `LlmIntentClassifierTests` | 脱敏边界、模型降级、候选意图来自已注册 Agent |
+| **`IntentRecognitionTests`** | **模型答 unknown 必须回退规则表**、动作级意图被完整保留、规则表加权消歧、否定词剔除、**卡片语义动作解析**、会话记忆的用户隔离与淘汰 |
+| `DatabaseLayerTests` | **字段加密链路**（含反向断言）、**多 Schema 隔离**（含与顺序无关）、设计时插件发现 |
+| `ContainerWiringTests` | 按宿主装配方式构建容器并 `ValidateOnBuild`/`ValidateScopes`，把「启动即崩」前移到单测 |
+| `AuditPersistenceTests` | 审计**真建库、真写、真查**，覆盖「文件有内容但库为空」的静默失效 |
 
-> 后三个测试类是本次新增，它们存在的意义不是提高覆盖率，而是**专门针对
-> 「编译通过、运行不报错、测试也不红」的失败模式**加断言。
-> 实测效果：`ContainerWiringTests` 直接把一个 DI 生命周期错配（宿主启动即崩）
-> 挡在了单测阶段；`DatabaseLayerTests` 在编写过程中揪出了 EF 模型缓存键过窄的缺陷。
+> `IntentRecognitionTests` 存在的意义不是提高覆盖率，而是**专门针对本轮修掉的 8 个
+> 「识别对了但功能没触发」类缺陷**加断言 —— 这类缺陷不会让接口报错，
+> 只会让用户得到一个「说得通但不对」的答案。
+
+### 端到端场景覆盖（`E2ETest` 项目，17 个场景）
+
+| # | 场景 | 断言要点 |
+|---|------|---------|
+| 0B | JWT 鉴权与越权防护 | 无令牌/伪造令牌/越权访问/插件管理权限 |
+| 1-2 | 卡片查询、账单分析 | 路由正确、L3 数据强制脱敏 |
+| 3-5 | 小额转账、大额人工回环、确认后执行 | 余额真实变动、等待期间不变、确认后才扣款 |
+| 6-7 | 自转拦截、反洗钱阈值 | 合规拒绝、无副作用 |
+| 8 | 幂等性 | 重复提交同一操作不重复扣款 |
+| 9-10 | 事件总线、审计链 | 事件已发布、链式签名、用户 ID 哈希 |
+| **11** | **跨行卡片** | 银行目录 3 家、各行独立库文件、演示用户持 3 家行的卡、对话返回发卡行 |
+| **12** | **跨行转账** | 标记 `isInterBank`、双边流水号带行代码 |
+| **13** | **语义触发写操作** | 「我的卡不见了」→ 追问具体卡号（多卡时不瞎猜）→ 指定卡号后真的挂失 |
+| **14** | **未知意图兜底** | 返回能力清单而非死胡同 |
+| **15** | **多轮省略句** | 「改成 800」接上一轮转账意图与收款人 |
+| **16** | **AI 连通性自检** | 自检端点可用、`/health` 暴露自检结果 |
+| **17** | **公募基金** | 代销清单 ≥8 只、单只详情带 90 个净值点、排行按收益率倒序、对话能查基金、**纯 6 位代码也能路由** |
 
 ### 压测覆盖明细（`StressTest` 项目）
 
@@ -325,6 +388,7 @@
 | 4 | 事件总线并发 | 200 事件 × 2 订阅者 | ✅ 计数 200/200、投递 400/400、无死信、2ms 完成 |
 | 5 | 插件注册表并发读 | 100 并发 | ✅ 无异常、1ms 完成 |
 | 6 | 核心系统边界 | 4 类边界 + 1 类故障注入 | ✅ 负数/零/不存在账户/自转全被拒，503 注入生效 |
+| 7 | 审计落库逐条 vs 批量 | 300 条 × 两种写法 | ✅ 进程内 A/B：逐条 142~233 条/秒、批量 2989~4129 条/秒，**快 17.7~25.7 倍** |
 
 ### 压测暴露并修复的缺陷
 
@@ -336,6 +400,9 @@
 | 身份证脱敏全遮蔽 | **P1** | 正则 `(\d{4}[\dXx])` 把 5 位算作 4 位，导致合法身份证不匹配被整段遮蔽 | 修正为 `(\d{3}[\dXx])` 精确捕获末 4 位 |
 | 字典脱敏未按字段 | **P1** | `MaskGraph` 递归时未把字典键名传给值，`phone` 字段走 generic 掩码变成 `*******8000` | 字典分支改为按键名做字段感知脱敏 |
 | 槽位读取可能崩溃 | P2 | `JsonElement` 访问已释放的 `JsonDocument` 会抛 `ObjectDisposedException` | 全部读取路径加 `try/catch` 防御 |
+| **MockBank 重启即崩** | **P0** | 「库里是否为空」的种子守卫改读**内存快照**，而守卫发生在快照载入**之前** → 永远判空 → 每次启动重播种子 → 撞 `accounts.AccountNo` 唯一约束，服务起不来 | 守卫改查数据库（`CountAll` 走 EF 计数），并用已存在的库文件复跑验证 |
+| **会话记忆并发下 500** | **P0** | 淘汰逻辑用 LINQ `OrderBy` 排序 `ConcurrentDictionary`，走 `ICollection.CopyTo` 批量拷贝路径 —— 字典被并发修改时抛 `ArgumentException`，随后半填数组产生 null key，后续 `TryRemove` 再抛 `ArgumentNullException`。5 并发下即可复现 HTTP 500（某次观察失败比例 12.5%，原始压测日志未随仓库保留） | 改用枚举器取快照再排序；新增 5 项测试（其中 **2 项为并发回归用例**，旧实现下确实失败、修复后通过；另 3 项为行为护栏） |
+| **审计库根本查不了** | **P0** | EF 的 SQLite provider **拒绝翻译 `DateTimeOffset` 的 ORDER BY**，直接抛 `NotSupportedException` —— 审计库的查询与验链路径 100% 失败。文档长期声称"数据库提供按操作者/时间/场景检索的能力"，实际是**假的** | 按 Provider 分支：SQLite 排序放内存（**不改存储格式**，存量审计库照常可读），PostgreSQL 保持库内排序；新增 `AuditBatchedWriterTests` 4 项覆盖装饰器+写入器+查询整条链路 |
 
 ### 单元测试暴露的缺陷
 
@@ -359,7 +426,7 @@
 | **模块边界** | ✅ | 每插件独立程序集，编译期隔离，跨插件引用会编译失败 |
 | **契约稳定性** | ✅ | SDK 是唯一依赖面，改 SDK 需同步改所有插件（编译期暴露） |
 | **CI 流水线** | ✅ | GitHub Actions 工作流已存在；远程是否持续全绿需由 required checks 验证 |
-| **单元测试** | ✅ | 149 项已实测通过，覆盖合规、脱敏、审计、槽位、幂等、路由、版本、数据库层、容器装配与审计落库 |
+| **单元测试** | ✅ | 187 项已实测通过，覆盖合规、脱敏、审计、槽位、幂等、路由、版本、数据库层、容器装配、审计批量落库链路、**审计库查询链路**与**会话记忆并发** |
 | **CODEOWNERS 规则文件** | 🟡 | 路径规则已建立，但 owner 仍是角色占位符；替换为真实 GitHub 用户名并经测试 PR 验证后才会闭环 |
 | **端到端测试** | ✅ | 程序内检查；具体数量与结果以最终输出/CI 为准 |
 | **并发压测** | ✅ | 程序内检查；具体数量与结果以最终输出/CI 为准 |
@@ -393,9 +460,9 @@
 | 维度 | 评估 |
 |------|------|
 | **架构骨架** | ✅ 完整可用，插件化、数据库管理、安全合规三块基础设施到位 |
-| **可运行性** | ✅ 单元测试 149 项已实测通过；E2E/Stress 为程序内检查，结果以最终输出与 CI 为准 |
-| **容量** | ✅ **296 QPS @ 200 并发**，P99 812ms，零错误；安全水位 189 QPS |
-| **并发正确性** | ✅ 已实测（200 并发审计链、20 并发转账、30 并发对话），累计修复 12 处缺陷 |
+| **可运行性** | ✅ 单元测试 187 项已实测通过；E2E 70 断言、压力测试 31 项已实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`） |
+| **容量** | ⚠️ 2026-10-20 复跑：峰值 **198.0 QPS @ 20 并发**，200 并发 @ 121.9 QPS、零错误、P99 3.6s，安全水位 119 QPS。**本机数字离散达 2 倍，不是生产容量承诺**；优化的决定性证据是进程内 A/B（审计批量落库快 17.7~25.7 倍） |
+| **并发正确性** | ✅ 已实测（200 并发审计链、20 并发转账、30 并发对话、16 线程会话记忆并发写），累计修复 14 处缺陷 |
 | **安全性** | ✅ JWT + RBAC + 越权防护 + 速率限制 + 脱敏 + 审计链（含落库）；3 个 P0 漏洞已修复；MockBank 故障注入已加环境门禁；开发密钥已从仓库移除 |
 | **数据库** | ✅ 迁移基建（基线迁移 + 设计时插件发现 + 自动建 Schema）、字段加密机制接通、多 Schema 隔离修复、审计独立库 |
 | **多 Agent 协同** | ✅ Supervisor 编排器 + 轨迹日志；🟡 编排规划仍为规则策略，Spawn/Fork 未做 |
@@ -405,7 +472,7 @@
 | **生产就绪度** | ❌ 仍有待补项：MFA/OTP、异地 WORM 归档、KMS 密钥管理、库静态加密、合规规则补 P0 4 条、其余 L3/L4 字段盘点与加密回归 |
 | **多 Agent 深度** | 🟡 插件化多 Agent 架构已立，协作式编排与记忆未做 |
 
-**结论**：本代码是**架构原型 + 可运行基座**。当前单元测试 149 项已实测通过；
+**结论**：本代码是**架构原型 + 可运行基座**。当前单元测试 187 项已实测通过；
 E2E/Stress 与远程状态以程序最终输出、CI 和 GitHub required checks 为准。
 
 **当前可以支持 5 人并行开发**（前提：完成 §9.3 的 4 项配置）。

@@ -10,11 +10,16 @@ namespace MockBank.Api.Services;
 /// <param name="store">模拟银行账本。</param>
 public sealed class CardService(MockBankStore store)
 {
-    /// <summary>查询指定客户名下的全部卡片。</summary>
+    /// <summary>查询指定客户名下的全部卡片（可限定发卡行）。</summary>
     /// <param name="userId">客户号。</param>
+    /// <param name="bankCode">发卡行代码，可为空表示不限。</param>
     /// <returns>卡片响应列表。</returns>
-    public IReadOnlyList<CardResponse> GetCardsByUser(string? userId) =>
-        store.GetCardsByUser(userId).Select(c => c.ToResponse()).ToList();
+    public IReadOnlyList<CardResponse> GetCardsByUser(string? userId, string? bankCode = null) =>
+        store.GetCardsByUser(userId)
+            .Where(c => string.IsNullOrWhiteSpace(bankCode)
+                        || string.Equals(c.BankCode, bankCode.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Select(c => c.ToResponse())
+            .ToList();
 
     /// <summary>查询单张卡片。</summary>
     /// <param name="cardNo">卡号。</param>

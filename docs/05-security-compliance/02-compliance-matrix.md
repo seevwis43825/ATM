@@ -8,7 +8,7 @@
 
 ## 0. 使用口径
 
-> **Current**：本矩阵是“法规义务 → 控制目标”的追踪清单，不是合规认证或已完成声明。源码可验证的主要控制包括 JWT/RBAC、人工确认、速率限制、安全响应头、SQLite 持久化、`TransferRecord` 字段级加密，以及 HMAC 链 JSONL + 独立 `audit_events` 双写。MFA、用户权利完整接口、KMS/TDE/WORM/RLS、监管自动报送和生产监控证据尚未实现。
+> **Current**：本矩阵是“法规义务 → 控制目标”的追踪清单，不是合规认证或已完成声明。源码可验证的主要控制包括 JWT/RBAC、人工确认、速率限制、安全响应头、SQLite 持久化、`TransferRecord` 字段级加密，以及 HMAC 链 JSONL（权威记录）+ 独立 `audit_events`（可检索副本，批量异步提交）双写。MFA、用户权利完整接口、KMS/TDE/WORM/RLS、监管自动报送和生产监控证据尚未实现。
 >
 > **Target / Evidence required**：表中 UserConsent、ExplainabilityService、AMLService、PIA、ELK/OSS、自动报送等未能在当前代码中验证的名称均为目标控制点。是否满足具体法律义务必须由法务/合规结合适用主体、部署区域与证据复核。
 

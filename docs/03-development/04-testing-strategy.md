@@ -11,7 +11,7 @@
 
 | 项目 | 形态 | 当前用途 |
 |------|------|----------|
-| `src/UnitTests` | xUnit 测试项目 | 当前单元/组件测试；基线为 149 个测试 |
+| `src/UnitTests` | xUnit 测试项目 | 当前单元/组件测试；基线为 187 个测试 |
 | `src/E2ETest` | `Exe` 独立程序 | Host + MockBank 跨进程场景验证 |
 | `src/StressTest` | `Exe` 独立程序 | 压力验证 |
 | `src/LoadTest` | `Exe` 独立程序 | 负载验证 |
@@ -26,7 +26,7 @@ dotnet build src/BankingAgent.slnx -c Release
 dotnet test src/UnitTests/UnitTests.csproj -c Release
 ```
 
-测试总数必须引用命令输出。当前核对基线为 **149 个 UnitTests**；新增/删除测试后同步更新文档，不把该数字视为永久常量。
+测试总数必须引用命令输出。当前核对基线为 **187 个 UnitTests**；新增/删除测试后同步更新文档，不把该数字视为永久常量。
 
 ### 1.2 跨进程验证
 
@@ -40,10 +40,20 @@ dotnet run --project src/src/BankingAgent.Host/BankingAgent.Host.csproj
 再按目的运行：
 
 ```bash
+# ⚠️ 跑 E2E 前必须先重置 MockBank 库（见下方说明）
+curl -X POST http://localhost:5200/api/corebank/v1/_admin/reset
+
 dotnet run --project src/E2ETest/E2ETest.csproj
 dotnet run --project src/StressTest/StressTest.csproj
 dotnet run --project src/LoadTest/LoadTest.csproj
 ```
+
+> **为什么 E2E 前要重置 MockBank 库**：E2E 场景 5 会从演示账户 `6222020200000001`
+> 转出 30,000 元。该账户的种子余额是 250,000 元，但会被前面的压测与演示逐步消耗；
+> 余额耗尽后 E2E 会以 `INSUFFICIENT_FUNDS` 失败（实测 `63/70`、`67/70`）——
+> 这是**数据状态问题，不是代码缺陷**，容易误判成回归。
+> 重置方式二选一：调用 `POST /api/corebank/v1/_admin/reset`，
+> 或删除 `src/mock-bank/MockBank.Api/App_Data/` 下的 `*.db` / `*.db-wal` / `*.db-shm`。
 
 这些程序的通过数、吞吐、延迟和错误率只报告本次标准输出，不引用固定示例数字。
 

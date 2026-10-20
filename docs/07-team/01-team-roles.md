@@ -24,7 +24,7 @@
 | 角色 | 当前代码主战场 |
 |------|----------------|
 | 架构 | `src/src/BankingAgent.Base`、`BankingAgent.Plugin.Sdk`、`BankingAgent.Host`、`docs/00-architecture` |
-| 业务 | `src/plugins/BankingAgent.Plugin.{Transfer|BillAnalysis|CardManagement|Wealth}`、`src/mock-bank/MockBank.Api` |
+| 业务 | `src/plugins/BankingAgent.Plugin.{Transfer\|BillAnalysis\|CardManagement\|Wealth}`、`src/mock-bank/MockBank.Api` |
 | AI/数据 | `BankingAgent.Base/Ai`、`BankingAgent.Base/Agents`、插件 Agent；当前没有 `src/ai-service` |
 | 平台 | `src/BankingAgent.slnx`、仓库现有 CI/脚本、运行配置；当前默认 SQLite + EnsureCreated |
 | 安全/合规 | `BankingAgent.Base/Security`、Host 安全中间件、插件合规规则、`docs/05-security-compliance` |

@@ -1,11 +1,12 @@
-# 架构决策记录（补充）— 实现阶段新增 ADR-011 ~ ADR-021
+# 架构决策记录（补充）— 实现阶段新增 ADR-011 ~ ADR-029
 
-> **范围**：本文只记录 **编码实现过程中新产生** 的架构决策。
-> 顶层设计决策（模块化单体、微服务演进、事件总线方向、双语言栈、LLM 选型、数据库选型、网关、HITL、Agent 注册、FeatureFlag）见
+> **范围**：本文是**实现阶段新增 ADR 的唯一登记册**，顶层设计决策（模块化单体、微服务演进、事件总线方向、双语言栈、LLM 选型、数据库选型、网关、HITL、Agent 注册、FeatureFlag）见
 > [`../00-architecture/04-architecture-decisions.md`](../00-architecture/04-architecture-decisions.md) 的 ADR-001 ~ ADR-010，**本文不重复**。
 >
-> **日期**：2026-09-27
-> **状态**：已采纳（全部已落地到代码）
+> **不要在别处另起一套编号**：`docs/plugin/03-implementation-status.md` 的实现状态表只**引用**本文的编号，不重新分配。
+>
+> **日期**：2026-09-27（ADR-001~021），2026-10-20（ADR-022~029）
+> **状态**：已采纳（除 ADR-021 外全部已落地到代码；ADR-021 已被 ADR-024 取代）
 > **格式**：Michael Nygard ADR 模板的精简工程版
 
 ---
@@ -14,7 +15,7 @@
 
 | 编号 | 标题 | 状态 | 日期 | 一句话 |
 |------|------|------|------|--------|
-| [ADR-011](#adr-011) | 自研 SimpleDbContextFactory 替代 EF 内置工厂 | ✅ 已采纳 | 2026-09-27 | EF 工厂只认单参构造，与多参 DbContext 冲突 |
+| [ADR-011](#adr-011) | 自研 BankingDbContextFactory 替代 EF 内置工厂 | ✅ 已采纳 | 2026-09-27 | EF 工厂只认单参构造，与多参 DbContext 冲突 |
 | [ADR-012](#adr-012) | PluginContributorRegistry 静态注册表 | ✅ 已采纳 | 2026-09-27 | 弥补工厂无法注入集合的缺口 |
 | [ADR-013](#adr-013) | SlotReader 统一处理 JsonElement 槽位 | ✅ 已采纳 | 2026-09-27 | 消除 `InvalidCastException` 与已释放文档异常 |
 | [ADR-014](#adr-014) | AgentRouter 最长前缀优先路由 | ✅ 已采纳 | 2026-09-27 | `transfer` 与 `transfer.execute` 不可互相抢占 |
@@ -24,21 +25,35 @@
 | [ADR-018](#adr-018) | 自定义中间件鉴权，不用 ASP.NET Core Authentication | ✅ 已采纳 | 2026-09-27 | `Forbid()` 需要鉴权方案配合 |
 | [ADR-019](#adr-019) | Host 双容器装配（bootstrap + 正式容器） | ✅ 已采纳 | 2026-09-27 | 插件服务必须在 Build 之前并入主容器 |
 | [ADR-020](#adr-020) | 内存事件总线，不引入 Kafka / MediatR | ✅ 已采纳 | 2026-09-27 | 迁移路径已明确写死 |
-| [ADR-021](#adr-021) | 幂等键复用 SessionId | ⚠️ 已采纳（有已知缺陷） | 2026-09-27 | 取舍分析 + 缺陷与改造方向 |
+| [ADR-021](#adr-021) | 幂等键复用 SessionId | ❌ **已被 ADR-024 取代** | 2026-09-27 | 一个会话只能发生一次转账 |
+| [ADR-022](#adr-022) | 意图拆成「场景」与「动作」两层 | ✅ 已采纳 | 2026-10-20 | 动作级意图没人用，语义识别对了功能却没触发 |
+| [ADR-023](#adr-023) | 写操作的具体动作由插件语义解析器判定 | ✅ 已采纳 | 2026-10-20 | 写操作有副作用，判定必须以用户原话为准 |
+| [ADR-024](#adr-024) | 幂等键 = 会话 + 操作要素 | ✅ 已采纳 | 2026-10-20 | 取代 ADR-021：重复提交同样的转账仍拦截，改了金额则放行 |
+| [ADR-025](#adr-025) | 模拟银行拆成多银行 × 各自独立数据库 | ✅ 已采纳 | 2026-10-20 | 跨行卡片必须由多个隔离的核心系统支撑 |
+| [ADR-026](#adr-026) | 跨行加锁按行代码字典序固定顺序 | ✅ 已采纳 | 2026-10-20 | 两笔方向相反的跨行转账会互相等待 |
+| [ADR-027](#adr-027) | 会话记忆按「用户 + 会话」双键存储 | ✅ 已采纳 | 2026-10-20 | 会话标识由客户端提供，不绑定用户就能跨用户读上下文 |
+| [ADR-028](#adr-028) | 插件可自报正则触发条件，且仅作兜底 | ✅ 已采纳 | 2026-10-20 | 固定关键词表达不了「用户只报一个 6 位基金代码」 |
+| [ADR-029](#adr-029) | 客户风险评级由核心系统提供 | ✅ 已采纳 | 2026-10-20 | 评级是行内的，理财风险匹配必须按申购那一行的评级判断 |
 
 ### 与 ADR-001 ~ ADR-010 的关系
 
 | 本文 ADR | 上游 ADR | 关系 |
 |----------|----------|------|
-| ADR-019 双容器装配 | [ADR-0009](../00-architecture/04-architecture-decisions.md#adr-0009可插拔-agent-注册机制) | 落地"新增 Agent 不改核心代码"的技术前提 |
-| ADR-020 内存事件总线 | [ADR-0003](../00-architecture/04-architecture-decisions.md#adr-0003事件总线进程内-mediatr--未来-kafka) | 上游决策定了"进程内 → Kafka"方向，本文只定**进程内用什么实现**以及**如何保证可迁移** |
-| ADR-017 + ADR-018 | [ADR-0008](../00-architecture/04-architecture-decisions.md#adr-0008强制人工回环human-in-the-loop) | HITL 要可信，前提是"确认人身份不可伪造" |
-| ADR-011 ~ ADR-016 | [ADR-0002](../00-architecture/04-architecture-decisions.md#adr-0002未来可演进为微服务) | 这些是"数据访问必须经接口""通信必须经事件"的技术兑现 |
-| ADR-021 | [ADR-0006](../00-architecture/04-architecture-decisions.md#adr-0006数据库选型-postgresql-16--pgvector) | 幂等最终要落在数据库唯一约束上 |
+| ADR-019 双容器装配 | [ADR-0009](../00-architecture/04-architecture-decisions.md#adr-0009) | 落地"新增 Agent 不改核心代码"的技术前提 |
+| ADR-020 内存事件总线 | [ADR-0003](../00-architecture/04-architecture-decisions.md#adr-0003) | 上游决策定了"进程内 → Kafka"方向，本文只定**进程内用什么实现**以及**如何保证可迁移** |
+| ADR-017 + ADR-018 | [ADR-0008](../00-architecture/04-architecture-decisions.md#adr-0008) | HITL 要可信，前提是"确认人身份不可伪造" |
+| ADR-011 ~ ADR-016 | [ADR-0002](../00-architecture/04-architecture-decisions.md#adr-0002) | 这些是"数据访问必须经接口""通信必须经事件"的技术兑现 |
+| ADR-021 | [ADR-0006](../00-architecture/04-architecture-decisions.md#adr-0006) | 幂等最终要落在数据库唯一约束上 |
+| ADR-024 | [ADR-0006](../00-architecture/04-architecture-decisions.md#adr-0006) | 同上；ADR-024 修正了 ADR-021 的键构成 |
+| ADR-022 / ADR-023 | [ADR-0008](../00-architecture/04-architecture-decisions.md#adr-0008) | HITL 要求「确认的意图是可信的」——场景/动作分层与语义解析器是前提 |
+| ADR-027 | [ADR-0008](../00-architecture/04-architecture-decisions.md#adr-0008) | 人工确认要续上同一会话的上下文 |
+| ADR-025 / ADR-026 | [ADR-0006](../00-architecture/04-architecture-decisions.md#adr-0006) | 每行一个库是数据隔离的物理落地；加锁顺序是并发正确性的前提 |
 
 ---
 
-## ADR-011：自研 SimpleDbContextFactory 替代 EF 内置工厂
+<a id="adr-011"></a>
+
+## ADR-011：自研 BankingDbContextFactory 替代 EF 内置工厂
 
 - **状态**：✅ 已采纳
 - **日期**：2026-09-27
@@ -60,13 +75,13 @@
 - **决策**
 
   保留 `BankingDbContext` 的多参主构造函数（架构完整性优先），
-  **手写** `SimpleDbContextFactory : IDbContextFactory<BankingDbContext>`，
+  **手写** `BankingDbContextFactory : IDbContextFactory<BankingDbContext>`，
   由它从根容器补齐除 `options` 以外的依赖。
 
   同时保留一个最小构造函数供工厂路径使用，它从静态注册表回填贡献器：
 
   ```csharp
-  // SimpleDbContextFactory.cs
+  // DbContextFactories.cs
   public BankingDbContext CreateDbContext()
   {
       var contributors = rootProvider.GetServices<IEntitySetContributor>();
@@ -97,9 +112,11 @@
   | ⚖️ 代价 | 多写了 20 行工厂代码；`BankingDbContext` 双构造函数对阅读者有认知成本（已在 `DbContext.cs` 注释说明） |
   | ⚠️ 风险 | 单元测试必须复用同一工厂才能构造出正确的 DbContext，已在 `IdempotencyTests.cs` 注释提醒 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Data/SimpleDbContextFactory.cs`、`src/src/BankingAgent.Base/Data/BankingDbContext.cs`、`src/src/BankingAgent.Base/BankingCoreServiceCollectionExtensions.cs`、`src/UnitTests/IdempotencyTests.cs`
+- **关联代码**：`src/src/BankingAgent.Base/Data/DbContextFactories.cs`、`src/src/BankingAgent.Base/Data/BankingDbContext.cs`、`src/src/BankingAgent.Base/BankingCoreServiceCollectionExtensions.cs`、`src/UnitTests/IdempotencyTests.cs`
 
 ---
+
+<a id="adr-012"></a>
 
 ## ADR-012：PluginContributorRegistry 静态注册表
 
@@ -132,7 +149,7 @@
   ```
 
   `BankingDbContext` 的最小构造函数调用 `PluginContributorRegistry.Resolve()` 回填（`DbContext.cs`），
-  `SimpleDbContextFactory.CreateDbContext` 每次也先 `Register` 再构造（`SimpleDbContextFactory.cs`）。
+  `BankingDbContextFactory.CreateDbContext` 每次也先 `Register` 再构造（`DbContextFactories.cs`）。
 
   注册表内部用 `lock` 保证线程安全，`Register` 先 `Items.Clear()` 再 `AddRange`（幂等全量覆盖）。
 
@@ -151,11 +168,13 @@
   |------|------|
   | ✅ 正面 | 插件的实体映射真正做到了"零改动接入"；新增插件只要实现 `IEntitySetContributor` 即可自动建表 |
   | ⚖️ 代价 | 进程级可变全局状态；单元测试之间有串扰风险（`Register` 是全量覆盖，测试需自行保证隔离） |
-  | ⚠️ 风险 | `SimpleDbContextFactory.CreateDbContext` **每次调用都重写静态表**。当前是单例 Agent + 每次一个工厂，集合内容恒定，因此无实际竞态；但若未来有多租户动态插件集合，这个设计会失效 |
+  | ⚠️ 风险 | `BankingDbContextFactory.CreateDbContext` **每次调用都重写静态表**。当前是单例 Agent + 每次一个工厂，集合内容恒定，因此无实际竞态；但若未来有多租户动态插件集合，这个设计会失效 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Data/BankingDbContext.cs`、`src/src/BankingAgent.Base/Data/SimpleDbContextFactory.cs`、`src/src/BankingAgent.Host/Program.cs`
+- **关联代码**：`src/src/BankingAgent.Base/Data/BankingDbContext.cs`、`src/src/BankingAgent.Base/Data/DbContextFactories.cs`、`src/src/BankingAgent.Host/Program.cs`
 
 ---
+
+<a id="adr-013"></a>
 
 ## ADR-013：SlotReader 统一处理 JsonElement 槽位
 
@@ -210,6 +229,8 @@
 - **关联代码**：`src/src/BankingAgent.Base/Agents/SlotReader.cs`、`src/UnitTests/SlotReaderTests.cs`、`src/plugins/BankingAgent.Plugin.Transfer/TransferAgent.cs`
 
 ---
+
+<a id="adr-014"></a>
 
 ## ADR-014：AgentRouter 最长前缀优先路由
 
@@ -271,6 +292,8 @@
 - **关联代码**：`src/src/BankingAgent.Base/Agents/AgentRouter.cs`、`src/UnitTests/IdempotencyTests.cs`
 
 ---
+
+<a id="adr-015"></a>
 
 ## ADR-015：审计链 SignAndAdvance 读算写原子化
 
@@ -338,6 +361,8 @@
 
 ---
 
+<a id="adr-016"></a>
+
 ## ADR-016：审计文件 SemaphoreSlim 串行化
 
 - **状态**：✅ 已采纳
@@ -402,6 +427,8 @@
 - **关联代码**：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`、`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`
 
 ---
+
+<a id="adr-017"></a>
 
 ## ADR-017：JWT HS256 对称签名 + 角色由服务端决定
 
@@ -477,6 +504,8 @@
 
 ---
 
+<a id="adr-018"></a>
+
 ## ADR-018：自定义中间件鉴权而非 ASP.NET Core Authentication
 
 - **状态**：✅ 已采纳
@@ -543,6 +572,8 @@
 
 ---
 
+<a id="adr-019"></a>
+
 ## ADR-019：Host 双容器装配（bootstrap 容器 + 正式容器）
 
 - **状态**：✅ 已采纳
@@ -608,13 +639,15 @@
 
 ---
 
+<a id="adr-020"></a>
+
 ## ADR-020：内存事件总线（`InMemoryEventBus`），不引入 Kafka / MediatR
 
 - **状态**：✅ 已采纳
 - **日期**：2026-09-27
 - **背景**
 
-  上游 [ADR-0003](../00-architecture/04-architecture-decisions.md#adr-0003事件总线进程内-mediatr--未来-kafka) 已经定了
+  上游 [ADR-0003](../00-architecture/04-architecture-decisions.md#adr-0003) 已经定了
   "进程内 → 未来 Kafka"的方向，本文只决定**进程内具体用什么**。
 
   候选：
@@ -636,11 +669,11 @@
 
   | 需求 | 实现 |
   |------|------|
-  | 解耦 | 订阅索引 `ConcurrentDictionary<string, List<IDomainEventHandler>>`（`EventBus.cs`） |
-  | 精确 + 通配 | 发布时同时查 `evt.EventType` 与 `"*"` 两个键（`EventBus.cs`） |
-  | 死信 | 单个处理器异常被 try/catch 捕获，事件入 `ConcurrentQueue<DomainEvent> _deadLetters`（`EventBus.cs`） |
-  | 历史 | `_history` 保留最近 500 条，超出丢最旧（`EventBus.cs`） |
-  | 计数 | `Interlocked.Increment` 保证并发下不丢计数（`EventBus.cs`） |
+  | 解耦 | 订阅索引 `ConcurrentDictionary<string, List<IDomainEventHandler>>`（`InMemoryEventBus.cs`） |
+  | 精确 + 通配 | 发布时同时查 `evt.EventType` 与 `"*"` 两个键（`InMemoryEventBus.cs`） |
+  | 死信 | 单个处理器异常被 try/catch 捕获，事件入 `ConcurrentQueue<DomainEvent> _deadLetters`（`InMemoryEventBus.cs`） |
+  | 历史 | `_history` 保留最近 500 条，超出丢最旧（`InMemoryEventBus.cs`） |
+  | 计数 | `Interlocked.Increment` 保证并发下不丢计数（`InMemoryEventBus.cs`） |
   | 可观测 | `Program.cs` 暴露 `GET /api/plugins/events` |
 
   **不用 MediatR 的原因**（具体，不是泛泛而谈）：
@@ -657,7 +690,7 @@
   | 步骤 | 动作 | 影响面 |
   |------|------|------|
   | 1 | 新增 `KafkaEventPublisher : IEventPublisher`，实现同样的 `PublishAsync` | **插件零改动**（它们只依赖 `IEventPublisher`，`EventContracts.cs`） |
-  | 2 | 在 `AddBankingCore` 里根据配置选择实现 | 只改 `DIExtensions.cs` 一处 |
+  | 2 | 在 `AddBankingCore` 里根据配置选择实现 | 只改 `BankingCoreServiceCollectionExtensions.cs` 一处 |
   | 3 | 事件契约 `DomainEvent` 已与 CloudEvents 字段命名对齐（`EventId`/`Source`/`OccurredAt`/`CorrelationId`） | 可直接映射到 Kafka message headers，无需改契约 |
   | 4 | 处理器侧引入 outbox，保证"落库"与"发消息"的原子性 | ⚠️ **当前实现缺少 outbox**：`TransferAgent` 先 `SaveChangesAsync` 再 `PublishAsync`（`TransferAgent.cs` → `:212`），进程崩溃会丢事件。这是迁移到 Kafka 之前**必须先补**的 |
 
@@ -677,16 +710,18 @@
   |------|------|
   | ✅ 正面 | 零依赖；插件间零耦合（账单插件订阅转账插件的事件，两个插件互不引用，见 `BillPlugin.cs`）；死信与历史可观测 |
   | ⚖️ 代价 | 事件**不跨进程**、**不持久化**；进程重启丢失历史 |
-  | ⚠️ 风险 1 | 发布是 `await` 同步串行的（`EventBus.cs`），慢处理器会拖慢转账请求的响应时间 |
+  | ⚠️ 风险 1 | 发布是 `await` 同步串行的（`InMemoryEventBus.cs`），慢处理器会拖慢转账请求的响应时间 |
   | ⚠️ 风险 2 | 合规规则短路导致 `AmlThresholdRule` 在大额场景下**不会被执行**（`TransferAmountRule` 先返回，见 `ComplianceGuard.cs`）。当前 `RiskScore` 仍写审计，合规视角可接受；若未来要求"所有规则都跑一遍再汇总"，需要把 `Evaluate` 改为全量收集模式 |
 
 - **关联代码**：`src/src/BankingAgent.Base/Events/InMemoryEventBus.cs`、`src/src/BankingAgent.Plugin.Sdk/EventContracts.cs`、`src/src/BankingAgent.Base/BankingCoreServiceCollectionExtensions.cs`、`src/plugins/BankingAgent.Plugin.BillAnalysis/BillAnalysisPlugin.cs`
 
 ---
 
+<a id="adr-021"></a>
+
 ## ADR-021：幂等键复用 SessionId
 
-- **状态**：⚠️ 已采纳（存在已知缺陷，改造方向见下）
+- **状态**：❌ **已被 [ADR-024](#adr-024) 取代**（2026-10-20）
 - **日期**：2026-09-27
 - **背景**
 
@@ -742,7 +777,7 @@
   | 2 | **并发下可能重复扣款**。检查（`:144`）与写入（`:208`）之间无事务无锁，中间还调了核心系统（`:166`）。两个同 `sessionId` 的并发请求可能都通过检查 | `TransferAgent.cs` / `:166` / `:208` | 🔴 高 |
   | 3 | **唯一索引拦不住缺陷 2**。唯一索引只保证不会出现两条相同键的记录；但两次扣款发生在索引冲突之前 | `TransferPlugin.cs` | 🔴 高 |
   | 4 | **`CoreBankClient` 没把 `IdempotencyKey` 发给核心系统**，CBS 侧无第二道防线 | `CoreBankClient.cs` | 🟠 中 |
-  | 5 | `UnitOfWork.TryRegisterIdempotencyKey` 注册为 Scoped，其字典生命周期只有单请求，实际无防护作用 | `DIExtensions.cs`、`UnitOfWork.cs` | 🟢 低（冗余代码） |
+  | 5 | `UnitOfWork.TryRegisterIdempotencyKey` 注册为 Scoped，其字典生命周期只有单请求，实际无防护作用 | `BankingCoreServiceCollectionExtensions.cs`、`UnitOfWork.cs` | 🟢 低（冗余代码） |
 
   **已验证的部分**：E2E 测试 `E2ETest/Program.cs` 断言"重复请求后余额未重复扣款"——
   串行重复场景是**通过**的。风险集中在并发与同会话多笔。
@@ -770,24 +805,311 @@
 | # | 遗留项 | 建议 ADR 方向 | 优先级 |
 |---|--------|---------------|:------:|
 | 1 | 插件启动钩子永不触发（`PluginLoadResult.IsActive` 默认 `true`） | 在 `LoadAsync` 中显式设 `IsActive = false`，并补一个"插件启动顺序"的启动测试 | 高 |
-| 2 | `TransferRecord.Status` 只落 `Completed`，中间态全丢 | 持久化状态机（同 ADR-021 改造方向第 3 步） | 高 |
+| 2 | `TransferRecord.Status` 只落 `Completed`，中间态全丢 | 持久化状态机（同 ADR-024 改造方向第 3 步） | 高 |
 | 3 | 软删除未落地（无全局查询过滤器，`ApplyAuditFields` 不处理 `Deleted`） | 定义 `SaveChanges` 中 `Deleted → IsDeleted = true` 的转换 + 全局过滤器 | 中 |
 | 4 | `RowVersion` 无值生成器，乐观并发实际不生效 | 改用 PostgreSQL 的 `xmin` 或应用层生成 `Guid` 版本号 | 中 |
-| 5 | `OnModelCreating` 中 `HasDefaultSchema` 被循环覆盖，PostgreSQL 多插件不会独立 Schema | 每个贡献器用 `modelBuilder.HasDefaultSchema` + `entity.ToTable(name, schema)` 组合，或改用表前缀 | 中 |
+| 5 | ~~`OnModelCreating` 中 `HasDefaultSchema` 被循环覆盖~~ **已修复**（`BankingDbContext.cs` 改为逐贡献者 `entity.ToTable(name, schema)`） | PostgreSQL 多插件已能独立 Schema；**SQLite 下不做任何隔离**（无 Schema 概念，代码直接跳过），表名无前缀 —— 与 [`04-data-model.md`](04-data-model.md) 的 Current 描述一致 | — |
 | 6 | 审计链跨进程重启断裂（`_lastSignature` 只在内存） | 启动时从审计存储读取最后一条签名作为链尾；或改用分段链 + 段间锚定 | 中 |
 | 7 | 意图前缀冲突无启动期检测 | 在 `PluginRegistry` 启动时对全部 `SupportedIntents` 做两两冲突检查并告警 | 中 |
 | 8 | `ComplianceOptions` 两个阈值无规则消费（单日限额、频率风控） | 补 `DailyLimitRule` / `HighFrequencyRule`，数据源需接 `TransferRecord` | 中 |
 | 9 | `FeatureFlags` 只声明不强制（[ADR-0010](../00-architecture/04-architecture-decisions.md#adr-0010) 仍"评审中"） | 待 ADR-0010 结论落地后补 | 待定 |
 | 10 | 事件无 outbox，进程崩溃会丢事件 | 引入 `OutboxMessage` 实体 + 后台投递器 | 中 |
+| 11 | 开发库残留孤儿表 `wealth_records`（`EnsureCreated` 不删表；当前模型不产生它） | 初始化时检测并清理无模型对应的历史表 | 低 |
 
 ---
 
-## 8. 关联文档
+## 8. ADR-022 ~ ADR-029：2026-10-20 语义链路与多银行改造
+
+本节集中登记 2026-10-20 这一轮（跨行卡片 / 公募基金 / AI 语义链路 / 可读性重构）产生的决策。
+
+---
+
+<a id="adr-022"></a>
+
+## ADR-022：意图拆成「场景」与「动作」两层
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  过去一个意图标识承担两个职责：既告诉路由器「交给哪个 Agent」，又告诉 Agent「走只读分支还是写分支」。
+  两者压成一个字符串的直接后果是一个**不报错的语义故障**：
+
+  1. 大模型判定意图为 `card.status`（用户要改卡状态）；
+  2. 但 `CardManagementAgent` 内部只按「原文里有没有『挂失』两个字」决定要不要写；
+  3. 于是用户说「我的卡不见了」时——**语义识别完全正确，功能却没触发**，只返回了一张卡片列表。
+
+  这正是「识别了语义却没做出对应功能」的根因。
+
+- **决策**
+
+  引入 `IntentContext`（`Base/Agents/IntentContext.cs`），把意图拆成两层：
+
+  | 层 | 取值 | 决定什么 |
+  |---|---|---|
+  | 场景 | `card` / `bill` / `transfer` / `wealth` | 路由到哪个 Agent |
+  | 动作 | `card.status` / `transfer.execute` / `bill.summary` | Agent 走只读分支还是写分支 |
+
+  场景由「意图标识的点号前缀」推出，动作即完整标识；上游只给出场景级意图时动作为空。
+
+- **备选方案**
+
+  | 方案 | 放弃原因 |
+  |------|----------|
+  | 保持单层，靠 Agent 自己再猜 | 就是本 ADR 要修的故障 |
+  | 让 Agent 声明自己关心的意图串 | 路由器需要的是**场景**，Agent 需要的是**动作**，语义不同层 |
+
+- **影响**
+
+  路由器只认场景（最长前缀优先不变），Agent 改用 `IntentOf(request)` 判断分支。
+  同时要求提示词列出**动作级**意图，模型才可能选出 `card.status` 而不是 `card`。
+
+- **关联代码**：`src/src/BankingAgent.Base/Agents/IntentContext.cs`、`src/src/BankingAgent.Base/Agents/BankingAgentBase.cs`、`src/src/BankingAgent.Base/Ai/IntentPromptBuilder.cs`
+
+---
+
+<a id="adr-023"></a>
+
+## ADR-023：写操作的具体动作由插件语义解析器判定
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  大模型能判断「这是不是一个写操作」，但让它同时输出「具体是挂失还是冻结」会引入新的不确定性。
+  而写操作**有副作用**——把用户的卡挂错了，代价远大于少识别一次。
+
+- **决策**
+
+  分工明确：
+
+  - **模型**负责场景与动作层（是否要做、写哪一类）；
+  - **插件的语义解析器**负责具体动作（`CardStatusResolver` 认得「丢了 / 不见了 / 被偷 / 被冻了 / 找回来了」）。
+
+  两条硬约束：
+
+  1. **只认原文里明确表达的动作**。「卡不能用了」这种含糊说法**不触发**写操作 —— 宁可漏判，不可错判。
+  2. **尊重否定词**。「别挂失」「先不要冻结」不算数。
+
+  模型判出动作层但解析器定位不到具体动作时，**反问用户**而不是猜一个动作。
+
+- **备选方案**
+
+  | 方案 | 放弃原因 |
+  |------|----------|
+  | 让模型直接输出「挂失/冻结」 | 多一个可出错的输出维度，且写操作不该依赖概率判断 |
+  | 只按字面关键词（挂失/冻结/解挂） | 「卡不见了」这种最常见的说法匹配不上，等于没修 |
+
+- **影响**
+
+  多卡场景下「我的卡不见了」会先追问是哪一张（列出候选卡号与开户行），
+  而不是随便挑一张挂失。
+
+- **关联代码**：`src/plugins/BankingAgent.Plugin.CardManagement/CardStatusResolver.cs`、`src/plugins/BankingAgent.Plugin.CardManagement/CardManagementPlugin.cs`
+
+---
+
+<a id="adr-024"></a>
+
+## ADR-024：幂等键 = 会话 + 操作要素（取代 ADR-021）
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  ADR-021 选用 `SessionId` 作幂等键，并记录了它的已知缺陷：
+
+  > **同一会话内的两笔不同转账会被误判为重复**。第二笔不执行，且返回"该转账已处理过"——用户看到的是**错误的成功信息**。
+
+  这个缺陷在多轮对话场景下变成了**硬故障**：用户说「给李华转 500」，接着说「改成 800」，
+  两句用同一个 `sessionId`，于是第二句被幂等拦截，用户永远转不出 800。
+
+- **决策**
+
+  幂等键改为**「会话 + 操作要素」**：
+
+  ```csharp
+  string.Join('|', session, source, target, amount.ToString("F2"))
+  ```
+
+  - 同一会话里重复提交**同样的**转账 → 键相同 → 被幂等拦截（这才是幂等要防的）；
+  - 同一会话里改了金额或对象 → 键不同 → 正常执行。
+
+- **影响**
+
+  ADR-021 标记为「已被 ADR-024 取代」。ADR-021 列出的其余缺陷（并发双写、唯一索引拦不住、
+  `IdempotencyKey` 未发给核心系统）**仍然成立**，保留在 §7 遗留项中。
+
+- **关联代码**：`src/plugins/BankingAgent.Plugin.Transfer/TransferAgent.cs`
+
+---
+
+<a id="adr-025"></a>
+
+## ADR-025：模拟银行拆成多银行 × 各自独立数据库
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  要演示「跨行卡片」（一个客户在多家银行各有一张卡），就必须有多个彼此隔离的银行核心系统。
+  在单库里加一个 `bank_code` 字段做不到：卡号段无法体现各行独立发行，转账也不会产生行间清算。
+
+- **决策**
+
+  Mock Bank 拆成 **3 家银行（工行 / 建行 / 招行），每家一个独立 SQLite 数据库文件**：
+
+  ```text
+  MockBankStore（跨行聚合门面）
+    ├── BankLedger(ICBC) → App_Data/mockbank_icbc.db
+    ├── BankLedger(CCB)  → App_Data/mockbank_ccb.db
+    └── BankLedger(CMB)  → App_Data/mockbank_cmb.db
+  ```
+
+  账号与卡号跨行唯一，靠**各行使用不同卡号 BIN 段**保证（6222 / 6217 / 6225）。
+  客户主档按行拆开（客户评级是行内评级，各行可不同），但沿用同一 `UserId` 以便跨库聚合识别出同一个人。
+
+- **备选方案**
+
+  | 方案 | 放弃原因 |
+  |------|----------|
+  | 单库加 `bank_code` 字段 | 演示不出跨行，也不是真的隔离 |
+  | 多进程多端口 | 演示复杂度上升，跨行聚合要跨 HTTP |
+
+- **影响**
+
+  详见 [`../13-database/02-multi-bank-databases.md`](../13-database/02-multi-bank-databases.md)。
+
+- **关联代码**：`src/mock-bank/MockBank.Api/Domain/Banks.cs`、`src/mock-bank/MockBank.Api/Data/BankLedger.cs`、`src/mock-bank/MockBank.Api/Data/BankDbContext.cs`、`src/mock-bank/MockBank.Api/Data/MockBankStore.cs`
+
+---
+
+<a id="adr-026"></a>
+
+## ADR-026：跨行加锁按行代码字典序固定顺序
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  跨行转账涉及两行，必须一次性拿到两把写锁。若 A→B 按「先 A 后 B」、B→A 按「先 B 后 A」，
+  两笔并发转账会互相等待 —— 经典死锁。
+
+- **决策**
+
+  `MockBankStore.AcquireLedgerLocksAsync` 统一按**行代码字典序**取锁，
+  全局顺序一致即不可能成环。取锁失败时归还已拿到的锁，避免其他请求被永久阻塞。
+
+- **影响**
+
+  跨行转账的写锁从 1 把变 2 把（行内仍是 1 把）。
+
+- **关联代码**：`src/mock-bank/MockBank.Api/Data/MockBankStore.cs`、`src/mock-bank/MockBank.Api/Services/TransferService.cs`
+
+---
+
+<a id="adr-027"></a>
+
+## ADR-027：会话记忆按「用户 + 会话」双键存储
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  多轮对话里用户的第二句常常是省略句（「给李华转 500」之后说「改成 800」），
+  第二句没有任何业务关键词，需要记住上一轮的意图与原话才能续上。
+
+  但**会话标识是客户端提供的**：不与用户绑定，就等于换个 `sessionId` 就能读到别人的上下文。
+
+- **决策**
+
+  - 引入 `ISessionMemory`（进程内存，按用户 + 会话双键，有容量上限与过期时间）；
+  - 记忆只存**意图与槽位**，不存原始敏感数据；
+  - 本轮识别不出意图时，继承上一轮的场景意图（来源标记为 `session`）。
+
+- **影响**
+
+  幂等键必须同时改（否则省略句的第二轮会被幂等拦截）——见 ADR-024。
+
+- **关联代码**：`src/src/BankingAgent.Base/Agents/SessionMemory.cs`、`src/src/BankingAgent.Host/Endpoints/ChatEndpoints.cs`
+
+---
+
+<a id="adr-028"></a>
+
+## ADR-028：插件可自报正则触发条件，且仅作兜底
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  固定关键词表达不了「用户只报一个代码」这种说法：`"000001怎么样"` 里没有任何业务词，
+  规则表匹配不到 → unknown → 用户只看到「已转人工客服」。
+
+- **决策**
+
+  在 `IBankingAgent` 增加可选成员 `TriggerPatterns`（正则），由插件自报，
+  例如理财插件声明 `(?<!\d)\d{6}(?!\d)` 识别 6 位基金代码。
+
+  判定顺序严格：**关键词先判；关键词一条都没命中时，才用正则兜底**。
+  正则是**兜底**而不是**优先**——否则「转 500 给 622202」这类含 6 位数字的转账请求
+  会被基金代码规则抢走。
+
+- **备选方案**
+
+  | 方案 | 放弃原因 |
+  |------|----------|
+  | 宿主硬编码「6 位数字 → 理财」 | 宿主不认业务词，违反架构原则；新增场景要改宿主 |
+  | 把「基金代码」当成关键词加进列表 | 关键词是字面匹配，「000001 怎么样」并不包含「基金代码」四个字 |
+
+- **影响**
+
+  `IBankingAgent` 新增一个带默认实现的成员，**对既有插件二进制兼容**。
+  提示词里也会单列「代码/编号形式的触发条件」，让模型同样知道这类问法。
+
+- **关联代码**：`src/src/BankingAgent.Plugin.Sdk/AgentContracts.cs`、`src/src/BankingAgent.Base/Agents/AgentRouter.cs`、`src/plugins/BankingAgent.Plugin.Wealth/Agent.cs`
+
+---
+
+<a id="adr-029"></a>
+
+## ADR-029：客户风险评级由核心系统提供
+
+- **状态**：✅ 已采纳
+- **日期**：2026-10-20
+- **背景**
+
+  银行理财有硬性合规要求：**风险评测不匹配不能销售**（R2 客户不能买 R4 产品）。
+  要做这个判断，插件必须知道客户在**实际申购的那一行**的风险承受能力 ——
+  而客户评级是**行内**评级，同一个人在建行可能是 R2、在工行是 R3。
+
+  宿主不认业务词，也不该直接读核心系统的客户表。
+
+- **决策**
+
+  通过既有契约扩展：核心系统提供客户档案查询，插件按行选取评级。
+
+  - `ICoreBankClient.GetCustomersAsync(userId)` → 各行客户档案（含行内评级）；
+  - Mock Bank 提供 `GET /api/corebank/v1/customers/{userId}`（**响应不含身份证号与手机号**，
+    风险匹配只需要评级）；
+  - 风险匹配按**「基金 × 代销行」逐对**判断：只在「客户有该行档案」且「该行代销这只基金」时才有意义。
+
+- **影响**
+
+  基金详情与列表会给出按行区分的提示，例如：
+  「该基金风险等级 R4，在中国工商银行、招商银行高于您的风险承受能力（R3、R3），暂不能申购。」
+
+- **关联代码**：`src/src/BankingAgent.Plugin.Sdk/CoreBankContracts.cs`、`src/src/BankingAgent.Base/CoreBank/CoreBankClient.cs`、`src/mock-bank/MockBank.Api/Endpoints/CustomerEndpoints.cs`、`src/plugins/BankingAgent.Plugin.Wealth/Agent.cs`
+
+---
+
+## 9. 关联文档
 
 - 图集（含时序图、状态图、架构不一致清单）：[01-uml-diagrams.md](01-uml-diagrams.md)
 - 接口契约：[03-api-contract.md](03-api-contract.md)
 - 数据模型：[04-data-model.md](04-data-model.md)
 - 顶层 ADR-001 ~ ADR-010：[../00-architecture/04-architecture-decisions.md](../00-architecture/04-architecture-decisions.md)
+- 多银行多数据库设计：[../13-database/02-multi-bank-databases.md](../13-database/02-multi-bank-databases.md)
 - 事件驱动契约：[../00-architecture/07-event-driven-contract.md](../00-architecture/07-event-driven-contract.md)
 - 合规矩阵：[../05-security-compliance/02-compliance-matrix.md](../05-security-compliance/02-compliance-matrix.md)
 - 审计日志：[../05-security-compliance/04-audit-logging.md](../05-security-compliance/04-audit-logging.md)

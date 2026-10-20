@@ -16,6 +16,12 @@ logs/
 e2e-result.txt
 stress-result.txt
 
+# 测试运行产物
+TestResults/
+*.trx
+coverage*.xml
+coverage*.json
+
 # ===== 密钥与配置（严禁入库）=====
 *.pfx
 *.key

@@ -1,7 +1,7 @@
 # 快速运行指南（Run Guide）
 
 > **环境**：.NET SDK 9.0.200+（解决方案使用 `.slnx`，项目目标为 `net8.0`）
-> **验证口径**：单元测试 149 项已实测通过；E2E/Stress 以程序最终输出和 CI 为准。
+> **验证口径**：单元测试 187 项已实测通过（2026-10-20）；E2E 70 断言、Stress 31 项已本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
 > **插件开发**：见 [`01-plugin-onboarding-guide.md`](01-plugin-onboarding-guide.md)。
 
 ---
@@ -13,22 +13,27 @@ BankingAgent.Host :5243
   - JWT + RBAC + 分级限流
   - /api/chat 与 /api/chat/confirm
   - /api/orchestrate 与轨迹查询
+  - /api/ai/probe —— AI 连通性自检
   - 加载 plugins/ 下 4 个插件
 
 BankingAgent.Base
   - PluginRegistry / AgentRouter / AgentOrchestrator
+  - IntentContext（场景/动作两层）/ SessionMemory（会话记忆）
+  - AiConnectivityProbe（AI 自检）/ IntentPromptBuilder
   - DomainEvent / InMemoryEventBus
   - BankingDbContext / DatabaseInitializer
   - ComplianceGuard / AuditLogger / DataMasker
 
 plugins/
-  - banking.transfer  智能转账
+  - banking.transfer  智能转账（支持跨行）
   - banking.bill      账单分析
-  - banking.card      卡片管理
-  - banking.wealth    理财（产品查询与推荐、余额查询）
+  - banking.card      卡片管理（跨行卡片 + 语义驱动状态变更）
+  - banking.wealth    理财（产品查询与推荐、余额查询、公募基金）
 
 MockBank.Api :5200
-  - 账户、收款人、转账、流水、账单、卡片、理财产品
+  - 模拟 3 家银行（工行/建行/招行），每家一个独立 SQLite 数据库文件
+  - 账户、收款人、跨行转账、流水、账单、卡片、理财产品、公募基金
+  - 银行目录 / 客户档案 / 重置演示数据
 ```
 
 ## 2. 从仓库根目录启动
@@ -82,10 +87,17 @@ Invoke-RestMethod http://localhost:5243/api/auth/me -Headers $headers
 ## 4. 运行测试
 
 ```powershell
-# 单元测试：当前已实测 149 项
+# 单元测试：当前已实测 187 项
 dotnet test src/UnitTests/UnitTests.csproj -c Release
 
 # 以下需要 Host 与 MockBank 已启动；检查数量以程序最终输出和 CI 为准
+# ⚠️ 跑 E2E 前必须先重置 MockBank 库：
+#    场景 5 会从演示账户 6222020200000001 转出 30,000 元，
+#    而该账户余额会被前面的压测/演示耗尽，届时 E2E 会以
+#    INSUFFICIENT_FUNDS 失败（实测 63/70、67/70），不是代码问题。
+#    二选一：
+#    curl -X POST http://localhost:5200/api/corebank/v1/_admin/reset
+#    # 或删除 src/mock-bank/MockBank.Api/App_Data/ 下的 *.db / *.db-wal / *.db-shm
 dotnet run --project src/E2ETest -c Release -- http://localhost:5243 http://localhost:5200
 dotnet run --project src/StressTest -c Release -- http://localhost:5243 http://localhost:5200
 dotnet run --project src/LoadTest -c Release -- http://localhost:5243 http://localhost:5200
@@ -118,21 +130,26 @@ dotnet run --project src/PluginValidator -c Release -- `
 | POST | `/api/plugins/{pluginId}/start` | 启用插件，仅 admin |
 | POST | `/api/chat` | 单跳对话入口 |
 | POST | `/api/chat/confirm` | 转账人工确认 |
+| POST | `/api/ai/probe` | **AI 连通性自检**（真实调一次模型并回报链路结果） |
 
 完整字段见 [`02-api-reference.md`](02-api-reference.md)。目标态 `/v1/*` 见
 [`../02-api/01-rest-api-spec.md`](../02-api/01-rest-api-spec.md)，不要将其当成当前 Host 路由。
 
 ## 6. MockBank API 速查
 
-前缀：`http://localhost:5200/api/corebank/v1`
+前缀：`http://localhost:5200/api/corebank/v1`（`/health` 与 `/openapi/v1.json` 不带此前缀）
 
 - `GET /accounts?userId=`、`GET /accounts/{no}/balance`、`GET /accounts/{no}/limit`
+- `GET /customers/{userId}` —— 客户档案（含行内风险评级）
+- `GET /banks`、`GET /banks/{bankCode}` —— 银行目录（含各行独立库文件）
 - `GET /beneficiaries?keyword=`
-- `POST /transfers`
+- `POST /transfers` —— 行内 / 跨行自动识别
 - `GET /transactions?userId=`、`GET /transactions/{txNo}`
 - `GET /statements/{no}?month=2026-09`
-- `GET /cards?userId=`、`GET /cards/{no}`、`POST /cards/{no}/status|limit`
+- `GET /cards?userId=`、`GET /cards/{no}`、`POST /cards/{no}/status\|limit`
 - `GET /products`、`GET /products/{code}`、`POST /wealth/subscribe`
+- `GET /funds`、`GET /funds/{code}`、`GET /funds/{code}/nav`、`GET /funds/rankings` —— 公募基金
+- `GET /_admin/stats`、`POST /_admin/reset` —— 演示统计 / 重置各行数据库
 - `GET /openapi/v1.json`
 
 故障注入只在 Development（或显式开启配置）生效，详见实测 API 参考。
@@ -156,7 +173,7 @@ Invoke-RestMethod http://localhost:5243/api/chat -Method Post `
 ## 8. 数据、安全与当前边界
 
 - 已实现 JWT、RBAC、越权防护和分级限流；生产仍需统一身份认证与 MFA/OTP。
-- 审计为 HMAC 链式签名，双写 JSONL 文件与独立审计数据库；异地 WORM 归档待实现。
+- 审计为 HMAC 链式签名，双写 JSONL 文件与独立审计数据库：JSONL + 链签名为**权威记录**（请求返回前同步落盘），审计库为**可检索副本**（批量异步提交，读前 flush）；异地 WORM 归档待实现。
 - `TransferRecord` 的 L3 字段已用 `[Encrypted]` 标注，字段加密链路已接通；生产仍需 KMS 与库静态加密。
 - 已有 EF Core 基线 Migration；生产按迁移流程部署。
 - 事件总线当前为 `DomainEvent` + `InMemoryEventBus`，不跨实例、不持久化。

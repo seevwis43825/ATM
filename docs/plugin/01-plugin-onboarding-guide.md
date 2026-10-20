@@ -174,6 +174,16 @@ public sealed class YourFeatureAgent : BankingAgentBase
     // 所以「没写进这里的前缀」等于「永远收不到请求」。
     public override IReadOnlyList<string> SupportedIntents => ["yourfeature", "yourfeature.query"];
 
+    // 可选：自然语言触发关键词。规则表按「关键词越长越具体」打分选场景，
+    // 被否定词否定的关键词不计分（宿主内置「不要 / 别 / 不用」等否定标记）。
+    public override IReadOnlyList<string> TriggerKeywords => ["你的业务词", "另一种说法"];
+
+    // 可选：正则触发条件，用于固定关键词表达不了的场景 —— 用户只报一个编号/代码时
+    //（例如「000001 怎么样」里没有任何业务词）。
+    // 判定顺序：关键词先判；关键词一条都没命中时才用正则兜底，
+    // 因此它不会抢走「转 500 给 622202」这类含数字的既有场景。
+    public override IReadOnlyList<string> TriggerPatterns => [@"(?<!\d)\d{6}(?!\d)"];
+
     protected override async Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct)
     {
         // 从上游拿槽位

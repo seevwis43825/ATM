@@ -126,6 +126,19 @@ public interface IBankingAgent
     /// 「加插件即加能力」这条设计承诺就不成立。默认返回空集合，不影响既有插件。
     /// </summary>
     IReadOnlyList<string> TriggerKeywords => [];
+
+    /// <summary>
+    /// 该 Agent 的正则触发条件（如「6 位数字的基金代码」）。
+    ///
+    /// 用途：补 <see cref="TriggerKeywords"/> 表达不了的情形 —— 固定关键词无法覆盖
+    /// 「用户只报一个代码」这种说法（基金代码、账号片段等）。
+    ///
+    /// 判定顺序：关键词先判；**关键词一条都没命中时**才用这里的正则兜底。
+    /// 因此正则不会抢走「转 500 给 622202」这类既有场景。
+    /// 默认返回空集合，不影响既有插件。
+    /// </summary>
+    IReadOnlyList<string> TriggerPatterns => [];
+
     Task<AgentResult> ExecuteAsync(AgentRequest request, CancellationToken ct = default);
 }
 

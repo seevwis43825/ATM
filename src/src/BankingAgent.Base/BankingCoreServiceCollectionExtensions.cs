@@ -117,6 +117,12 @@ public static class BankingCoreServiceCollectionExtensions
         services.TryAddSingleton<AgentRouter>();
         services.AddTransient<IIntentClassifier, LlmIntentClassifier>();
 
+        // 连通性探针：真实调一次模型并保留结果，让「AI 通没通」可被观测与证明。
+        services.TryAddSingleton<AiConnectivityProbe>();
+
+        // 会话记忆：让「改成 800」这类省略句能接上一轮的意图与槽位。
+        services.TryAddSingleton<ISessionMemory, InMemorySessionMemory>();
+
         return services;
     }
 

@@ -30,9 +30,12 @@
 | `Account` | `MockBank.Api.Domain` | 账户、余额、状态、限额 |
 | `BankCard` | `MockBank.Api.Domain` | 卡号、卡类型、状态、绑定信息、日限额 |
 | `BankTransaction` | `MockBank.Api.Domain` | 模拟交易流水 |
-| `WealthProduct` | `MockBank.Api.Domain` | 模拟理财产品 |
+| `WealthProduct` | `MockBank.Api.Domain` | 模拟理财产品（银行自营，各行独立发行） |
+| `BankDescriptor` | `MockBank.Api.Domain` | **一家被模拟银行的档案**：行代码、全称、简称、卡号 BIN 段、网点、客服、库文件名 |
+| `PublicFund` | `MockBank.Api.Domain` | **公募基金主档**：6 位代码、简称/全称、类型（货币/债券/混合/股票/指数/QDII/FOF）、风险等级 R1-R5、基金公司与基金经理、净值与收益率、费率、规模、投资范围、业绩基准、申赎状态、代销行 |
+| `FundNavPoint` | `MockBank.Api.Domain` | 基金净值历史点（`FundCode` + `NavDate` 复合主键）：单位净值、累计净值、日增长率 |
 
-这些对象保存在单例 `MockBankStore` 内存中，不由 Host 的 EF Core 数据库持久化，也不应与下文 Target 聚合等同。
+这些对象由模拟银行**持久化到每家银行各自独立的 SQLite 数据库**（`App_Data/mockbank_{icbc,ccb,cmb}.db`），`MockBankStore` 只是跨行聚合门面，不持有数据本体；也不由 Host 的 EF Core 数据库持久化，更不应与下文 Target 聚合等同。
 
 ### 1.3 当前缺口
 
@@ -86,7 +89,7 @@ public readonly record struct AccountId(string Value)
 
 ## 3. Transfer Context（Target）
 
-### 2.1 聚合根：TransferOrder
+### 3.1 聚合根：TransferOrder
 
 ```csharp
 // Transfer.Domain/Aggregates/TransferOrder.cs
@@ -151,7 +154,7 @@ public class TransferOrder : AggregateRoot<TransferOrderId>
 }
 ```
 
-### 2.2 值对象：Payee
+### 3.2 值对象：Payee
 
 ```csharp
 public record struct Payee
@@ -165,7 +168,7 @@ public record struct Payee
 }
 ```
 
-### 2.3 值对象：TransferSchedule（定时转账）
+### 3.3 值对象：TransferSchedule（定时转账）
 
 ```csharp
 public record struct TransferSchedule
@@ -182,7 +185,7 @@ public record struct TransferSchedule
 
 ## 4. BillAnalysis Context（Target）
 
-### 3.1 聚合根：Bill
+### 4.1 聚合根：Bill
 
 ```csharp
 // BillAnalysis.Domain/Aggregates/Bill.cs
@@ -212,7 +215,7 @@ public class Bill : AggregateRoot<BillId>
 }
 ```
 
-### 3.2 值对象：TransactionCategory
+### 4.2 值对象：TransactionCategory
 
 ```csharp
 public enum TransactionCategory
@@ -228,7 +231,7 @@ public enum TransactionCategory
 }
 ```
 
-### 3.3 值对象：Transaction
+### 4.3 值对象：Transaction
 
 ```csharp
 public record struct Transaction
@@ -245,7 +248,7 @@ public record struct Transaction
 
 ## 5. Wealth Context（Target）
 
-### 4.1 聚合根：FinancialProduct
+### 5.1 聚合根：FinancialProduct
 
 ```csharp
 // Wealth.Domain/Aggregates/FinancialProduct.cs
@@ -268,7 +271,7 @@ public class FinancialProduct : AggregateRoot<ProductId>
 }
 ```
 
-### 4.2 聚合根：InvestmentOrder
+### 5.2 聚合根：InvestmentOrder
 
 ```csharp
 public class InvestmentOrder : AggregateRoot<OrderId>
@@ -301,7 +304,7 @@ public class InvestmentOrder : AggregateRoot<OrderId>
 
 ## 6. CrossScenario Context（Target）
 
-### 5.1 聚合根：Scenario
+### 6.1 聚合根：Scenario
 
 ```csharp
 // CrossScenario.Domain/Aggregates/Scenario.cs
@@ -330,7 +333,7 @@ public class Scenario : AggregateRoot<ScenarioId>
 }
 ```
 
-### 5.2 实体：ScenarioTask
+### 6.2 实体：ScenarioTask
 
 ```csharp
 public class ScenarioTask : Entity<TaskId>
@@ -354,7 +357,7 @@ public class ScenarioTask : Entity<TaskId>
 
 ## 7. Memory&Profile Context（Target）
 
-### 6.1 聚合根：UserProfile
+### 7.1 聚合根：UserProfile
 
 ```csharp
 // MemoryProfile.Domain/Aggregates/UserProfile.cs
@@ -382,7 +385,7 @@ public class UserProfile : AggregateRoot<UserId>
 }
 ```
 
-### 6.2 值对象：RiskProfile
+### 7.2 值对象：RiskProfile
 
 ```csharp
 public record struct RiskProfile
@@ -400,7 +403,7 @@ public record struct RiskProfile
 }
 ```
 
-### 6.3 实体：UserRelationship
+### 7.3 实体：UserRelationship
 
 ```csharp
 public class UserRelationship : Entity<RelationshipId>
@@ -418,7 +421,7 @@ public class UserRelationship : Entity<RelationshipId>
 
 ## 8. Audit Context（Target）
 
-### 7.1 聚合根：AuditLog
+### 8.1 聚合根：AuditLog
 
 ```csharp
 public class AuditLog : AggregateRoot<AuditLogId>
@@ -440,7 +443,7 @@ public class AuditLog : AggregateRoot<AuditLogId>
 }
 ```
 
-### 7.2 值对象：AgentDecision
+### 8.2 值对象：AgentDecision
 
 ```csharp
 public record struct AgentDecision

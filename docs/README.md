@@ -3,7 +3,7 @@
 > **项目**：AI Banking Agent System — 智能银行对话式 AI 系统
 > **架构**：模块化单体（Modular Monolith） + DDD + Clean Architecture + 事件驱动 + 插件化
 > **团队**：5 人
-> **最后更新**：2026-10-01
+> **最后更新**：2026-10-20
 
 ## 文档类型与事实源
 
@@ -11,7 +11,7 @@
 
 | 类型 | 含义 | 主要入口 |
 |------|------|----------|
-| **Current** | 已在当前 `src/` 主线实现，可用于运行、联调和开发 | 根 [`README.md`](../README.md)、[`plugin/`](plugin/)、[`09-uml/`](09-uml/)、[`13-database/`](13-database/) |
+| **Current** | 已在当前 `src/` 主线实现，可用于运行、联调和开发 | 根 [`README.md`](../README.md)、[`plugin/`](plugin/)、[`09-uml/`](09-uml/)、[`13-database/`](13-database/)、[`11-performance/`](11-performance/) |
 | **Target** | 目标架构或生产化演进设计，可能包含尚未落地的 K8s、Redis、Kafka、独立前端等 | `00-architecture/`、`04-operations/`、`05-security-compliance/`、`06-product/` |
 | **Historical** | 早期 Node/TypeScript MVP 或阶段性计划，用于追溯决策，不作为当前运行指南 | 根 [`执行手册.md`](../执行手册.md) 及文内明确标记的历史段落 |
 
@@ -49,6 +49,8 @@
 | **多 Agent 怎么协同？** | **[`12-multi-agent/01-orchestration-design.md`](12-multi-agent/01-orchestration-design.md)** |
 | **看架构图 / UML / 数据模型** | **[`09-uml/`](09-uml/)** |
 | **数据库怎么演进？** | **[`13-database/01-migration-and-ci.md`](13-database/01-migration-and-ci.md)** |
+| **跨行卡片 / 多银行多数据库怎么设计的？** | **[`13-database/02-multi-bank-databases.md`](13-database/02-multi-bank-databases.md)** |
+| **AI 到底通没通？怎么自检？** | **[`plugin/03-implementation-status.md`](plugin/03-implementation-status.md) §6**（探针端点）/ **[`plugin/00-quick-start.md`](plugin/00-quick-start.md) §5**（速查表） |
 | 出了事故怎么办？ | [`04-operations/03-incident-response.md`](04-operations/03-incident-response.md) |
 
 ---
@@ -58,6 +60,21 @@
 ```
 docs/
 ├── README.md                              ← 你正在看（项目文档总索引）
+│
+├── 01-tech/                               ← 交付物① 技术文档（PDF/DOCX）
+│   └── 技术文档结构.md
+├── 02-ppt/                                ← 交付物② 答辩 PPT 与演讲稿
+│   └── 答辩PPT结构与演讲稿.md
+├── 03-deploy/                             ← 交付物③ 源码与部署材料
+│   ├── GitHub上传说明.md
+│   ├── Git工作流规范.md
+│   ├── 协作SOP-远程异地团队.md
+│   ├── 运行环境与依赖版本清单.md
+│   └── 部署说明.md
+├── 04-security/                           ← 交付物④ 安全自评报告（PDF/DOCX）
+│   └── 安全自评报告-模板.md
+├── 05-video/                              ← 交付物⑤ 演示视频脚本
+│   └── 演示视频脚本.md
 │
 ├── 00-architecture/                       ← 架构决策
 │   ├── 00-overview.md                       系统总览 + 设计原则
@@ -130,7 +147,7 @@ docs/
 │
 ├── 09-uml/                                 ← UML 与结构化架构文档
 │   ├── 01-uml-diagrams.md                  10 张 Mermaid 图（上下文/容器/组件/类图/时序/状态）
-│   ├── 02-architecture-decision-record.md  ADR-011~021（实现过程中的新决策）
+│   ├── 02-architecture-decision-record.md  ADR-011~029（实现过程中的新决策）
 │   ├── 03-api-contract.md                  接口契约（Schema/错误码/权限/幂等）
 │   └── 04-data-model.md                    数据模型（ER 图/字段/索引/迁移）
 │
@@ -139,13 +156,14 @@ docs/
 │   └── 02-hardening-report.md              **安全加固实施报告（PQC 落地 + 实测证据）**
 │
 ├── 11-performance/                         ← 性能
-│   └── 01-capacity-test-report.md          容量压测（296 QPS 实测 + 瓶颈分析）
+│   └── 01-capacity-test-report.md          容量压测（2026-10-20 复跑：峰值 198 QPS @ 20 并发 + 进程内 A/B + 测量可靠性说明）
 │
 ├── 12-multi-agent/                         ← 多 Agent 协同
 │   └── 01-orchestration-design.md          Supervisor 编排器 + 轨迹日志（对齐 Harness）
 │
 └── 13-database/                            ← 数据库
-    └── 01-migration-and-ci.md               EF Migration + CI 协同方案
+    ├── 01-migration-and-ci.md               EF Migration + CI 协同方案
+    └── 02-multi-bank-databases.md          **多银行核心系统与多数据库设计（跨行卡片的数据底座）**
 ```
 
 > **代码位置**：`../src/`（代码规模持续变化，不在文档中固定文件数与行数）

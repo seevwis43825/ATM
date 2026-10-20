@@ -1,119 +1,150 @@
-// ===== 模拟银行账本：基于 ConcurrentDictionary 的线程安全内存存储 + 启动种子数据 =====
+// ===== 跨行聚合账本门面 =====
+//
+// 职责：把 N 家银行（N 个独立数据库）的数据汇总成「一次查询」，
+//      并为跨行资金变动提供「先取锁、再动账」的无死锁编排。
+//
+// 三个必须记住的规则：
+//   1. 写操作必须按实体自带的 BankCode 路由到对应的那一行的数据库；
+//      绝不能把 A 行的数据写进 B 行的库。
+//   2. 跨行加锁按行代码的字典序固定顺序获取，否则两笔方向相反的跨行转账
+//      会互相等待，死锁。
+//   3. 账号与卡号在跨行层面必须唯一。本系统靠「各家银行使用不同卡号 BIN 段」
+//      来保证：工行 6222、建行 6217、招行 6225。
 
-using System.Collections.Concurrent;
 using MockBank.Api.Domain;
 
 namespace MockBank.Api.Data;
 
-/// <summary>
-/// 模拟银行核心系统的内存账本。所有数据保存在进程内存中，重启即重置。
-/// 读操作无锁；涉及余额变更的写操作由 <see cref="LedgerGate"/> 串行化，保证账实一致。
-/// </summary>
+/// <summary>模拟银行账本门面：聚合多家银行的独立核心系统。</summary>
 public sealed class MockBankStore
 {
-    /// <summary>模拟银行名称。</summary>
-    public const string BankName = "模拟银行（AI Banking Agent 演示核心系统）";
+    /// <summary>模拟平台名称（对外展示用，非某一家银行）。</summary>
+    public const string PlatformName = "AI Banking Agent 多银行模拟核心系统";
 
-    private const string DefaultBranch = "模拟银行营业部";
-    private const string DefaultCurrency = "CNY";
-
-    private readonly ConcurrentDictionary<string, Customer> _customers = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, Account> _accounts = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, BankCard> _cards = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, BankTransaction> _transactions = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, WealthProduct> _products = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IReadOnlyList<BankLedger> _ledgers;
     private readonly ILogger<MockBankStore> _logger;
-    private long _txSequence;
 
-    /// <summary>账本写操作互斥闸门，转账 / 理财认购等资金变动共用，避免并发下的余额丢失更新。</summary>
-    public SemaphoreSlim LedgerGate { get; } = new(1, 1);
-
-    /// <summary>进程本地时区偏移，流水时间统一使用该偏移构造。</summary>
-    public TimeSpan LocalOffset { get; }
-
-    /// <summary>创建账本并写入种子数据。</summary>
+    /// <summary>构造门面。</summary>
+    /// <param name="ledgers">各银行的账本实例。</param>
     /// <param name="logger">日志记录器。</param>
-    public MockBankStore(ILogger<MockBankStore> logger)
+    public MockBankStore(IEnumerable<BankLedger> ledgers, ILogger<MockBankStore> logger)
     {
+        _ledgers = ledgers.ToList();
         _logger = logger;
-        LocalOffset = DateTimeOffset.Now.Offset;
-        var anchor = DateTimeOffset.Now;
-
-        SeedCustomers(anchor);
-        SeedAccounts(anchor);
-        SeedCards(anchor);
-        SeedProducts(anchor);
-        SeedTransactions(anchor);
-
-        _logger.LogInformation(
-            "Mock 银行账本初始化完成：客户 {Customers} 个 / 账户 {Accounts} 个 / 卡 {Cards} 张 / 流水 {Transactions} 笔 / 理财产品 {Products} 只 / 数据基准日 {Anchor:yyyy-MM-dd}",
-            _customers.Count, _accounts.Count, _cards.Count, _transactions.Count, _products.Count,
-            anchor.ToString("yyyy-MM-dd"));
     }
 
-    // ---------------------------------------------------------------- 查询
+    /// <summary>被模拟的全部银行。</summary>
+    public IReadOnlyList<BankDescriptor> Banks =>
+        _ledgers.Select(l => l.Bank).ToList();
 
-    /// <summary>获取全部客户。</summary>
+    /// <summary>进程本地时区偏移，流水时间统一使用该偏移构造。</summary>
+    public TimeSpan LocalOffset { get; } = DateTimeOffset.Now.Offset;
+
+    // ---------------------------------------------------------------- 跨行查询
+
+    /// <summary>获取全部客户（含同名客户在各行的独立主档）。</summary>
     public IReadOnlyList<Customer> Customers =>
-        _customers.Values.OrderBy(c => c.UserId, StringComparer.Ordinal).ToList();
+        _ledgers.SelectMany(l => l.GetCustomers()).ToList();
 
     /// <summary>获取全部账户（按账号升序）。</summary>
     public IReadOnlyList<Account> AllAccounts =>
-        _accounts.Values.OrderBy(a => a.AccountNo, StringComparer.Ordinal).ToList();
-
-    /// <summary>获取全部卡片（按卡号升序）。</summary>
-    public IReadOnlyList<BankCard> AllCards =>
-        _cards.Values.OrderBy(c => c.CardNo, StringComparer.Ordinal).ToList();
-
-    /// <summary>按客户号查询客户。</summary>
-    /// <param name="userId">客户号。</param>
-    /// <returns>客户实体；不存在时返回 null。</returns>
-    public Customer? GetCustomer(string? userId) =>
-        userId is not null && _customers.TryGetValue(userId, out var customer) ? customer : null;
-
-    /// <summary>按账号查询账户。</summary>
-    /// <param name="accountNo">账号。</param>
-    /// <returns>账户实体；不存在时返回 null。</returns>
-    public Account? GetAccount(string? accountNo) =>
-        accountNo is not null && _accounts.TryGetValue(accountNo, out var account) ? account : null;
-
-    /// <summary>查询某客户名下的全部账户。</summary>
-    /// <param name="userId">客户号。</param>
-    /// <returns>账户列表（按账号升序）。</returns>
-    public IReadOnlyList<Account> GetAccountsByUser(string? userId) =>
-        _accounts.Values
-            .Where(a => userId is not null && string.Equals(a.UserId, userId, StringComparison.Ordinal))
+        _ledgers.SelectMany(l => l.GetAllAccounts())
             .OrderBy(a => a.AccountNo, StringComparer.Ordinal)
             .ToList();
 
-    /// <summary>按卡号查询卡片。</summary>
-    /// <param name="cardNo">卡号。</param>
-    /// <returns>卡片实体；不存在时返回 null。</returns>
-    public BankCard? GetCard(string? cardNo) =>
-        cardNo is not null && _cards.TryGetValue(cardNo, out var card) ? card : null;
-
-    /// <summary>查询某客户名下的全部卡片。</summary>
-    /// <param name="userId">客户号。</param>
-    /// <returns>卡片列表（按卡号升序）。</returns>
-    public IReadOnlyList<BankCard> GetCardsByUser(string? userId) =>
-        _cards.Values
-            .Where(c => userId is not null && string.Equals(c.UserId, userId, StringComparison.Ordinal))
+    /// <summary>获取全部卡片（按卡号升序）。这是**跨行**卡片全集。</summary>
+    public IReadOnlyList<BankCard> AllCards =>
+        _ledgers.SelectMany(l => l.GetAllCards())
             .OrderBy(c => c.CardNo, StringComparer.Ordinal)
             .ToList();
 
-    /// <summary>按账号查询其绑定的卡片。</summary>
+    /// <summary>按客户号查询客户。客户号在多家银行都存在时，返回行代码最小的那一行的主档。</summary>
+    /// <param name="userId">客户号。</param>
+    /// <param name="bankCode">限定银行行代码；为空表示不限。</param>
+    /// <returns>客户实体；不存在时返回 null。</returns>
+    public Customer? GetCustomer(string? userId, string? bankCode = null)
+    {
+        if (string.IsNullOrWhiteSpace(userId)) return null;
+
+        var ledgers = LedgersFor(bankCode);
+        return ledgers
+            .Select(l => l.GetCustomer(userId))
+            .FirstOrDefault(c => c is not null);
+    }
+
+    /// <summary>按客户号查询其在**所有**银行的客户主档。</summary>
+    /// <param name="userId">客户号。</param>
+    /// <returns>各行客户主档列表。</returns>
+    public IReadOnlyList<Customer> GetCustomersByUser(string? userId)
+    {
+        if (string.IsNullOrWhiteSpace(userId)) return [];
+        return _ledgers.Select(l => l.GetCustomer(userId)).Where(c => c is not null).Cast<Customer>().ToList();
+    }
+
+    /// <summary>按账号查询账户（跨行搜索，账号在全局唯一）。</summary>
+    /// <param name="accountNo">账号。</param>
+    /// <returns>账户实体；不存在时返回 null。</returns>
+    public Account? GetAccount(string? accountNo)
+    {
+        if (string.IsNullOrWhiteSpace(accountNo)) return null;
+        return _ledgers.Select(l => l.GetAccount(accountNo)).FirstOrDefault(a => a is not null);
+    }
+
+    /// <summary>查询某客户在**所有**银行的账户（跨行）。</summary>
+    /// <param name="userId">客户号。</param>
+    /// <returns>账户列表，按账号升序。</returns>
+    public IReadOnlyList<Account> GetAccountsByUser(string? userId) =>
+        _ledgers.SelectMany(l => l.GetAccountsByUser(userId))
+            .OrderBy(a => a.AccountNo, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>查询某客户在**指定银行**的账户。</summary>
+    /// <param name="userId">客户号。</param>
+    /// <param name="bankCode">银行行代码。</param>
+    /// <returns>账户列表，按账号升序。</returns>
+    public IReadOnlyList<Account> GetAccountsByUser(string? userId, string? bankCode) =>
+        LedgersFor(bankCode).SelectMany(l => l.GetAccountsByUser(userId))
+            .OrderBy(a => a.AccountNo, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>按卡号查询卡片（跨行搜索，卡号在全局唯一）。</summary>
+    /// <param name="cardNo">卡号。</param>
+    /// <returns>卡片实体；不存在时返回 null。</returns>
+    public BankCard? GetCard(string? cardNo)
+    {
+        if (string.IsNullOrWhiteSpace(cardNo)) return null;
+        return _ledgers.Select(l => l.GetCard(cardNo)).FirstOrDefault(c => c is not null);
+    }
+
+    /// <summary>查询某客户在**所有**银行的卡片（跨行卡片）。</summary>
+    /// <param name="userId">客户号。</param>
+    /// <returns>卡片列表，按卡号升序。</returns>
+    public IReadOnlyList<BankCard> GetCardsByUser(string? userId) =>
+        _ledgers.SelectMany(l => l.GetCardsByUser(userId))
+            .OrderBy(c => c.CardNo, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>按账号查询其绑定的卡片。卡片必然与账号在同一行。</summary>
     /// <param name="accountNo">账号。</param>
     /// <returns>卡片实体；不存在时返回 null。</returns>
-    public BankCard? GetCardByAccount(string? accountNo) =>
-        _cards.Values.FirstOrDefault(c => string.Equals(c.AccountNo, accountNo, StringComparison.Ordinal));
+    public BankCard? GetCardByAccount(string? accountNo)
+    {
+        var account = GetAccount(accountNo);
+        if (account is null) return null;
+        var ledger = FindLedger(account.BankCode);
+        return ledger?.GetCardByAccount(account.AccountNo);
+    }
 
-    /// <summary>按流水号查询单笔交易。</summary>
+    /// <summary>按流水号查询单笔交易（跨行搜索）。</summary>
     /// <param name="txNo">交易流水号。</param>
     /// <returns>流水实体；不存在时返回 null。</returns>
-    public BankTransaction? GetTransaction(string? txNo) =>
-        txNo is not null && _transactions.TryGetValue(txNo, out var tx) ? tx : null;
+    public BankTransaction? GetTransaction(string? txNo)
+    {
+        if (string.IsNullOrWhiteSpace(txNo)) return null;
+        return _ledgers.Select(l => l.GetTransaction(txNo)).FirstOrDefault(t => t is not null);
+    }
 
-    /// <summary>按条件筛选交易流水（时间倒序）。</summary>
+    /// <summary>按条件筛选交易流水（跨行，时间倒序）。</summary>
     /// <param name="userId">客户号，可为空表示不限。</param>
     /// <param name="accountNo">账号，可为空表示不限。</param>
     /// <param name="from">起始时间（含），可为空。</param>
@@ -127,355 +158,295 @@ public sealed class MockBankStore
         DateTimeOffset? from = null,
         DateTimeOffset? to = null,
         string? category = null,
-        TransactionDirection? direction = null)
-    {
-        IEnumerable<BankTransaction> query = _transactions.Values;
+        TransactionDirection? direction = null) =>
+        _ledgers
+            .SelectMany(l => l.QueryTransactions(userId, accountNo, from, to, category, direction))
+            .OrderByDescending(t => t.Timestamp)
+            .ThenByDescending(t => t.TxNo, StringComparer.Ordinal)
+            .ToList();
 
-        if (!string.IsNullOrWhiteSpace(userId))
-        {
-            query = query.Where(t => string.Equals(t.UserId, userId, StringComparison.Ordinal));
-        }
-
-        if (!string.IsNullOrWhiteSpace(accountNo))
-        {
-            query = query.Where(t => string.Equals(t.AccountNo, accountNo, StringComparison.Ordinal));
-        }
-
-        if (from.HasValue)
-        {
-            query = query.Where(t => t.Timestamp >= from.Value);
-        }
-
-        if (to.HasValue)
-        {
-            query = query.Where(t => t.Timestamp <= to.Value);
-        }
-
-        if (!string.IsNullOrWhiteSpace(category))
-        {
-            var keyword = category.Trim();
-            query = query.Where(t => string.Equals(t.Category, keyword, StringComparison.OrdinalIgnoreCase));
-        }
-
-        if (direction.HasValue)
-        {
-            query = query.Where(t => t.Direction == direction.Value);
-        }
-
-        return query.OrderByDescending(t => t.Timestamp).ThenByDescending(t => t.TxNo, StringComparer.Ordinal).ToList();
-    }
-
-    /// <summary>按代码查询理财产品。</summary>
+    /// <summary>按代码查询理财产品（跨行搜索，产品代码在全局唯一）。</summary>
     /// <param name="code">产品代码（忽略大小写）。</param>
     /// <returns>产品实体；不存在时返回 null。</returns>
-    public WealthProduct? GetProduct(string? code) =>
-        code is not null && _products.TryGetValue(code.Trim(), out var product) ? product : null;
+    public WealthProduct? GetProduct(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return null;
+        return _ledgers.Select(l => l.GetProduct(code)).FirstOrDefault(p => p is not null);
+    }
 
-    /// <summary>按风险等级与类型筛选理财产品。</summary>
+    /// <summary>按风险等级与类型筛选理财产品（跨行）。</summary>
     /// <param name="riskLevel">风险等级，可为空表示不限。</param>
     /// <param name="type">产品类型，可为空表示不限。</param>
     /// <returns>命中的产品列表。</returns>
-    public IReadOnlyList<WealthProduct> QueryProducts(RiskLevel? riskLevel, ProductType? type)
+    public IReadOnlyList<WealthProduct> QueryProducts(RiskLevel? riskLevel, ProductType? type) =>
+        _ledgers.SelectMany(l => l.QueryProducts(riskLevel, type))
+            .OrderBy(p => p.Code, StringComparer.Ordinal)
+            .ToList();
+
+    // ---------------------------------------------------------------- 公募基金
+
+    /// <summary>
+    /// 按条件查询公募基金清单（跨行聚合）。
+    /// 公募基金是代销产品：同一只基金可被多家银行同时代销，各行数据库各存一份副本，
+    /// 这里按基金代码归并成一只，并记录「哪些行在代销」。
+    /// </summary>
+    /// <param name="category">基金类型，可为空表示不限。</param>
+    /// <param name="riskLevel">基金风险等级，可为空表示不限。</param>
+    /// <param name="company">基金公司（模糊匹配），可为空表示不限。</param>
+    /// <param name="keyword">基金代码或简称（模糊匹配），可为空表示不限。</param>
+    /// <param name="bankCode">限定银行行代码；为空表示全部银行。</param>
+    /// <returns>归并后的基金列表，按基金代码升序。</returns>
+    public IReadOnlyList<PublicFund> QueryFunds(
+        FundCategory? category = null,
+        FundRiskLevel? riskLevel = null,
+        string? company = null,
+        string? keyword = null,
+        string? bankCode = null)
     {
-        IEnumerable<WealthProduct> query = _products.Values;
-
-        if (riskLevel.HasValue)
-        {
-            query = query.Where(p => p.RiskLevel == riskLevel.Value);
-        }
-
-        if (type.HasValue)
-        {
-            query = query.Where(p => p.Type == type.Value);
-        }
-
-        return query.OrderBy(p => p.Code, StringComparer.Ordinal).ToList();
+        var collected = LedgersFor(bankCode)
+            .SelectMany(l => l.QueryFunds(category, riskLevel, company, keyword))
+            .ToList();
+        return MergeFunds(collected);
     }
 
-    // ---------------------------------------------------------------- 写入
+    /// <summary>按基金代码查询公募基金（跨行）。</summary>
+    /// <param name="fundCode">基金代码。</param>
+    /// <returns>基金实体；没有任何行代销该基金时返回 null。</returns>
+    public PublicFund? GetFund(string? fundCode)
+    {
+        if (string.IsNullOrWhiteSpace(fundCode)) return null;
+        var trimmed = fundCode.Trim();
 
-    /// <summary>覆盖写入账户（余额 / 状态变更）。调用方需自行持有 <see cref="LedgerGate"/>。</summary>
-    /// <param name="account">账户实体。</param>
-    public void UpdateAccount(Account account) => _accounts[account.AccountNo] = account;
+        var funds = _ledgers
+            .Select(l => l.GetFund(trimmed))
+            .Where(f => f is not null)
+            .Cast<PublicFund>()
+            .ToList();
+        if (funds.Count == 0) return null;
 
-    /// <summary>覆盖写入卡片（状态 / 限额变更）。</summary>
-    /// <param name="card">卡片实体。</param>
-    public void UpdateCard(BankCard card) => _cards[card.CardNo] = card;
+        return funds[0] with { DistributorBankCodes = DistributorCodesOf(funds) };
+    }
 
-    /// <summary>覆盖写入理财产品（募集金额变更）。调用方需自行持有 <see cref="LedgerGate"/>。</summary>
-    /// <param name="product">产品实体。</param>
-    public void UpdateProduct(WealthProduct product) => _products[product.Code] = product;
+    /// <summary>
+    /// 取基金最近若干天的净值历史（跨行）。
+    /// 只取**首家代销行**的完整序列：各行副本的净值序列按基金代码确定性生成、内容一致，
+    /// 合并多行反而可能把两套不同起点的日期混在一起，让走势图自相矛盾。
+    /// </summary>
+    /// <param name="fundCode">基金代码。</param>
+    /// <param name="days">回溯天数（含最新一天）。</param>
+    /// <returns>净值历史点，按日期升序。</returns>
+    public IReadOnlyList<FundNavPoint> GetFundNav(string? fundCode, int days)
+    {
+        if (string.IsNullOrWhiteSpace(fundCode)) return [];
+        var trimmed = fundCode.Trim();
+
+        foreach (var ledger in _ledgers)
+        {
+            var points = ledger.GetFundNav(trimmed, days);
+            if (points.Count > 0) return points;
+        }
+
+        return [];
+    }
+
+    /// <summary>基金排行（跨行，按指定维度倒序）。</summary>
+    /// <param name="metric">排行维度（日增长率 / 近一月 / 近一年）。</param>
+    /// <param name="limit">最多返回多少只。</param>
+    /// <returns>排行后的基金列表。</returns>
+    public IReadOnlyList<PublicFund> FundRankings(FundRankingMetric metric, int limit)
+    {
+        var funds = QueryFunds();
+        var ranked = metric switch
+        {
+            FundRankingMetric.Monthly => funds
+                .OrderByDescending(f => f.MonthlyReturn)
+                .ThenBy(f => f.FundCode, StringComparer.Ordinal),
+            FundRankingMetric.Yearly => funds
+                .OrderByDescending(f => f.YearlyReturn)
+                .ThenBy(f => f.FundCode, StringComparer.Ordinal),
+            _ => funds
+                .OrderByDescending(f => f.DailyGrowthRate)
+                .ThenBy(f => f.FundCode, StringComparer.Ordinal),
+        };
+
+        return ranked.Take(Math.Max(0, limit)).ToList();
+    }
+
+    /// <summary>把各行代销的同一只基金归并成一条，并回填代销行代码。</summary>
+    /// <param name="funds">各行基金副本。</param>
+    /// <returns>归并后的基金列表。</returns>
+    private static IReadOnlyList<PublicFund> MergeFunds(IReadOnlyList<PublicFund> funds)
+    {
+        var representatives = new List<PublicFund>();
+        var distributors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var fund in funds)
+        {
+            if (!distributors.TryGetValue(fund.FundCode, out var banks))
+            {
+                banks = [];
+                distributors[fund.FundCode] = banks;
+                representatives.Add(fund);
+            }
+
+            if (!banks.Contains(fund.BankCode, StringComparer.OrdinalIgnoreCase))
+            {
+                banks.Add(fund.BankCode);
+            }
+        }
+
+        return representatives
+            .OrderBy(f => f.FundCode, StringComparer.Ordinal)
+            .Select(f => f with { DistributorBankCodes = string.Join(",", distributors[f.FundCode]) })
+            .ToList();
+    }
+
+    /// <summary>取出基金在各行的代销代码，逗号分隔。</summary>
+    /// <param name="funds">各行基金副本。</param>
+    /// <returns>逗号分隔的行代码。</returns>
+    private static string DistributorCodesOf(IReadOnlyList<PublicFund> funds) =>
+        string.Join(",", funds
+            .Select(f => f.BankCode)
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>统计总资产：储蓄存款余额 + 信用已用额度 + 理财在管规模。</summary>
+    /// <returns>总资产金额。</returns>
+    public decimal TotalAssets() =>
+        AllAccounts.Sum(a => a.AvailableBalance >= 0 ? a.AvailableBalance : 0m)
+        + QueryProducts(null, null).Sum(p => p.RaisedAmount);
+
+    // ---------------------------------------------------------------- 跨行写入
+
+    /// <summary>覆盖写入账户。调用方需自行持有该行闸门。</summary>
+    /// <param name="account">账户实体，其 BankCode 决定写入哪一行的数据库。</param>
+    public void UpdateAccount(Account account)
+    {
+        var ledger = RequireLedger(account.BankCode);
+        ledger.UpdateAccount(account);
+    }
+
+    /// <summary>覆盖写入卡片。</summary>
+    /// <param name="card">卡片实体，其 BankCode 决定写入哪一行的数据库。</param>
+    public void UpdateCard(BankCard card)
+    {
+        var ledger = RequireLedger(card.BankCode);
+        ledger.UpdateCard(card);
+    }
+
+    /// <summary>覆盖写入理财产品。调用方需自行持有该行闸门。</summary>
+    /// <param name="product">产品实体，其 BankCode 决定写入哪一行的数据库。</param>
+    public void UpdateProduct(WealthProduct product)
+    {
+        var ledger = RequireLedger(product.BankCode);
+        ledger.UpdateProduct(product);
+    }
 
     /// <summary>新增一笔交易流水。</summary>
-    /// <param name="transaction">流水实体。</param>
+    /// <param name="transaction">流水实体，其 BankCode 决定写入哪一行的数据库。</param>
     /// <returns>写入后的流水实体。</returns>
     public BankTransaction AddTransaction(BankTransaction transaction)
     {
-        _transactions[transaction.TxNo] = transaction;
-        return transaction;
+        var ledger = RequireLedger(transaction.BankCode);
+        return ledger.AddTransaction(transaction);
     }
 
-    /// <summary>生成下一个全局唯一的交易流水号，形如 TX202609270000001。</summary>
+    /// <summary>生成指定银行下一个交易流水号。</summary>
+    /// <param name="bankCode">银行行代码。</param>
     /// <param name="timestamp">交易时间（取其 yyyyMMdd 部分）。</param>
     /// <returns>交易流水号。</returns>
-    public string NextTransactionNo(DateTimeOffset timestamp) =>
-        $"TX{timestamp:yyyyMMdd}{Interlocked.Increment(ref _txSequence):D7}";
+    public string NextTransactionNo(string bankCode, DateTimeOffset timestamp) =>
+        RequireLedger(bankCode).NextTransactionNo(timestamp);
 
-    /// <summary>统计账户总资产：储蓄存款余额 + 信用已用额度 + 理财在管规模。</summary>
-    /// <returns>总资产金额。</returns>
-    public decimal TotalAssets() =>
-        _accounts.Values.Sum(a => a.AvailableBalance >= 0 ? a.AvailableBalance : 0m)
-        + _products.Values.Sum(p => p.RaisedAmount);
+    // ---------------------------------------------------------------- 加锁编排
 
-    // ------------------------------------------------------------ 种子数据
-
-    private void SeedCustomers(DateTimeOffset anchor)
+    /// <summary>
+    /// 按固定顺序获取涉及行的写锁。跨行转账涉及两行，必须一次性把两把锁都拿到，
+    /// 否则可能出现「A 持 A 行锁等 B 行锁、B 持 B 行锁等 A 行锁」的死锁。
+    /// </summary>
+    /// <param name="bankCodes">涉及的银行行代码；可为空表示不涉及任何行。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>锁句柄，释放时按相反顺序归还。</returns>
+    public async Task<IAsyncDisposable> AcquireLedgerLocksAsync(
+        IEnumerable<string> bankCodes, CancellationToken ct = default)
     {
-        var seeds = new (string UserId, string Name, string IdCard, string Phone, RiskLevel Risk, string Level, int MonthsAgo)[]
-        {
-            ("u_demo01", "张明", "110101199001011234", "13800138000", RiskLevel.R3, "金卡", 62),
-            ("u_demo02", "李华", "310101199203054321", "13900139000", RiskLevel.R2, "普通", 38),
-            ("u_demo03", "王芳", "440101199505068765", "13700137000", RiskLevel.R4, "白金", 26),
-        };
+        // 字典序固定顺序 = 全局一致的加锁顺序 = 不会死锁
+        var targets = bankCodes
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.Ordinal)
+            .Select(RequireLedger)
+            .ToList();
 
-        foreach (var s in seeds)
+        var acquired = new List<BankLedger>();
+        try
         {
-            _customers[s.UserId] = new Customer
+            foreach (var ledger in targets)
             {
-                UserId = s.UserId,
-                Name = s.Name,
-                IdCardNo = s.IdCard,
-                Phone = s.Phone,
-                RiskLevel = s.Risk,
-                CustomerLevel = s.Level,
-                BranchName = DefaultBranch,
-                CreatedAt = At(anchor.AddMonths(-s.MonthsAgo)),
-            };
-        }
-    }
-
-    private void SeedAccounts(DateTimeOffset anchor)
-    {
-        var seeds = new (string UserId, string AccountNo, AccountType Type, string Product, decimal Balance, decimal Limit, decimal Used, decimal Daily, int MonthsAgo)[]
-        {
-            ("u_demo01", "6222020200000001", AccountType.Savings, "薪金卡", 250_000.00m, 0m, 0m, 500_000.00m, 62),
-            ("u_demo01", "6222020200000002", AccountType.Credit, "白金信用卡", -12_800.00m, 50_000.00m, 12_800.00m, 50_000.00m, 48),
-            ("u_demo02", "6222020200000003", AccountType.Savings, "活期一本通", 88_000.50m, 0m, 0m, 500_000.00m, 38),
-            ("u_demo02", "6222020200000004", AccountType.Credit, "金卡信用卡", -3_200.00m, 30_000.00m, 3_200.00m, 50_000.00m, 26),
-            ("u_demo03", "6222020200000005", AccountType.Savings, "至尊储蓄卡", 152_000.00m, 0m, 0m, 500_000.00m, 26),
-            ("u_demo03", "6222020200000006", AccountType.Credit, "钻石信用卡", -45_000.00m, 80_000.00m, 45_000.00m, 50_000.00m, 20),
-        };
-
-        foreach (var s in seeds)
-        {
-            _accounts[s.AccountNo] = new Account
-            {
-                AccountNo = s.AccountNo,
-                UserId = s.UserId,
-                AccountType = s.Type,
-                ProductName = s.Product,
-                Balance = s.Balance,
-                CreditLimit = s.Limit,
-                CreditUsed = s.Used,
-                DailyLimit = s.Daily,
-                Status = AccountStatus.Normal,
-                Currency = DefaultCurrency,
-                OpenDate = At(anchor.AddMonths(-s.MonthsAgo)),
-                BranchName = DefaultBranch,
-            };
-        }
-    }
-
-    private void SeedCards(DateTimeOffset anchor)
-    {
-        foreach (var account in _accounts.Values.OrderBy(a => a.AccountNo, StringComparer.Ordinal))
-        {
-            var customer = _customers[account.UserId];
-            _cards[account.AccountNo] = new BankCard
-            {
-                CardNo = account.AccountNo,
-                AccountNo = account.AccountNo,
-                UserId = account.UserId,
-                CardType = account.AccountType == AccountType.Credit ? CardType.Credit : CardType.Debit,
-                Status = CardStatus.Normal,
-                BoundPhone = customer.Phone,
-                DailyLimit = account.DailyLimit,
-                IssueDate = At(account.OpenDate),
-                ExpiryDate = At(anchor.AddYears(4)),
-                CardOrg = BankName,
-                StatusReason = "初始状态",
-                StatusChangedAt = At(account.OpenDate),
-            };
-        }
-    }
-
-    private void SeedProducts(DateTimeOffset anchor)
-    {
-        var seeds = new (string Code, string Name, ProductType Type, RiskLevel Risk, decimal Rate, decimal Min, int Term, decimal Raised)[]
-        {
-            ("WP001", "稳健增利90天", ProductType.Steady, RiskLevel.R2, 3.20m, 1_000.00m, 90, 62_000_000m),
-            ("WP002", "安心纯债180天", ProductType.Steady, RiskLevel.R2, 3.85m, 5_000.00m, 180, 48_500_000m),
-            ("WP003", "平衡优选混合", ProductType.Balanced, RiskLevel.R3, 5.10m, 10_000.00m, 365, 91_200_000m),
-            ("WP004", "成长精选30天", ProductType.Aggressive, RiskLevel.R3, 4.25m, 5_000.00m, 30, 18_700_000m),
-            ("WP005", "进取科技主题", ProductType.Aggressive, RiskLevel.R4, 8.50m, 20_000.00m, 180, 35_400_000m),
-            ("WP006", "短债现金管理", ProductType.Steady, RiskLevel.R1, 2.15m, 100.00m, 7, 73_600_000m),
-        };
-
-        foreach (var s in seeds)
-        {
-            _products[s.Code] = new WealthProduct
-            {
-                Code = s.Code,
-                Name = s.Name,
-                Type = s.Type,
-                RiskLevel = s.Risk,
-                AnnualRate = s.Rate,
-                MinAmount = s.Min,
-                MaxAmount = 500_000.00m,
-                TermDays = s.Term,
-                Status = ProductStatus.OnSale,
-                NetAssetValue = 1.0000m,
-                TotalRaiseLimit = 100_000_000.00m,
-                RaisedAmount = s.Raised,
-                SaleStartDate = At(anchor.AddMonths(-2)),
-                SaleEndDate = At(anchor.AddMonths(3)),
-            };
-        }
-    }
-
-    private void SeedTransactions(DateTimeOffset anchor)
-    {
-        var random = new Random(20260927);
-        var plans = new (string UserId, int Count, decimal Salary, string Employer)[]
-        {
-            ("u_demo01", 28, 18_500.00m, "星辰科技有限公司"),
-            ("u_demo02", 25, 12_800.00m, "云图信息技术有限公司"),
-            ("u_demo03", 30, 23_500.00m, "天健建筑设计研究院"),
-        };
-
-        var months = new[]
-        {
-            FirstOfMonth(anchor).AddMonths(-2),
-            FirstOfMonth(anchor).AddMonths(-1),
-            FirstOfMonth(anchor),
-        };
-
-        foreach (var plan in plans)
-        {
-            var savings = _accounts.Values.First(a => a.UserId == plan.UserId && a.AccountType == AccountType.Savings);
-            var credit = _accounts.Values.First(a => a.UserId == plan.UserId && a.AccountType == AccountType.Credit);
-
-            // 收入：每月工资 + 部分月份的理财收益
-            foreach (var month in months)
-            {
-                AddSeed(plan.UserId, savings.AccountNo, month.AddDays(4).AddHours(9), plan.Salary,
-                    "工资", plan.Employer, TransactionDirection.Income, TransactionChannel.Counter, "月度工资代发");
-
-                if (random.Next(0, 100) < 70)
-                {
-                    var interest = Math.Round(
-                        (decimal)random.Next(35, 460) + (decimal)random.NextDouble(),
-                        2, MidpointRounding.AwayFromZero);
-                    AddSeed(plan.UserId, savings.AccountNo, month.AddDays(19).AddHours(20).AddMinutes(random.Next(0, 50)),
-                        interest, "理财收益", "模拟银行理财", TransactionDirection.Income,
-                        TransactionChannel.MobileApp, "理财产品到期收益");
-                }
-            }
-
-            var incomeCount = months.Length * (random.Next(0, 100) < 70 ? 2 : 1);
-            var expenseTotal = Math.Max(6, plan.Count - incomeCount);
-            var perMonth = expenseTotal / months.Length;
-            var remainder = expenseTotal - perMonth * months.Length;
-
-            for (var i = 0; i < months.Length; i++)
-            {
-                var count = perMonth + (i == months.Length - 1 ? remainder : 0);
-                for (var n = 0; n < count; n++)
-                {
-                    var catalog = ExpenseCatalog[random.Next(ExpenseCatalog.Length)];
-                    var raw = catalog.Min + (decimal)random.NextDouble() * (catalog.Max - catalog.Min);
-                    var amount = Math.Round(raw, 2, MidpointRounding.AwayFromZero);
-                    var merchant = catalog.Merchants[random.Next(catalog.Merchants.Length)];
-                    var useCredit = random.Next(0, 100) < 38;
-                    var when = RandomDateInMonth(random, months[i], anchor);
-                    var channel = random.Next(0, 10) switch
-                    {
-                        0 or 1 => TransactionChannel.Counter,
-                        2 => TransactionChannel.Atm,
-                        3 or 4 => TransactionChannel.Pos,
-                        5 => TransactionChannel.OnlineBank,
-                        _ => TransactionChannel.MobileApp,
-                    };
-
-                    AddSeed(plan.UserId, useCredit ? credit.AccountNo : savings.AccountNo, when, amount,
-                        catalog.Category, merchant, TransactionDirection.Expense, channel, null);
-                }
+                await ledger.Gate.WaitAsync(ct).ConfigureAwait(false);
+                acquired.Add(ledger);
             }
         }
-    }
-
-    private void AddSeed(
-        string userId,
-        string accountNo,
-        DateTimeOffset when,
-        decimal amount,
-        string category,
-        string counterparty,
-        TransactionDirection direction,
-        TransactionChannel channel,
-        string? remark)
-    {
-        AddTransaction(new BankTransaction
+        catch
         {
-            TxNo = NextTransactionNo(when),
-            UserId = userId,
-            AccountNo = accountNo,
-            Direction = direction,
-            Amount = amount,
-            Category = category,
-            Merchant = $"{category}-{counterparty}",
-            CounterpartyName = counterparty,
-            Remark = remark,
-            Channel = channel,
-            Currency = DefaultCurrency,
-            Timestamp = when,
-        });
-    }
-
-    private static readonly (string Category, string[] Merchants, decimal Min, decimal Max)[] ExpenseCatalog =
-    [
-        ("餐饮", ["海底捞火锅", "星巴克咖啡", "麦当劳", "瑞幸咖啡", "呷哺呷哺", "沙县小吃", "必胜客", "味千拉面"], 15.00m, 300.00m),
-        ("购物", ["京东商城", "淘宝天猫", "拼多多", "优衣库", "小米之家", "沃尔玛", "永辉超市"], 50.00m, 5_000.00m),
-        ("交通", ["滴滴出行", "中国石化加油站", "12306铁路", "首汽约车", "城市停车缴费"], 5.00m, 200.00m),
-        ("娱乐", ["万达影城", "好乐迪KTV", "腾讯视频会员", "Steam游戏", "大麦网演出"], 20.00m, 800.00m),
-        ("医疗", ["同仁堂药店", "美团挂号", "市第一医院", "爱康体检中心"], 20.00m, 2_000.00m),
-        ("教育", ["新东方教育", "当当网", "得到APP", "中国大学MOOC"], 50.00m, 3_000.00m),
-        ("住房", ["链家房租", "万盛物业管理", "国家电网电费", "自来水公司水费"], 3_000.00m, 6_000.00m),
-        ("通讯", ["中国移动", "中国联通", "中国电信"], 30.00m, 200.00m),
-    ];
-
-    // ---------------------------------------------------------------- 工具
-
-    private DateTimeOffset At(DateTimeOffset value) =>
-        new(value.Year, value.Month, value.Day, value.Hour, value.Minute, value.Second, LocalOffset);
-
-    private static DateTimeOffset FirstOfMonth(DateTimeOffset value) =>
-        new(value.Year, value.Month, 1, 0, 0, 0, value.Offset);
-
-    private static DateTimeOffset RandomDateInMonth(Random random, DateTimeOffset monthStart, DateTimeOffset maxDate)
-    {
-        var daysInMonth = DateTime.DaysInMonth(monthStart.Year, monthStart.Month);
-        var lastDay = monthStart.AddDays(daysInMonth - 1);
-        var upper = maxDate < lastDay ? maxDate : lastDay;
-        if (upper.Day < 1)
-        {
-            upper = monthStart;
+            // 取锁失败时必须把已拿到的锁还回去，否则其他请求会被永久阻塞。
+            for (var i = acquired.Count - 1; i >= 0; i--)
+            {
+                acquired[i].Gate.Release();
+            }
+            throw;
         }
 
-        var day = random.Next(1, upper.Day + 1);
-        return new DateTimeOffset(
-            monthStart.Year, monthStart.Month, day,
-            random.Next(6, 23), random.Next(0, 60), random.Next(0, 60),
-            monthStart.Offset);
+        return new LedgerLockHandle(acquired);
+    }
+
+    /// <summary>一次性拿全行锁，用于跨行查询之外的全局写操作。</summary>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>锁句柄。</returns>
+    public Task<IAsyncDisposable> AcquireAllLedgerLocksAsync(CancellationToken ct = default) =>
+        AcquireLedgerLocksAsync(_ledgers.Select(l => l.Bank.BankCode), ct);
+
+    // ---------------------------------------------------------------- 内部
+
+    /// <summary>按行代码取出参与查询的账本集合。</summary>
+    /// <param name="bankCode">行代码；为空表示全部银行。</param>
+    /// <returns>账本集合。</returns>
+    private IReadOnlyList<BankLedger> LedgersFor(string? bankCode)
+    {
+        if (string.IsNullOrWhiteSpace(bankCode)) return _ledgers;
+        var ledger = FindLedger(bankCode);
+        return ledger is null ? [] : [ledger];
+    }
+
+    /// <summary>按行代码查找账本。</summary>
+    /// <param name="bankCode">行代码。</param>
+    /// <returns>账本；未找到时返回 null。</returns>
+    private BankLedger? FindLedger(string? bankCode) =>
+        _ledgers.FirstOrDefault(l =>
+            string.Equals(l.Bank.BankCode, bankCode, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>按行代码取出账本，找不到时视为配置错误并抛出。</summary>
+    /// <param name="bankCode">行代码。</param>
+    /// <returns>账本。</returns>
+    private BankLedger RequireLedger(string? bankCode)
+    {
+        var ledger = FindLedger(bankCode);
+        if (ledger is not null) return ledger;
+
+        _logger.LogError("未找到银行 {BankCode} 的账本实例", bankCode);
+        throw new InvalidOperationException($"未找到银行 {bankCode} 的账本实例。");
+    }
+
+    /// <summary>锁句柄：释放时按相反顺序归还所有已获取的锁。</summary>
+    private sealed class LedgerLockHandle(IReadOnlyList<BankLedger> acquired) : IAsyncDisposable
+    {
+        /// <inheritdoc />
+        public async ValueTask DisposeAsync()
+        {
+            for (var i = acquired.Count - 1; i >= 0; i--)
+            {
+                acquired[i].Gate.Release();
+            }
+            await Task.CompletedTask;
+        }
     }
 }

@@ -6,6 +6,24 @@
 
 ---
 
+## 0.0 语义链路的现状（2026-10-20 更新）
+
+多 Agent 协同的前提是**上游能把话说清楚**，因此本轮先补齐了语义链路。
+下面这些能力**已落地**，本文其余章节的「P1 / 未做」不要再重复列出它们：
+
+| 能力 | 位置 | 一句话 |
+|---|---|---|
+| **意图分场景 / 动作两层** | `Base/Agents/IntentContext.cs` | 场景决定路由、动作决定分支；模型判出 `card.status` 不再被丢弃 |
+| **语义驱动的写操作** | `plugins/.../CardManagement/CardStatusResolver.cs` | 「我的卡不见了」→ 挂失；只认原文里明确表达的动作，宁可漏判不可错判 |
+| **插件自报正则触发条件** | `SDK/AgentContracts.cs` 的 `TriggerPatterns` | 用户只报一个 6 位代码也能路由到理财；**仅在关键词全不命中时**兜底 |
+| **会话记忆** | `Base/Agents/SessionMemory.cs` | 省略句（「改成 800」）能接上一轮的意图与收款人；按用户+会话隔离 |
+| **AI 连通性自检** | `Base/Ai/AiConnectivityProbe.cs` | `POST /api/ai/probe` 真实调一次模型并回报链路结果，让「AI 通没通」可验证 |
+
+详细背景见 [`../09-uml/02-architecture-decision-record.md`](../09-uml/02-architecture-decision-record.md) 的
+ADR-022 ~ ADR-029。
+
+---
+
 ## 0. 先说清楚：原来缺什么
 
 在你提这个问题之前，系统的 Agent 协同是**单跳路由**：
@@ -39,7 +57,7 @@
 | 子系统 | 职责 | 本项目对应 |
 |-------|------|-----------|
 | **Agent Loop & Orchestration** | 异步有状态运行时，决定何时调工具、何时重规划、何时协调子 Agent | ✅ `AgentOrchestrator`（本次新增） |
-| **Context & Memory** | KV 缓存复用、智能截断、向量记忆 | 🟡 仅有槽位上下文，无记忆 |
+| **Context & Memory** | KV 缓存复用、智能截断、向量记忆 | 🟡 已有**会话记忆**（`SessionMemory`：短期情节记忆，进程内、按用户+会话隔离、30 分钟过期）；长期语义记忆与智能截断未做 |
 | **Tool Use & MCP** | 工具注册表、类型化接口、敏感操作审批门 | 🟡 有 `IAgentTool` 契约，无实现 |
 | **Execution Sandbox** | 隔离执行环境，捕获输出做自我诊断 | ❌ 未做 |
 | **Trajectory System** | append-only 事件流，支持回放与分叉 | ✅ `InMemoryTrajectoryLog`（本次新增） |
@@ -126,7 +144,7 @@ public sealed record OrchestrationBudget
 ```json
 {
   "success": true,
-  "content": "您共有 2 张银行卡",
+  "content": "您共有 6 张银行卡，分布在 3 家银行：中国建设银行 2 张，中国工商银行 2 张，招商银行 2 张",
   "requiresHumanApproval": false,
   "stepsExecuted": 1,
   "totalElapsedMs": 1660,
@@ -242,25 +260,31 @@ SessionStart → PlanCreated → StepStarted → AgentInvoked
 
 ### 5.1 LLM 接入（🟡 意图识别已落地，规划仍未接）
 
-意图识别已按下面的契约落地为 `IIntentClassifier`（`Base/Ai/LlmIntentClassifier.cs`）：
+意图识别已按下面的契约落地为 `IIntentClassifier`（`Base/Ai/IIntentClassifier.cs`，实现见 `Base/Ai/LlmIntentClassifier.cs`）：
 配置 `Ai:ApiKey` 后由 OpenAI 兼容模型判定，未配置或调用失败自动降级规则表，
-送模型前强制脱敏并写审计。**仍未做的是把 Slots 抽取与编排规划也交给模型**。
-接入 LLM 后需要应对的成本问题：
+送模型前强制脱敏并写审计。**仍未做的是把槽位抽取与编排规划也交给模型**。
 
 ```csharp
 public interface IIntentClassifier
 {
-    Task<IntentResult> ClassifyAsync(string input, CancellationToken ct = default);
+    Task<IntentDecision> ClassifyAsync(string userInput, CancellationToken ct = default);
 }
 
-public sealed record IntentResult
-{
-    public required string Intent { get; init; }
-    public required double Confidence { get; init; }
-    public IReadOnlyDictionary<string, object?> Slots { get; init; } = [];
-    public string? Reasoning { get; init; }   // 决策依据，写入轨迹
-}
+public sealed record IntentDecision(
+    string Intent,        // 场景级或动作级意图，如 transfer / card.status
+    string Source,        // llm（大模型判定）/ rule（规则表兜底）/ session（继承上一轮）
+    double Confidence,    // 0~1
+    string? Reason = null // 降级或失败原因，写入审计
+);
 ```
+
+> 注意实际契约是 `IntentDecision`（**不是** `IntentResult`）：它**不含 Slots、不含 Reasoning**。
+> 槽位由各插件自行解析（转账的金额与收款人、卡片的卡号等），
+> 决策依据写进审计的 `DecisionReason`，不随响应返回给插件。
+
+意图标识分**场景**与**动作**两层（`Base/Agents/IntentContext.cs`）：
+场景决定路由到哪个 Agent，动作决定 Agent 走只读分支还是写分支。
+例如 `card` 是场景、`card.status` 是动作 —— 模型判出动作层，Agent 才有依据走写分支。
 
 **这会改变整个容量模型** —— 单请求延迟从 3ms 变成 500-2000ms，QPS 下降 100-500 倍。需要配套：
 - 语义缓存（相似问题复用结果）
@@ -281,8 +305,11 @@ public interface ISubAgentSpawner
 
 ### 5.3 上下文与记忆（P1）
 
-当前每轮请求上下文是全新的。需要：
-- 短期情节记忆（本次会话内）
+已有**短期情节记忆**（`Base/Agents/SessionMemory.cs`）：记住上一轮的场景意图、用户原话与槽位，
+使「给李华转 500」之后接「改成 800」这类省略句能续上（端到端场景 15 覆盖）。
+记忆是进程内存的，按「用户 + 会话」双键存储并 30 分钟过期 —— 不落库、不跨进程。
+
+仍需要：
 - 长期语义记忆（跨会话的用户偏好）
 - 上下文智能截断（超长对话）
 

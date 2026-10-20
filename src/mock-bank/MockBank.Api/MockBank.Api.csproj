@@ -11,5 +11,11 @@
     <!-- 1591: record 位置参数生成的属性无法逐个写 XML 注释，统一抑制该警告 -->
     <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- 每家银行一个独立 SQLite 数据库文件，因此模拟银行需要 EF Core 支撑 -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.10" />
+  </ItemGroup>
 
 </Project>

@@ -35,6 +35,9 @@ public enum TransactionChannel
 
     /// <summary>行内转账。</summary>
     InternalTransfer = 7,
+
+    /// <summary>跨行转账（经清算系统，付款行与收款行不是同一家银行）。</summary>
+    InterBankTransfer = 8,
 }
 
 /// <summary>账户交易流水实体，模拟核心系统的交易明细表。</summary>
@@ -42,6 +45,9 @@ public sealed record BankTransaction
 {
     /// <summary>交易流水号，形如 TX202609010000001。</summary>
     public required string TxNo { get; init; }
+
+    /// <summary>记账银行代码（如 ICBC）。跨行转账时，付款行与收款行各记一条流水。</summary>
+    public required string BankCode { get; init; }
 
     /// <summary>交易归属客户号。</summary>
     public required string UserId { get; init; }
@@ -98,6 +104,7 @@ public sealed record BankTransaction
             TransactionChannel.Pos => "POS消费",
             TransactionChannel.QuickPay => "快捷支付",
             TransactionChannel.InternalTransfer => "行内转账",
+            TransactionChannel.InterBankTransfer => "跨行转账",
             _ => "其他",
         };
 }

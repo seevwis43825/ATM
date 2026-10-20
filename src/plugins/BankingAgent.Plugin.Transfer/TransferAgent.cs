@@ -9,6 +9,7 @@
 
 using BankingAgent.Base.Agents;
 using BankingAgent.Base.Data;
+using BankingAgent.Base.Security;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.Base.Security.Compliance;
 using BankingAgent.PluginSdk;
@@ -80,6 +81,18 @@ public sealed class TransferAgent : BankingAgentBase
         if (string.IsNullOrEmpty(target))
         {
             targetName ??= _parser.ExtractTargetName(request.UserInput);
+
+            // 省略句场景：「给李华转 500」之后说「改成 800」，
+            // 这一句里没有收款人，回溯上一轮的原话把它找回来。
+            if (string.IsNullOrEmpty(targetName))
+            {
+                var previousInput = request.SharedContext.GetValueOrDefault("previous_user_input")?.ToString();
+                if (!string.IsNullOrWhiteSpace(previousInput))
+                {
+                    targetName = _parser.ExtractTargetName(previousInput);
+                }
+            }
+
             if (!string.IsNullOrEmpty(targetName))
             {
                 var candidates = await _coreBank.SearchBeneficiariesAsync(targetName, ct);
@@ -91,8 +104,13 @@ public sealed class TransferAgent : BankingAgentBase
                 }
                 else if (candidates.Count > 1)
                 {
+                    // 同名客户在多家银行都有账户时，不能替用户瞎猜一个 ——
+                    // 把候选连同开户行列出来，让用户指认，跨行转账才不会转错人。
+                    var options = string.Join("；", candidates.Select(c =>
+                        $"{c.BankName} {DataMasker.MaskAccount(c.AccountNo)}"));
+
                     return AgentResult.Fail("TARGET_AMBIGUOUS",
-                        $"「{targetName}」匹配到 {candidates.Count} 个账户，请提供收款账号以确认唯一收款人");
+                        $"「{targetName}」在 {candidates.Count} 家银行有账户：{options}。请指定开户行或收款账号。");
                 }
                 else
                 {
@@ -110,7 +128,7 @@ public sealed class TransferAgent : BankingAgentBase
 
         if (string.IsNullOrEmpty(source))
         {
-            // 未指定付款账户时，取用户第一个可用账户
+            // 未指定付款账户时，取用户第一个可用账户（跨行场景下按账号排序，取到的可能是任意一家银行）
             var accounts = await _coreBank.ListAccountsAsync(request.UserId, ct);
             var payable = accounts.FirstOrDefault(a => a.Status == "正常");
             if (payable is null)
@@ -172,7 +190,7 @@ public sealed class TransferAgent : BankingAgentBase
         }
 
         // ===== 4. 幂等检查 =====
-        var idempotencyKey = request.SessionId ?? Guid.NewGuid().ToString("N");
+        var idempotencyKey = BuildIdempotencyKey(request, source!, target!, amount.Value);
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
         var existing = await db.Set<TransferRecord>()
@@ -279,5 +297,31 @@ public sealed class TransferAgent : BankingAgentBase
                 ["human_approved"] = compliance.RequiresHumanApproval
             }
         };
+    }
+
+    /// <summary>
+    /// 生成幂等键。
+    ///
+    /// 早期实现直接拿 sessionId 当键，于是**一个会话里只能发生一次转账**：
+    /// 多轮对话中「先转 500，再改成 800」的第二轮会被当成重复提交而静默跳过，
+    /// 用户看到的是「该转账已处理过」，但他明明改过金额。
+    ///
+    /// 现在键的组成是「会话 + 操作要素（付款方 / 收款方 / 金额）」：
+    ///   - 同一会话里重复提交**同样的**转账 → 键相同 → 被幂等拦截（这才是幂等要防的）；
+    ///   - 同一会话里改了金额或对象 → 键不同 → 正常执行。
+    /// </summary>
+    /// <param name="request">当前请求。</param>
+    /// <param name="source">付款账号。</param>
+    /// <param name="target">收款账号。</param>
+    /// <param name="amount">转账金额。</param>
+    /// <returns>幂等键。</returns>
+    private static string BuildIdempotencyKey(
+        AgentRequest request, string source, string target, decimal amount)
+    {
+        var session = string.IsNullOrWhiteSpace(request.SessionId)
+            ? Guid.NewGuid().ToString("N")
+            : request.SessionId.Trim();
+
+        return string.Join('|', session, source, target, amount.ToString("F2"));
     }
 }

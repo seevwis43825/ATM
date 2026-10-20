@@ -2,6 +2,7 @@
 
 using Microsoft.AspNetCore.Mvc;
 using MockBank.Api.Contracts;
+using MockBank.Api.Domain;
 using MockBank.Api.Services;
 
 namespace MockBank.Api.Endpoints;
@@ -20,7 +21,7 @@ public static class CardEndpoints
         var group = app.MapGroup(RoutePrefix).WithTags("银行卡");
 
         group.MapGet("", GetCards)
-            .WithMetadata(new ApiOperationMetadata("GetCardsByUser", "查询指定客户名下的全部银行卡，含卡类型、卡状态、绑定手机号与单日限额。", "查询指定客户名下的全部银行卡，含卡类型、卡状态、绑定手机号与单日限额。", ["银行卡"]))
+            .WithMetadata(new ApiOperationMetadata("GetCardsByUser", "查询指定客户名下的全部银行卡（含其他银行的卡，即跨行卡片），返回卡类型、卡状态、发卡行、绑定手机号与单日限额。可按 bankCode 限定发卡行。", "查询指定客户名下的全部银行卡（含其他银行的卡，即跨行卡片），返回卡类型、卡状态、发卡行、绑定手机号与单日限额。可按 bankCode 限定发卡行。", ["银行卡"]))
             .Produces<IReadOnlyList<CardResponse>>(StatusCodes.Status200OK)
             .Produces<ApiErrorResponse>(StatusCodes.Status400BadRequest);
 
@@ -46,11 +47,12 @@ public static class CardEndpoints
         return app;
     }
 
-    /// <summary>GET /api/corebank/v1/cards?userId= — 查询客户全部卡片。</summary>
+    /// <summary>GET /api/corebank/v1/cards?userId= — 查询客户全部卡片（含跨行卡片）。</summary>
     /// <param name="userId">客户号，必填。</param>
+    /// <param name="bankCode">发卡行代码，可为空表示不限（返回该客户在所有银行的卡）。</param>
     /// <param name="service">卡片服务。</param>
     /// <returns>卡片列表；userId 缺失时返回 400。</returns>
-    private static IResult GetCards([FromQuery] string? userId, CardService service)
+    private static IResult GetCards([FromQuery] string? userId, [FromQuery] string? bankCode, CardService service)
     {
         if (string.IsNullOrWhiteSpace(userId))
         {
@@ -63,7 +65,18 @@ public static class CardEndpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
-        return Results.Ok(service.GetCardsByUser(userId));
+        if (!string.IsNullOrWhiteSpace(bankCode) && BankCatalog.Find(bankCode) is null)
+        {
+            return Results.Json(
+                new ApiErrorResponse(
+                    ErrorCodes.VALIDATION_ERROR,
+                    $"无法识别的发卡行代码：{bankCode}。支持值：{string.Join(" / ", BankCatalog.All.Select(b => b.BankCode))}。",
+                    new Dictionary<string, object?> { ["bankCode"] = bankCode },
+                    null),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return Results.Ok(service.GetCardsByUser(userId, bankCode));
     }
 
     /// <summary>GET /api/corebank/v1/cards/{cardNo} — 查询单张卡片。</summary>

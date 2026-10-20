@@ -7,7 +7,7 @@
 
 ## 0. 当前实现与目标边界
 
-> **Current（源码可验证）**：`AuditLogger` 先生成 HMAC-SHA256 链签名，再追加 JSONL 文件，并写入独立 `AuditDbContext` 的 `audit_events` 表；SQLite 下为独立表，PostgreSQL 配置下映射到 `audit` Schema。仓储接口只暴露 Append/Query/Verify/Count，不提供 Update/Delete。文件或数据库写失败均记录 Critical；异常被捕获，**不会阻断业务流程**，因此双写并非原子事务，也不保证两端总是一致。
+> **Current（源码可验证）**：`AuditLogger` 先生成 HMAC-SHA256 链签名，再追加 JSONL 文件，并把事件放入有界队列，由后台 `AuditDbWriter` 攒批（默认 200 条）后写入独立 `AuditDbContext` 的 `audit_events` 表；SQLite 下为独立表，PostgreSQL 配置下映射到 `audit` Schema。仓储接口只暴露 Append/Query/Verify/Count，不提供 Update/Delete。文件或数据库写失败均记录 Critical；异常被捕获，**不会阻断业务流程**。**权威记录是同步落盘的 JSONL + 链签名，数据库是可检索副本**（批量异步提交，读路径先 flush 保证"写完立刻查"查得到）；因此两端并非原子事务，也不保证两端总是一致，崩溃时最多丢失尚未批量提交的数据库副本尾部，JSONL 与签名链完好。
 >
 > **Target**：PostgreSQL 分区、数据库禁止改删 trigger、WORM/OSS 异地归档、KMS 签名存储、ClickHouse/Elasticsearch、完整审计 API、指标告警与五年留存均尚未落地。下文相关内容是生产设计或 Runbook。
 
@@ -52,7 +52,7 @@
 
 ## 3. 审计日志结构
 
-### 3.1 核心字段
+### 3.1 目标字段（Target，尚未全部实现）
 
 ```json
 {
@@ -99,7 +99,39 @@
 }
 ```
 
-### 3.2 必填校验
+### 3.1.1 Current 实际落盘字段（源码可验证）
+
+> 上面的目标字段里有相当一部分**当前并不存在**。实现真正落盘的内容如下，
+> 以源码为准：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`（JSONL 写入）
+> 与 `src/src/BankingAgent.Base/Data/AuditRepository.cs`（`audit_events` 表）。
+
+**JSONL 归档（权威记录）实际只有 11 个键**：
+
+| 键 | 来源 | 说明 |
+|----|------|------|
+| `AuditId` | `evt.AuditId` | 全局唯一（12 位十六进制） |
+| `ts` | `evt.Timestamp` | ISO-8601 UTC |
+| `ActorType` | `evt.ActorType` | USER / STAFF / SYSTEM / AGENT |
+| `actor` | `HashActor(evt.ActorId)` | **用户 ID 的 SHA256 前 12 位**，不落明文 |
+| `Operation` | `evt.Operation` | 操作域.动作 |
+| `Scenario` | `evt.Scenario` | 业务场景 |
+| `Decision` | `evt.Decision` | SUCCESS / APPROVED / REJECTED … |
+| `RuleId` | `evt.ComplianceRule ?? evt.RuleId` | 命中的合规规则 |
+| `Amount` | `evt.Amount` | 涉及金额（可空） |
+| `prev` | `evt.PreviousSignature` | 上一条的签名（链式结构） |
+| `sig` | `evt.Signature` | 本条的 HMAC-SHA256 签名 |
+
+**目标字段中当前不存在的**（不要在文档或代码里引用它们）：
+`service`、`actor_role`、`target_type`、`target_id`、`span_id`、`device_id`、
+`geo_country`、`geo_city`、`consent_snapshot`、`ai_metadata`、`human_in_loop`、
+`rule_version`（库表有 `RuleVersion` 列，JSONL 未写）、`additional`
+（扩展字段的成员名是 `Extra`，且 JSONL 也不写它）。
+
+**`audit_events` 表额外有的列**（JSONL 里没有）：`ActorHash`、`PolicyVersion`、
+`RuleVersion`、`Currency`、`SourceIp`、`UserAgent`、`Intent`、`DecisionReason`、
+`RiskScore`、`RequestId`、`TraceId`、`ElapsedMs`。
+
+### 3.2 必填校验（Target 目标；当前实现**未做**校验）
 
 | 字段 | 必填？ | 说明 |
 |------|--------|------|
@@ -112,6 +144,10 @@
 | `request_id` | ✅ | 与日志关联 |
 | `trace_id` | ✅ | 与 OTel 关联 |
 | `consent_snapshot` | ✅（如涉及 PII） | 同意快照 |
+
+> ⚠️ **当前实现没有做任何必填校验**：`AuditLogger.WriteAsync` 不调用校验方法，
+> 也不存在 `ValidateRequired` 之类的 API（2026-10-20 复核确认，全仓 0 命中）。
+> 上表描述的是**目标态**要求；上线检查清单里"必填字段已校验"一项因此**仍未完成**。
 
 ---
 
@@ -127,8 +163,23 @@
    ├── ① 业务表写入（事务）
    └── ② 审计日志写入（独立通道）
 
-【当前行为】JSONL 与 `audit_events` 独立双写；任一写入失败只记
-Critical，不回滚或阻断业务。生产需增加可靠队列/补偿、对账与告警闭环。
+【当前行为】JSONL 与 `audit_events` 两路写入，但**权威性不同**：
+
+- **JSONL + 链签名 = 权威记录**，请求返回前同步落盘。审计的**可篡改性**由
+  链式签名保证（任何篡改都会导致链断裂），不依赖数据库。
+- **`audit_events` 表 = 可检索副本**，事件先入有界队列，由后台写入器攒批提交。
+  这不是可选优化而是必需项：逐条同步提交意味着每条审计事件付一次 SQLite
+  事务提交成本（含 fsync），而审计写在请求关键路径上，进程内实测会把落库吞吐
+  压到 **142~233 条/秒**（批量提交为 **2989~4129 条/秒**，快 17.7~25.7 倍）。
+- **检索能力的一个 Provider 差异**（2026-10-20 修复并补测试）：EF 的 SQLite provider
+  **拒绝翻译 `DateTimeOffset` 的 ORDER BY**，直接抛 `NotSupportedException`，
+  导致审计库的查询与验链路径 100% 失败 —— 文档长期声称"数据库提供按操作者/时间/场景检索的能力"，
+  实际是**假的**。现按 Provider 分支处理：SQLite（开发环境）排序放内存、**不改存储格式**
+  （存量审计库照常可读），PostgreSQL（生产环境 `timestamptz`）保持库内排序。
+  覆盖测试见 `src/UnitTests/AuditBatchedWriterTests.cs`。
+
+两路任一写入失败都只记 Critical，不回滚或阻断业务。队列**有界且满了背压等待，
+绝不丢审计记录**。生产需增加可靠队列/补偿、对账与告警闭环。
 ```
 
 ### 4.2 三层存储（Target）
@@ -220,66 +271,83 @@ CREATE TRIGGER no_delete BEFORE DELETE ON audit.events
 
 ## 5. 代码实现
 
-### 5.1 C#/.NET 端
+### 5.1 C#/.NET 端（Current 真实实现）
+
+> 以下代码与仓库源码**逐字对应**（`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`）。
+> 本节只做**裁剪展示**，完整实现以源码为准。
 
 ```csharp
 public interface IAuditLogger
 {
-    Task LogAsync(AuditEvent evt, CancellationToken ct = default);
+    Task WriteAsync(AuditEvent evt, CancellationToken ct = default);
+    AuditChainVerification VerifyChain(IReadOnlyList<AuditEvent> events);
 }
 
-public class AuditLogger : IAuditLogger
+public sealed partial class AuditLogger(
+    IOptions<AuditOptions> options,
+    ILogger<AuditLogger> logger,
+    IAuditRepository? repository = null) : IAuditLogger
 {
-    private readonly IAuditDbContext _db;
-    private readonly IClock _clock;
-    
-    public async Task LogAsync(AuditEvent evt, CancellationToken ct = default)
+    public async Task WriteAsync(AuditEvent evt, CancellationToken ct = default)
     {
-        // 1. 强制校验必填字段
-        evt.ValidateRequired();
-        
-        // 2. 自动填充上下文（trace_id, source_ip, user_id）
-        AuditContextEnricher.Enrich(evt);
-        
-        // 3. HMAC 签名
-        evt.Signature = HmacSigner.Sign(evt);
-        
-        // 4. 写入独立连接（避免与业务事务耦合）
-        await _db.AuditEvents.AddAsync(evt, ct);
-        await _db.SaveChangesAsync(ct);
+        // 1. 链式签名：读链尾 → 算 HMAC → 写链尾，三步在同一临界区内
+        var signed = SignAndAdvance(evt);
+
+        // 2. 权威记录：JSONL 归档，请求返回前已落盘
+        await AppendToFileAsync(signed, ct);
+
+        // 3. 可检索副本：入有界队列，由 AuditDbWriter 攒批落库
+        await AppendToRepositoryAsync(signed, ct);
     }
 }
 ```
 
-### 5.2 使用示例
+**与本文档早期版本的关键差异**（2026-10-20 复核修正）：
+
+| 早期版本写的 | 实际情况 |
+|-------------|---------|
+| `IAuditLogger.LogAsync(...)` | 方法名是 **`WriteAsync(...)`** |
+| `IAuditDbContext` / `IClock` | **不存在**。审计库用 `IAuditRepository`（`EfAuditRepository`） |
+| `HmacSigner.Sign(evt)` | **不存在**。签名由 `AuditLogger` 内部的 `SignAndAdvance()` / `ComputeHmac()` 完成 |
+| `evt.ValidateRequired()` | **不存在**，当前**没有必填字段校验**（见 §3.2 与 §11 检查清单） |
+| `AuditContextEnricher.Enrich(evt)` | **不存在**，上下文由调用方显式填写 |
+| `AuditEvent.TargetId` / `.Additional` | 字段名是 **`Extra`**（`IReadOnlyDictionary<string, object?>`），且**没有** `TargetId` |
+| 直接 `SaveChangesAsync` 落库 | 现在是**有界队列 + 后台攒批提交**（`AuditDbWriter`），文件才是权威记录 |
+
+### 5.2 使用示例（Current 真实写法）
 
 ```csharp
-public class TransferService
+// 插件或宿主端点通过注入的 IAuditLogger 写审计
+var audit = ctx.RequestServices.GetRequiredService<IAuditLogger>();
+
+await audit.WriteAsync(new AuditEvent
 {
-    public async Task<TransferResult> Execute(TransferRequest req, CancellationToken ct)
+    AuditId = Guid.NewGuid().ToString("N")[..12],
+    Timestamp = DateTimeOffset.UtcNow,
+    ActorType = "USER",
+    ActorId = principal.UserId,
+    Operation = "transfer.execute",
+    Scenario = "transfer",
+    Decision = "SUCCESS",
+    DecisionReason = result.Reason,
+    Amount = req.Amount,
+    RequestId = req.SessionId,
+    // 扩展字段放在 Extra（没有 TargetId / Additional 这两个成员）
+    Extra = new Dictionary<string, object?>
     {
-        var result = ...; // 业务执行
-        
-        // 业务完成后审计
-        await _audit.LogAsync(new AuditEvent
-        {
-            Operation = "transfer.execute",
-            Scenario = "transfer",
-            TargetId = result.TransferId,
-            Decision = result.Status.ToString(),
-            DecisionReason = result.Reason,
-            Amount = req.Amount,
-            Additional = new {
-                    req.FromAccount, req.ToAccount, req.Currency
-            }
-        }, ct);
-        
-        return result;
+        ["from_account"] = req.FromAccount,
+        ["to_account"] = req.ToAccount,
+        ["currency"] = req.Currency
     }
-}
+}, ct);
 ```
 
-### 5.3 自动埋点（推荐）
+> `AuditEvent` 的完整成员见 `AuditLogger.cs` 的 record 定义（`AuditId` / `Timestamp` / `ActorType` /
+> `ActorId` / `Operation` / `Scenario` / `Intent` / `Decision` / `DecisionReason` / `RuleId` /
+> `RequestId` / `TraceId` / `SourcePlugin` / `Amount` / `RiskScore` / `ComplianceRule` /
+> `ElapsedMs` / `Extra` / `Signature` / `PreviousSignature`）。
+
+### 5.3 自动埋点（Target / 设计示意）
 
 通过 **AOP / MediatR Pipeline** 自动审计，减少手动调用遗漏：
 

@@ -7,6 +7,8 @@ namespace MockBank.Api.Contracts;
 /// <summary>银行卡查询响应体。</summary>
 /// <param name="CardNo">卡号。</param>
 /// <param name="AccountNo">绑定账号。</param>
+/// <param name="BankCode">发卡行代码（如 ICBC）。跨行卡片的归属标识。</param>
+/// <param name="BankName">发卡行全称。</param>
 /// <param name="UserId">客户号。</param>
 /// <param name="CardType">卡类型中文名（借记卡 / 信用卡）。</param>
 /// <param name="Status">卡状态中文名（正常 / 挂失 / 冻结）。</param>
@@ -20,6 +22,8 @@ namespace MockBank.Api.Contracts;
 public sealed record CardResponse(
     string CardNo,
     string AccountNo,
+    string BankCode,
+    string BankName,
     string UserId,
     string CardType,
     string Status,
@@ -80,6 +84,7 @@ public static class CardMapping
     /// <param name="card">卡片实体。</param>
     /// <returns>卡查询响应体。</returns>
     public static CardResponse ToResponse(this BankCard card) =>
-        new(card.CardNo, card.AccountNo, card.UserId, card.CardTypeText, card.StatusText, card.BoundPhone,
-            card.DailyLimit, card.IssueDate, card.ExpiryDate, card.CardOrg, card.StatusReason, card.StatusChangedAt);
+        new(card.CardNo, card.AccountNo, card.BankCode, BankCatalog.FullNameOf(card.BankCode), card.UserId,
+            card.CardTypeText, card.StatusText, card.BoundPhone, card.DailyLimit, card.IssueDate,
+            card.ExpiryDate, card.CardOrg, card.StatusReason, card.StatusChangedAt);
 }

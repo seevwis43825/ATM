@@ -2,7 +2,7 @@
 
 > **日期**：2026-09-28
 > **范围**：`src/` 全部代码
-> **当前验证**：`dotnet test src/UnitTests/UnitTests.csproj` 实测 **149/149 通过**。旧版“112/201 项”统计已失效；密码自检、E2E、Stress 与 LoadTest 是独立程序，不能并入当前单元测试数量，需按各自最近一次运行证据报告。
+> **当前验证**：`dotnet test src/UnitTests/UnitTests.csproj` 实测 **187/187 通过**。旧版“112/201 项”统计已失效；密码自检、E2E、Stress 与 LoadTest 是独立程序，不能并入当前单元测试数量，需按各自最近一次运行证据报告。
 
 > **Current / Target 边界**：本报告中的“已实现”只表示仓库存在代码与相应测试，不表示生产已部署。当前默认仍为 `BankingAgent.Host :5243` + `MockBank.Api :5200`、HTTP、SQLite + `EnsureCreated`；安全门默认开发配置关闭。MFA、KMS/Vault、TDE、WORM、RLS 均未实现。
 
@@ -328,7 +328,7 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 | **速率限制** | ✅ | 令牌桶双维度 |
 | **L1-L4 脱敏** | ✅ | 29 项单元测试 |
 | **审计链签名** | ✅ | HMAC 链 JSONL |
-| **审计独立表双写** | ✅ | `audit_events`；失败记 Critical、不阻断业务 |
+| **审计独立表双写** | ✅ | JSONL + 链签名为**权威记录**（同步落盘），`audit_events` 为**可检索副本**（批量异步提交）；失败记 Critical、不阻断业务 |
 | **人工回环** | ✅ | 资金操作强制 |
 | **幂等保护** | ✅ | 防重复扣款 |
 
@@ -349,7 +349,7 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 | 9 | **无 SBOM / 依赖锁定** | 🟡 中 | 供应链可追溯性不足 |
 | 10 | **未做渗透测试** | 🟡 中 | 无第三方安全评估 |
 | 11 | **mTLS 未实现** | 🟡 中 | 服务间调用无双向认证 |
-| 12 | **LLM 集成后容量未重估** | 🟡 中 | 当前 296 QPS，接 LLM 后降 100-500 倍 |
+| 12 | **LLM 集成后容量未重估** | 🟡 中 | 当前实测峰值 198 QPS @ 20 并发（本机数字离散达 2 倍，非容量承诺），接 LLM 后降 100-500 倍 |
 
 ---
 
@@ -383,7 +383,7 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 
 ```powershell
 # 单元测试
-dotnet test src/UnitTests/UnitTests.csproj  # 当前 149 项
+dotnet test src/UnitTests/UnitTests.csproj  # 当前 187 项
 
 # 密码学自检（含抗量子；以本次程序输出为准）
 dotnet run --project src/CryptoSelfTest

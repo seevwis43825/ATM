@@ -23,7 +23,7 @@ public sealed class 理财PluginEntryPoint : IPluginEntryPoint
         // 全局唯一，反向域名风格。改名会影响审计与路由，发布后不要随意变更。
         Id = new PluginId("banking.wealth"),
         Name = "理财",
-        Description = "理财产品查询与推荐、账户余额查询（只读场景，认购属后续迭代）",
+        Description = "理财产品查询与推荐、公募基金代销清单与净值查询、账户余额查询（只读场景，认购属后续迭代）",
         Version = PluginVersion.Parse("1.0.0"),
         Author = "业务开发组",
         Scenarios = ["wealth"],

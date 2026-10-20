@@ -28,6 +28,9 @@ public abstract class BankingAgentBase(
     /// <inheritdoc />
     public virtual IReadOnlyList<string> TriggerKeywords => [];
 
+    /// <inheritdoc />
+    public virtual IReadOnlyList<string> TriggerPatterns => [];
+
     /// <summary>执行具体业务逻辑，由子类实现。</summary>
     protected abstract Task<AgentResult> HandleAsync(AgentRequest request, CancellationToken ct);
 
@@ -108,6 +111,18 @@ public abstract class BankingAgentBase(
         if (string.IsNullOrEmpty(intent)) return SupportedIntents.Contains("*");
         return SupportedIntents.Any(p => intent.StartsWith(p, StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// 取当前请求的意图上下文（场景级 + 动作级）。
+    ///
+    /// 插件 Agent 判断「走只读分支还是写分支」时应该用这个，
+    /// 而不是只在原文里搜关键词 ——
+    /// 原文里可能根本没有那个词（用户说「我的卡不见了」而不是「帮我挂失」），
+    /// 但上游模型已经把它识别成了 card.status。
+    /// </summary>
+    /// <param name="request">当前请求。</param>
+    /// <returns>意图上下文。</returns>
+    protected static IntentContext IntentOf(AgentRequest request) => IntentContext.From(request);
 
     private static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..max] + "...";

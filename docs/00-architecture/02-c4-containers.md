@@ -21,7 +21,7 @@
                 ▼                  ▼
 ┌───────────────────────────┐   SQLite（默认）
 │ MockBank.Api（.NET 8，    │   bankingagent.db +
-│ :5200，进程内 MockBankStore）│   bankingagent.audit.db
+│ :5200，3 家银行各一个库）│   bankingagent.audit.db
 └───────────────────────────┘
 
 可选：Host 通过 HTTPS 调用 OpenAI-compatible LLM，仅增强意图分类。
@@ -34,7 +34,7 @@
 | 容器 | 技术 | 职责 | 默认端口/存储 |
 |---|---|---|---|
 | `BankingAgent.Host` | ASP.NET Core Minimal API, .NET 8 | API、静态 UI、认证、插件装配、Agent 路由/编排 | `5243` |
-| `MockBank.Api` | ASP.NET Core Minimal API, .NET 8 | 模拟账户、转账、账单、卡片、理财核心接口 | `5200`，进程内数据 |
+| `MockBank.Api` | ASP.NET Core Minimal API, .NET 8 | 模拟 3 家银行的账户、转账、账单、卡片、理财、公募基金核心接口 | `5200`，3 个独立 SQLite 文件（`App_Data/mockbank_*.db`） |
 | SQLite | EF Core SQLite | Host 业务与审计持久化 | 默认两个本地文件 |
 
 ## 3. 目标容器视图（Target）

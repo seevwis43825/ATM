@@ -43,7 +43,7 @@
 | DbContext | `src/src/BankingAgent.Base/Data/BankingDbContext.cs` |
 | BaseEntity | `src/src/BankingAgent.Base/Data/BaseEntity.cs` |
 | UnitOfWork | `src/src/BankingAgent.Base/Data/UnitOfWork.cs` |
-| SimpleFactory | `src/src/BankingAgent.Base/Data/SimpleDbContextFactory.cs` |
+| SimpleFactory | `src/src/BankingAgent.Base/Data/BankingDbContextFactory.cs` |
 | EventBus | `src/src/BankingAgent.Base/Events/InMemoryEventBus.cs` |
 | AuditLogger | `src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs` |
 | ComplianceGuard | `src/src/BankingAgent.Base/Security/Compliance/ComplianceGuard.cs` |
@@ -107,7 +107,7 @@ flowchart TB
 |------|------|----------|
 | 客户 → 系统 | `POST /api/chat`、`POST /api/chat/confirm` | `Host/Program.cs`、`Host/Program.cs` |
 | 客服代客 | 同上，且必须带 `impersonationReason` | `Host/Program.cs` |
-| 运维启停插件 | `POST /api/plugins/{pluginId}/stop|start` | `Host/Program.cs`、`Host/Program.cs` |
+| 运维启停插件 | `POST /api/plugins/{pluginId}/stop\|start` | `Host/Program.cs`、`Host/Program.cs` |
 | 系统 → CBS | `ICoreBankClient` 9 个方法 | `SDK-CoreBank.cs`，实现 `CoreBankClient.cs` |
 | 系统 → LLM | **可选**（未配 `Ai:ApiKey` 时不调用）。意图识别由 `IIntentClassifier` 统一入口：配了密钥走 OpenAI 兼容模型，否则规则表 | `Base/Ai/LlmIntentClassifier.cs` |
 | 系统 → 监管 | **当前未接入**。`AmlThresholdRule` 只打标不外发 | `ComplianceRules.cs` |
@@ -139,7 +139,7 @@ flowchart TB
             GUARD["ComplianceGuard<br/>4 条内置规则"]:::proc
             AUDIT["AuditLogger<br/>HMAC 链式签名"]:::proc
             BUS["InMemoryEventBus<br/>进程内发布订阅"]:::proc
-            DBC["BankingDbContext<br/>+ SimpleDbContextFactory"]:::proc
+            DBC["BankingDbContext<br/>+ BankingDbContextFactory"]:::proc
             DBINIT["DatabaseInitializer<br/>初始化 + 数据库健康探活"]:::proc
             CBB["CoreBankClient<br/>IHttpClientFactory"]:::proc
         end
@@ -159,7 +159,7 @@ flowchart TB
 
     DB[("bankingagent.db<br/>SQLite（开发）<br/>PostgreSQL（生产）")]:::data
     LOGS[["logs/audit-chain.log<br/>审计链文件（HMAC 签名）"]]:::fs
-    OPENAPI[["/openapi/v1.json<br/>17 paths / 22 schemas"]]:::fs
+    OPENAPI[["/openapi/v1.json<br/>26 paths / 30 schemas"]]:::fs
 
     HOST --- RATE
     RATE --- ROUTER
@@ -194,7 +194,7 @@ flowchart TB
 | `BankingAgent.Host` | `5243`（https `7247`） | ASP.NET Core 8 最小 API | `Host/Properties/launchSettings.json:16` | 唯一对外暴露的服务 |
 | `MockBank.Api` | `5200` | ASP.NET Core 8 最小 API | `mock-bank/MockBank.Api/Properties/launchSettings.json:8` | 仅开发/演示环境 |
 | 数据库 | — | SQLite / PostgreSQL | `Host/appsettings.json:10-14` | 默认 `Data Source=bankingagent.db` |
-| 事件总线 | — | 进程内 | `EventBus.cs` | **不跨进程**，见 [ADR-020](02-architecture-decision-record.md#adr-020) |
+| 事件总线 | — | 进程内 | `InMemoryEventBus.cs` | **不跨进程**，见 [ADR-020](02-architecture-decision-record.md#adr-020) |
 | `plugins/` | — | 独立 `AssemblyLoadContext` | `PluginRegistry.cs` | 宿主构建后复制，**可独立发布** |
 
 **插件如何进入 `plugins/` 目录**：Host 项目用 MSBuild 目标 `CopyPluginsToOutput` 在 `AfterTargets="Build"` 阶段把四个 `.dll` 复制到 `$(OutDir)plugins`
@@ -1046,7 +1046,7 @@ classDiagram
         +TryRegisterIdempotencyKey(key) bool
     }
 
-    class SimpleDbContextFactory {
+    class BankingDbContextFactory {
         -IServiceProvider _rootProvider
         +CreateDbContext() BankingDbContext
         +CreateDbContextAsync(CancellationToken) Task
@@ -1126,13 +1126,13 @@ classDiagram
     BankingDbContext --> DateTimeOffsetProvider : 取时间
     CurrentUserAccessor --> ICurrentUserAccessor : 实现
     CurrentUserAccessor --> ActorRole : AsyncLocal 携带
-    SimpleDbContextFactory ..> BankingDbContext : 创建
-    SimpleDbContextFactory ..> PluginContributorRegistry : 每次创建前回填
+    BankingDbContextFactory ..> BankingDbContext : 创建
+    BankingDbContextFactory ..> PluginContributorRegistry : 每次创建前回填
     PluginContributorRegistry ..> IEntitySetContributor : 静态持有
     UnitOfWork ..> BankingDbContext : 通过工厂创建
     DatabaseInitializer ..> BankingDbContext : 初始化 / Migration / 健康探活
     DatabaseInitializer ..> IEntitySetContributor : 遍历分区建 Schema
-    TransferAgent ..> SimpleDbContextFactory : 经 IDbContextFactory 注入
+    TransferAgent ..> BankingDbContextFactory : 经 IDbContextFactory 注入
 ```
 
 **图解**
@@ -1158,10 +1158,10 @@ BaseEntity（抽象，9 个字段，全部带审计语义）
 
 存在两个构造函数的原因：2F Core 内置的 `IDbContextFactory<T>` 只会找"接受 `DbContextOptions` 的唯一构造函数"，
 而项目的 DbContext 需要注入插件贡献器集合、当前用户、时钟。见
-[ADR-011](02-architecture-decision-record.md#adr-011) 与 `SimpleDbContextFactory.cs` 的注释。
+[ADR-011](02-architecture-decision-record.md#adr-011) 与 `BankingDbContextFactory.cs` 的注释。
 
-`SimpleDbContextFactory.CreateDbContext` 的做法是：从根容器 `GetServices<IEntitySetContributor>()` 取出贡献器，
-**先写进静态注册表**（`SimpleDbContextFactory.cs`），再调主构造函数。
+`BankingDbContextFactory.CreateDbContext` 的做法是：从根容器 `GetServices<IEntitySetContributor>()` 取出贡献器，
+**先写进静态注册表**（`BankingDbContextFactory.cs`），再调主构造函数。
 代价是每次创建 DbContext 都会重写一次进程级静态状态，详见 [ADR-012](02-architecture-decision-record.md#adr-012)。
 
 ### 7.3 审计字段自动填充
@@ -1194,7 +1194,7 @@ stateDiagram-v2
 
 `TryRegisterIdempotencyKey` 用 `ConcurrentDictionary.TryAdd` 实现进程内去重，
 并发下**恰好一个**成功（`UnitOfWork.cs`，单元测试 `IdempotencyTests.cs` 验证了 100 并发只有 1 次成功）。
-但 `UnitOfWork` 注册为 **Scoped**（`DIExtensions.cs`），每次请求都是新实例，
+但 `UnitOfWork` 注册为 **Scoped**（`BankingCoreServiceCollectionExtensions.cs`），每次请求都是新实例，
 所以这个字典实际只在单个请求内有效——真正的幂等保护在 `TransferRecord.IdempotencyKey` 的**唯一索引**上。
 
 ---
@@ -1290,7 +1290,7 @@ sequenceDiagram
 | 5. 路由 | `AgentRouter.cs` | 最长前缀优先 |
 | 6. 槽位抽取 | `TransferAgent.cs` + `SlotReader.cs` | 统一处理 JsonElement |
 | 7. 补全付款账户 | `TransferAgent.cs` | 调 `ICoreBankClient.ListAccountsAsync`，取 `Status == "正常"` 的第一个 |
-| 8. 合规评估 | `TransferAgent.cs` | 幂等键 `IdempotencyKey = request.SessionId` 也传进合规上下文 |
+| 8. 合规评估 | `TransferAgent.cs` | 幂等键（会话 + 付款方 + 收款方 + 金额）也传进合规上下文 |
 | 9. 审计合规决策 | `TransferAgent.cs` | `ActorType = "AGENT"`，`RiskScore` 入审计 |
 | 10. 人工回环 | `TransferAgent.cs` | `RequiresHumanApproval && !confirmed` → `PendingApproval`，**此时 `SideEffectCommitted` 必为 false** |
 | 11. 幂等检查 | `TransferAgent.cs` | 命中则返回原结果，`idempotent_replay = true` |
@@ -1523,7 +1523,7 @@ stateDiagram-v2
 
 > **注意**：业务失败**也返回 HTTP 200**。
 > 客户端必须检查响应体里的 `success` 字段，不能只看状态码。
-> 完整错误码表见 [03-api-contract.md §3](03-api-contract.md#3-错误码全表)。
+> 完整错误码表见 [实测 API 参考（模拟银行）](../plugin/02-api-reference.md)。
 
 ---
 
@@ -1566,7 +1566,7 @@ flowchart TB
 |------|------|------------|
 | 端口 | Host `5243/7247`、MockBank `5200` | 统一走网关（HTTPS + mTLS） |
 | 数据库 | SQLite 单文件 | PostgreSQL 16，建 `plugin_*` Schema |
-| 审计 | JSONL + 独立审计库双写 | 增加异地 WORM 存储 / 审计网关 |
+| 审计 | JSONL + 链签名（**权威记录**，请求返回前同步落盘）+ `audit_events`（**可检索副本**，有界队列批量异步提交，读前 flush） | 增加异地 WORM 存储 / 审计网关 |
 | 密钥 | Development 派生兜底；敏感配置不入库 | 生产通过环境变量或密钥服务注入 |
 | 插件 | 编译后复制到 `OutDir/plugins` | 独立发布包 + 签名校验 + 灰度装载 |
 | 进程 | 单实例 | 无状态化后可多实例（需先解决事件总线跨进程，见 [ADR-020](02-architecture-decision-record.md#adr-020)） |
@@ -1599,10 +1599,10 @@ flowchart TB
 | # | 问题 | 位置 | 影响 |
 |---|------|------|------|
 | ⚠️ 1 | `PluginLoadResult.IsActive` 默认 `true`，导致 `StartPluginAsync` 首行即返回，**启动钩子永不触发** | `PluginRegistry.cs` + `:209` | 未来实现 `IPlugin` 的插件初始化会静默失效 |
-| ⚠️ 2 | 幂等键复用 `SessionId`；同一会话内**两笔不同的转账**会被误判为重复并静默跳过 | `TransferAgent.cs` | 第二笔合法转账不执行且返回"已处理过" |
+| ⚠️ 2 | ~~幂等键复用 `SessionId`；同一会话内两笔不同的转账会被误判为重复并静默跳过~~ **已修复**（改为「会话 + 付款方 + 收款方 + 金额」，见 [ADR-024](02-architecture-decision-record.md#adr-024)） | `TransferAgent.cs` | 重复提交**同样**的转账仍被拦截；改了金额或对象则正常执行 |
 | ⚠️ 3 | 幂等是"先查后写"且中间调核心系统，**并发下可能重复扣款** | `TransferAgent.cs` / `:166` / `:208` | 资金安全风险；唯一索引只拦第三步 |
 | ⚠️ 4 | `CoreBankClient` **没有把 `IdempotencyKey` 发给核心系统** | `CoreBankClient.cs` | CBS 侧无第二道防线 |
-| ⚠️ 5 | `OnModelCreating` 在循环里反复调 `HasDefaultSchema`，**最后一个贡献者覆盖前面的** | `BankingDbContext.cs` | PostgreSQL 下多插件**不会**各自独立 Schema |
+| ⚠️ 5 | ~~`OnModelCreating` 在循环里反复调 `HasDefaultSchema`，最后一个贡献者覆盖前面的~~ **已修复**（改为逐贡献者 `entity.ToTable(name, schema)`）。**注意：SQLite 下不做任何 Schema 隔离，代码直接跳过，表名也不加前缀** | `BankingDbContext.cs` | PostgreSQL 下多插件已能各自独立 Schema；SQLite 全部落在主空间 |
 | ⚠️ 6 | 文件头注释声称"查询默认过滤 IsDeleted"，但**没有全局查询过滤器**，`ApplyAuditFields` 也不处理 `Deleted` | `BankingDbContext.cs`、`:95-118` | 软删除未落地 |
 | ⚠️ 7 | `RowVersion` 声明为并发令牌但**没有值生成器**，恒为 0 | `BaseEntity.cs`、`TransferPlugin.cs` | 乐观并发实际不生效 |
 | 8 | `PartitionName` 两套取值不一致：`banking_transfer`（推导）vs `plugin_transfer`（硬编码） | `PluginRegistry.cs` vs `TransferPlugin.cs` | 日志与 Schema 名对不上，易误排查 |
@@ -1610,17 +1610,17 @@ flowchart TB
 | 10 | `ComplianceOptions.TransferDailyLimit` / `HighFrequencyThreshold` 配置了但**无规则读取** | `ComplianceRules.cs` | 单日限额靠 MockBank 兜底；频率风控未实现 |
 | 11 | `AuditLogger._lastSignature` 只在内存，重启后链从 `GENESIS` 重开而文件追加 | `AuditLogger.cs`、`:110` | `VerifyChain` 跨重启会报断链 |
 | 12 | `src/src/BankingAgent.PluginSdk/` 是**孤立的重复目录**（仅 1 个 `AgentContracts.cs`，GBK 乱码，无 `.csproj`） | 目录内 | 不参与编译，但会造成搜索噪声与误解 |
-| 13 | `Class1.cs` 是模板残留的空类 | `Base/Class1.cs` | 无功能影响，应清理 |
+| 13 | ~~`Class1.cs` 是模板残留的空类~~ **已清理**（2026-10-20 随可读性重构删除） | — | 无功能影响 |
 | 14 | `AuditLogger` 声明为 `partial` 但只有一个文件 | `AuditLogger.cs` | 无功能影响 |
 | 15 | `PluginRegistry.cs` 重复 `using` | 同文件 | 无功能影响 |
 | 16 | `FeatureFlags` 在清单里声明但**运行时无任何强制** | 四个插件的 `GetManifest` | 与 [ADR-0010](../00-architecture/04-architecture-decisions.md#adr-0010功能开关系统featureflag) 的"评审中"状态一致 |
-| 17 | `UnitOfWork` 注册为 Scoped，其 `_idempotencyKeys` 字典**生命周期只有单请求** | `DIExtensions.cs`、`UnitOfWork.cs` | 该方法当前无实际防护作用 |
+| 17 | `UnitOfWork` 注册为 Scoped，其 `_idempotencyKeys` 字典**生命周期只有单请求** | `BankingCoreServiceCollectionExtensions.cs`、`UnitOfWork.cs` | 该方法当前无实际防护作用 |
 
 ---
 
 ## 14. 关联文档
 
-- 架构决策：[02-architecture-decision-record.md](02-architecture-decision-record.md)（ADR-011 ~ ADR-021）
+- 架构决策：[02-architecture-decision-record.md](02-architecture-decision-record.md)（ADR-011 ~ ADR-029）
 - 接口契约：[03-api-contract.md](03-api-contract.md)
 - 数据模型：[04-data-model.md](04-data-model.md)
 - 架构总览：[../00-architecture/00-overview.md](../00-architecture/00-overview.md)

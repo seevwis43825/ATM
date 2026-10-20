@@ -11,7 +11,7 @@
 
 - .NET 8 模块化单体；解决方案为 `src/BankingAgent.slnx`。
 - 核心项目：`src/src/BankingAgent.Base`、`src/src/BankingAgent.Plugin.Sdk`、`src/src/BankingAgent.Host`。
-- 业务插件：`src/plugins/BankingAgent.Plugin.{Transfer|BillAnalysis|CardManagement|Wealth}`，由 Host 运行时扫描加载。
+- 业务插件：`src/plugins/BankingAgent.Plugin.{Transfer\|BillAnalysis\|CardManagement\|Wealth}`，由 Host 运行时扫描加载。
 - Host 默认 `http://localhost:5243`；MockBank 独立进程默认 `http://localhost:5200`。
 - 默认数据库为 SQLite，`Database:InitMode=EnsureCreated`；PostgreSQL 与正式 Migration 流程属于生产化演进能力。
 - 当前前端是 `src/src/BankingAgent.Host/wwwroot` 的静态控制台。仓库没有 `src/agent-core`、`src/ai-service`、`Bootstrap` 或 Python/FastAPI 服务。
@@ -463,6 +463,8 @@ dotnet ef migrations add <MigrationName> \
 - 已应用的迁移类只向前追加，不直接改写；提交前审查生成的 `Migration`、`Designer` 和 ModelSnapshot。
 
 ---
+
+<a id="5-git-提交规范"></a>
 
 ## 6. Git 提交规范
 

@@ -64,20 +64,19 @@ public class IdempotencyTests
     private static UnitOfWork CreateUow()
     {
         // 注意：BankingDbContext 有两个构造函数（多参与最小参），
-        // EF 内置工厂无法选择，因此这里直接复用生产使用的 SimpleDbContextFactory。
+        // EF 内置工厂无法选择，因此这里直接复用生产使用的 BankingDbContextFactory。
         var services = new ServiceCollection();
         services.AddSingleton(new DateTimeOffsetProvider());
         services.AddSingleton<ICurrentUserAccessor>(new CurrentUserAccessor());
-        services.AddSingleton(sp =>
+        services.AddSingleton(new DatabaseOptions
         {
-            var ob = new DbContextOptionsBuilder<BankingDbContext>();
-            ob.UseSqlite("Data Source=:memory:");
-            return ob.Options;
+            Provider = DatabaseProvider.Sqlite,
+            ConnectionString = "Data Source=:memory:"
         });
         services.AddSingleton<IDbContextFactory<BankingDbContext>>(sp =>
-            new SimpleDbContextFactory(
+            new BankingDbContextFactory(
                 sp,
-                sp.GetRequiredService<DbContextOptions<BankingDbContext>>()));
+                sp.GetRequiredService<DatabaseOptions>()));
 
         var sp2 = services.BuildServiceProvider();
         return new UnitOfWork(
@@ -198,6 +197,10 @@ public class AgentRouterTests
         });
 
         Assert.False(result.Success);
-        Assert.Equal("NO_AGENT", result.ErrorCode);
+
+        // 兜底不是一句「已转人工客服」的死胡同，而是要告诉用户这个助手能办哪些事。
+        Assert.Equal("INTENT_UNRESOLVED", result.ErrorCode);
+        Assert.Contains("可以办理", result.Content);
+        Assert.True(result.Data.ContainsKey("available_scenarios"));
     }
 }

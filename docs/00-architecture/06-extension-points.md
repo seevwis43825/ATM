@@ -14,7 +14,7 @@
 1. 新建引用 `BankingAgent.Base` 与 `BankingAgent.Plugin.Sdk` 的 .NET 8 项目（可从 `src/templates/banking-plugin` 开始）。
 2. 实现 `IPluginEntryPoint`，通过 `PluginManifest` 声明 ID、版本、场景、依赖和敏感级别。
 3. 在 `ConfigureServices(IServiceCollection, IPluginContext)` 中注册一个或多个 `IBankingAgent`。
-4. Agent 声明 `SupportedIntents` 与 `TriggerKeywords`；默认规则分类和可选 LLM 分类都会从这些声明生成候选。
+4. Agent 声明 `SupportedIntents`、`TriggerKeywords` 与（可选）`TriggerPatterns`；默认规则分类和可选 LLM 分类都会从这些声明生成候选。`TriggerPatterns` 是正则（如「6 位基金代码」），**仅在关键词一条都没命中时**才用来兜底 —— 这样它不会抢走「转 500 给 622202」这类含数字的既有场景。
 5. 需要事件时注入 `IEventPublisher`，处理方实现 `IDomainEventHandler`；插件不得引用另一插件程序集。
 6. 需要持久化时实现并注册 `IEntitySetContributor`，然后生成/审查 EF Core migration。
 7. 将 DLL 及依赖放入 Host 输出的 `plugins/` 目录。宿主在 Build 前扫描并把插件服务并入主容器。
@@ -24,7 +24,7 @@
 ### Current 限制
 
 - `PluginManifest.FeatureFlags` 只是元数据，尚无运行时开关服务或灰度拦截。
-- `/api/plugins/{id}/start|stop` 管理的是生命周期状态；已注入的 Agent 不会因此自动从 `AgentRouter` 移除。
+- `/api/plugins/{id}/start\|stop` 管理的是生命周期状态；已注入的 Agent 不会因此自动从 `AgentRouter` 移除。
 - “可回收 `AssemblyLoadContext`”不等于可以安全在线替换所有已注册 DI 服务。
 - 插件服务必须在主容器 `Build` 前完成注册。
 
@@ -286,7 +286,7 @@ public class FeatureFlagService : IFeatureFlagService
 
 - [ ] **入口**：是否只有一个 `IPluginEntryPoint`，manifest ID/版本/依赖是否正确？
 - [ ] **Agent 注册**：是否在 `ConfigureServices` 注册 `IBankingAgent`？
-- [ ] **意图声明**：`SupportedIntents` 与 `TriggerKeywords` 是否足以被默认规则路径识别？
+- [ ] **意图声明**：`SupportedIntents` 与 `TriggerKeywords` 是否足以被默认规则路径识别？若用户可能**只报一个编号/代码**（如「000001 怎么样」），再补一条 `TriggerPatterns` 正则。
 - [ ] **跨插件边界**：是否只用 Sdk 事件契约/manifest 依赖，未引用其他插件实现？
 - [ ] **持久化**：需要落库时是否注册 `IEntitySetContributor` 并更新 migration？
 - [ ] **FeatureFlag**：若仅写入 manifest，是否明确它当前不具备强制开关效果？

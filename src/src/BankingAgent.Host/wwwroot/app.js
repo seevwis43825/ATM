@@ -410,13 +410,87 @@ async function sendChat(message) {
   const data = res.data || {};
 
   if (data.cards && data.cards.length) {
-    extras.push(card("银行卡", b => b.appendChild(table(
-      [
-        { label: "卡号", value: c => c.card_no },
-        { label: "类型", value: c => c.card_type },
-        { label: "状态", value: c => c.status },
-        { label: "日限额", num: true, value: c => fmt(c.daily_limit) }
-      ], data.cards))));
+    extras.push(card("银行卡", b => {
+      b.appendChild(table(
+        [
+          // 发卡行列放在最前：跨行卡片场景下，
+          // 用户第一眼要看到的是「这张卡是哪家银行发的」。
+          { label: "发卡行", value: c => c.bank_name || c.bank_code || "-" },
+          { label: "卡号", value: c => c.card_no },
+          { label: "类型", value: c => c.card_type },
+          { label: "状态", value: c => c.status },
+          { label: "日限额", num: true, value: c => fmt(c.daily_limit) }
+        ], data.cards));
+      const t = document.createElement("div");
+      t.className = "muted";
+      t.textContent = `共 ${data.card_count ?? data.cards.length} 张，分布在 ${data.bank_count ?? "-"} 家银行`;
+      b.appendChild(t);
+    }));
+  }
+
+  if (data.funds && data.funds.length) {
+    extras.push(card("公募基金", b => {
+      b.appendChild(table(
+        [
+          { label: "代码", value: f => f.fund_code },
+          { label: "名称", value: f => f.fund_name },
+          { label: "类型", value: f => f.category },
+          { label: "风险", value: f => f.risk_level },
+          { label: "单位净值", num: true, value: f => fmt(f.unit_nav) },
+          { label: "当日%", num: true, value: f => (f.daily_growth_rate ?? 0).toFixed(2) },
+          { label: "近一年%", num: true, value: f => (f.yearly_return ?? 0).toFixed(2) },
+          { label: "规模(亿)", num: true, value: f => (f.fund_scale ?? 0).toFixed(2) }
+        ], data.funds));
+      const risky = data.funds.filter(f => f.risk_match_note);
+      if (risky.length) {
+        const t = document.createElement("div");
+        t.className = "muted";
+        t.textContent = `其中 ${risky.length} 只与您的风险承受能力不匹配，已在详情中标注`;
+        b.appendChild(t);
+      }
+    }));
+  }
+
+  if (data.fund_code) {
+    extras.push(card("基金详情", b => {
+      const rows = [
+        ["基金代码", data.fund_code],
+        ["基金名称", data.fund_name],
+        ["类型 / 风险", `${data.category || "-"} / ${data.risk_level || "-"}`],
+        ["管理人 / 基金经理", `${data.fund_company || "-"} / ${data.fund_manager || "-"}`],
+        ["单位净值", fmt(data.unit_nav)],
+        ["累计净值", fmt(data.accumulated_nav)],
+        ["当日 / 近一月 / 近一年",
+          `${(data.daily_growth_rate ?? 0).toFixed(2)}% / ${(data.monthly_return ?? 0).toFixed(2)}% / ${(data.yearly_return ?? 0).toFixed(2)}%`],
+        ["规模", `${(data.fund_scale ?? 0).toFixed(2)} 亿元`],
+        ["申赎状态", data.subscription_status || "-"],
+        ["代销行", data.distributor_bank_codes || "-"]
+      ];
+      for (const [k, v] of rows) {
+        const line = document.createElement("div");
+        line.className = "kv";
+        // 用 textContent 而不是 innerHTML：基金名称等字段来自外部系统，
+        // 直接拼进 HTML 会引入 XSS 风险。
+        const key = document.createElement("span");
+        key.textContent = k;
+        const value = document.createElement("b");
+        value.textContent = v;
+        line.append(key, value);
+        b.appendChild(line);
+      }
+      if (data.risk_match_note) {
+        const warn = document.createElement("div");
+        warn.className = "error";
+        warn.textContent = data.risk_match_note;
+        b.appendChild(warn);
+      }
+      if (data.nav_points && data.nav_points.length) {
+        const t = document.createElement("div");
+        t.className = "muted";
+        t.textContent = `近 ${data.nav_points.length} 个交易日净值（末值 ${fmt(data.nav_points[data.nav_points.length - 1].unit_nav)}）`;
+        b.appendChild(t);
+      }
+    }));
   }
 
   if (data.categories && data.categories.length) {

@@ -7,10 +7,12 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using BankingAgent.Base.Events;
+using BankingAgent.Base.Data;
 using BankingAgent.Base.Plugins;
 using BankingAgent.Base.Plugins.Security;
 using BankingAgent.Base.Security.Audit;
 using BankingAgent.PluginSdk;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -473,6 +475,74 @@ try
 catch (Exception ex) { Check("边界测试", false, ex.Message); }
 
 // ============================================================
+// 测试 7：审计落库吞吐（逐条提交 vs 批量提交）
+// ============================================================
+// 为什么要有这个用例：
+//   审计写入在**请求关键路径**上。逐条提交 = 每条记录付一次 SQLite 事务提交成本
+//   （含 fsync），这份成本被完整摊在每个请求上；批量提交把它摊到一批记录上。
+//
+//   为什么在进程内量，而不是看端到端压测：
+//   端到端 QPS 会随机器忙闲波动两倍以上（同一台机器上同一个 /health 端点
+//   实测过 99 req/s 与 1211 req/s），这种噪声会把"改了什么"和"机器在忙"混在一起。
+//   这里两段测量紧挨着跑、量的是同一件事，差值才是可信的。
+Section("测试 7: 审计落库逐条提交 vs 批量提交");
+{
+    var dbDir = Path.Combine(Path.GetTempPath(), $"audit-bench-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(dbDir);
+    try
+    {
+        var dbPath = Path.Combine(dbDir, "audit-bench.db");
+        var options = new DbContextOptionsBuilder<AuditDbContext>()
+            .UseSqlite($"Data Source={dbPath}")
+            .Options;
+
+        await using (var init = new AuditDbContext(options))
+        {
+            await init.Database.EnsureCreatedAsync();
+            await init.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        }
+
+        IDbContextFactory<AuditDbContext> factory = new SingleContextFactory(options);
+        var repo = new EfAuditRepository(factory, NullLogger<EfAuditRepository>.Instance);
+
+        const int n = 300;
+
+        // A. 逐条提交：每条一个事务
+        var singles = Enumerable.Range(0, n).Select(i => NewAuditEvent($"single-{i:D4}")).ToList();
+        var sw1 = Stopwatch.StartNew();
+        foreach (var e in singles) await repo.AppendAsync(e);
+        sw1.Stop();
+
+        // B. 批量提交：整批一个事务
+        var batch = Enumerable.Range(0, n).Select(i => NewAuditEvent($"batch-{i:D4}")).ToList();
+        var sw2 = Stopwatch.StartNew();
+        await repo.AppendBatchAsync(batch);
+        sw2.Stop();
+
+        var single = Math.Max(sw1.Elapsed.TotalMilliseconds, 0.001);
+        var bulk = Math.Max(sw2.Elapsed.TotalMilliseconds, 0.001);
+
+        Console.WriteLine($"  逐条 {n} 次提交 : {single,8:F1}ms  ({n / single * 1000,8:F0} 条/秒)");
+        Console.WriteLine($"  批量 {n} 条一次提交: {bulk,8:F1}ms  ({n / bulk * 1000,8:F0} 条/秒)");
+        Console.WriteLine($"  加速比          : {single / bulk,8:F1}x");
+
+        Check("批量提交显著快于逐条提交", bulk * 5 < single, $"{single:F1}ms → {bulk:F1}ms");
+    }
+    catch (Exception ex) { Check("审计落库 A/B", false, ex.Message); }
+}
+
+static AuditEventEntity NewAuditEvent(string auditId) => new()
+{
+    Id = Guid.NewGuid(),
+    AuditId = auditId,
+    Timestamp = DateTimeOffset.UtcNow,
+    ActorType = "SYSTEM",
+    ActorHash = "bench",
+    Operation = "bench.write",
+    Signature = new string('a', 64)
+};
+
+// ============================================================
 // 汇总
 // ============================================================
 Section("压力测试汇总");
@@ -488,4 +558,11 @@ internal sealed class CountingHandler(Action onHandle) : IDomainEventHandler
         onHandle();
         return Task.CompletedTask;
     }
+}
+
+/// <summary>只包一个固定 DbContext 的工厂：压测里只想量落库成本，不需要工厂的其它能力。</summary>
+internal sealed class SingleContextFactory(DbContextOptions<AuditDbContext> options)
+    : IDbContextFactory<AuditDbContext>
+{
+    public AuditDbContext CreateDbContext() => new(options);
 }

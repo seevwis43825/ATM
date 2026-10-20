@@ -28,8 +28,11 @@ public enum CardStatus
 /// <summary>银行卡实体，模拟核心系统的卡表，与账户一一对应。</summary>
 public sealed record BankCard
 {
-    /// <summary>卡号，与账号一致。</summary>
+    /// <summary>卡号，与账号一致。跨行唯一：各家银行使用不同的卡号 BIN 段。</summary>
     public required string CardNo { get; init; }
+
+    /// <summary>发卡行代码（如 ICBC）。跨行卡片的归属标识。</summary>
+    public required string BankCode { get; init; }
 
     /// <summary>绑定的账号。</summary>
     public required string AccountNo { get; init; }

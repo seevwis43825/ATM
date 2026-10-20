@@ -6,6 +6,8 @@ namespace MockBank.Api.Contracts;
 
 /// <summary>账户查询响应体。</summary>
 /// <param name="AccountNo">账号。</param>
+/// <param name="BankCode">开户行代码（如 ICBC）。</param>
+/// <param name="BankName">开户行全称。</param>
 /// <param name="UserId">客户号。</param>
 /// <param name="AccountType">账户类型中文名（储蓄账户 / 信用账户）。</param>
 /// <param name="ProductName">产品名称。</param>
@@ -21,6 +23,8 @@ namespace MockBank.Api.Contracts;
 /// <param name="CardNo">绑定的卡号（若已制卡）。</param>
 public sealed record AccountResponse(
     string AccountNo,
+    string BankCode,
+    string BankName,
     string UserId,
     string AccountType,
     string ProductName,
@@ -83,6 +87,8 @@ public sealed record AccountLimitResponse(
 
 /// <summary>交易流水查询响应体。</summary>
 /// <param name="TxNo">交易流水号。</param>
+/// <param name="BankCode">记账行代码（跨行转账时付款行与收款行各记一条）。</param>
+/// <param name="BankName">记账行全称。</param>
 /// <param name="UserId">客户号。</param>
 /// <param name="AccountNo">账号。</param>
 /// <param name="Direction">资金方向中文名（收入 / 支出）。</param>
@@ -98,6 +104,8 @@ public sealed record AccountLimitResponse(
 /// <param name="Timestamp">交易时间。</param>
 public sealed record TransactionResponse(
     string TxNo,
+    string BankCode,
+    string BankName,
     string UserId,
     string AccountNo,
     string Direction,

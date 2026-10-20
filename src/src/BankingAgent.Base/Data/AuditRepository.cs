@@ -8,6 +8,7 @@
 // 3. 按月分区，便于归档与合规留存（≥5 年）
 // 4. HMAC 链式签名，篡改可检出
 
+using System.Linq.Expressions;
 using BankingAgent.Base.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -55,6 +56,18 @@ public sealed class AuditEventEntity
 public interface IAuditRepository
 {
     Task AppendAsync(AuditEventEntity entity, CancellationToken ct = default);
+
+    /// <summary>
+    /// 批量追加审计记录（一个事务一次提交）。
+    ///
+    /// 为什么需要批量：逐条提交意味着每条审计事件都要付一次 SQLite 事务提交成本
+    /// （含 fsync），而审计写入在请求关键路径上，会把整个系统吞吐压到每秒几十次。
+    /// 批量提交把这份成本摊薄到一批记录上。
+    /// </summary>
+    /// <param name="entities">待追加的记录。</param>
+    /// <param name="ct">取消令牌。</param>
+    Task AppendBatchAsync(IReadOnlyList<AuditEventEntity> entities, CancellationToken ct = default);
+
     Task<IReadOnlyList<AuditEventEntity>> QueryAsync(
         string? actorHash = null, string? scenario = null,
         DateTimeOffset? from = null, DateTimeOffset? to = null,
@@ -84,6 +97,42 @@ public sealed class EfAuditRepository(
     }
 
     /// <inheritdoc />
+    public async Task AppendBatchAsync(IReadOnlyList<AuditEventEntity> entities, CancellationToken ct = default)
+    {
+        if (entities.Count == 0) return;
+
+        await using var db = await _factory.CreateDbContextAsync(ct);
+        db.AuditEvents.AddRange(entities);
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// 查询审计事件（可按操作者哈希、场景、时间区间过滤，按时间倒序）。
+    ///
+    /// **排序为什么分 Provider**：
+    /// EF 的 SQLite provider **拒绝翻译 DateTimeOffset 的 ORDER BY**，直接抛
+    /// <c>NotSupportedException: SQLite does not support expressions of type
+    /// 'DateTimeOffset' in ORDER BY clauses</c> —— 查询直接失败，不是降级。
+    /// （MockBank 的 <c>BankDbContext</c> 当初踩的是同一个坑，见
+    /// <c>docs/13-database/02-multi-bank-databases.md</c> §6.2。）
+    ///
+    /// 两种 Provider 分别处理：
+    /// - **SQLite（开发环境）**：范围过滤留在 SQL 里（能翻译），**排序在内存里做**。
+    ///   这样**不改存储格式**，存量审计库照常可读 —— 改格式会让旧行的时间偏移量
+    ///   解析出错，而审计记录不允许丢。
+    ///   代价：会取回全部匹配行。开发环境数据量可控；生产走 PostgreSQL，不受此限。
+    /// - **PostgreSQL（生产环境）**：`timestamptz` 原生支持该排序，保持库内排序。
+    ///
+    /// 时间区间的**过滤**（<c>&gt;=</c> / <c>&lt;=</c>）两种 Provider 都能翻译，
+    /// 且审计时间戳一律为 UTC（+00:00），文本比较与时间比较等价。
+    /// </summary>
+    /// <param name="actorHash">操作者哈希；为空则不过滤。</param>
+    /// <param name="scenario">场景；为空则不过滤。</param>
+    /// <param name="from">起始时间（含）；为空则不限。</param>
+    /// <param name="to">结束时间（含）；为空则不限。</param>
+    /// <param name="limit">返回条数上限，最多 1000。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <returns>按时间倒序的审计事件列表。</returns>
     public async Task<IReadOnlyList<AuditEventEntity>> QueryAsync(
         string? actorHash = null, string? scenario = null,
         DateTimeOffset? from = null, DateTimeOffset? to = null,
@@ -102,9 +151,17 @@ public sealed class EfAuditRepository(
         if (to is not null)
             query = query.Where(e => e.Timestamp <= to);
 
+        var take = Math.Min(limit, 1000);
+
+        if (db.Database.IsSqlite())
+        {
+            var all = await query.ToListAsync(ct);
+            return all.OrderByDescending(r => r.Timestamp).Take(take).ToList();
+        }
+
         return await query
             .OrderByDescending(e => e.Timestamp)
-            .Take(Math.Min(limit, 1000))
+            .Take(take)
             .ToListAsync(ct);
     }
 
@@ -114,12 +171,24 @@ public sealed class EfAuditRepository(
     {
         await using var db = await _factory.CreateDbContextAsync(ct);
 
-        var events = await db.AuditEvents
+        var filtered = db.AuditEvents
             .AsNoTracking()
-            .Where(e => e.Timestamp >= from && e.Timestamp <= to)
-            .OrderBy(e => e.Timestamp)
-            .ThenBy(e => e.Id)
-            .ToListAsync(ct);
+            .Where(e => e.Timestamp >= from && e.Timestamp <= to);
+
+        List<AuditEventEntity> events;
+        if (db.Database.IsSqlite())
+        {
+            // 同 QueryAsync：SQLite 不支持 DateTimeOffset 的 ORDER BY，排序放内存。
+            var all = await filtered.ToListAsync(ct);
+            events = all.OrderBy(e => e.Timestamp).ThenBy(e => e.Id).ToList();
+        }
+        else
+        {
+            events = await filtered
+                .OrderBy(e => e.Timestamp)
+                .ThenBy(e => e.Id)
+                .ToListAsync(ct);
+        }
 
         var broken = new List<string>();
         string? expectedPrev = null;

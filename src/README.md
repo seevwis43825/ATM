@@ -46,78 +46,101 @@
 
 ## 2. 项目清单
 
-### 2.1 BankingAgent.Plugin.Sdk（契约层，387 行）
+### 2.1 BankingAgent.Plugin.Sdk（契约层）
 
 插件唯一需要引用的程序集。稳定契约，一经发布不随意改。
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `PluginContracts.cs` | 148 | `IPluginEntryPoint`、`PluginManifest`、`PluginId`、`PluginVersion`、`PluginDependency`、`DataClassification` |
-| `AgentContracts.cs` | 196 | `IBankingAgent`、`AgentRequest`、`AgentResult`、`IAgentTool`、`ToolInvocation`、`AgentRole` |
-| `EventContracts.cs` | 40 | `DomainEvent`、`IDomainEventHandler`、`IEventPublisher` |
-| `CoreBankContracts.cs` | 176 | `ICoreBankClient` + 13 个 DTO（Account/Transfer/Transaction/Statement/Card/Wealth） |
+| 文件 | 职责 |
+|------|------|
+| `PluginContracts.cs` | `IPluginEntryPoint`、`PluginManifest`、`PluginId`、`PluginVersion`、`PluginDependency`、`DataClassification` |
+| `AgentContracts.cs` | `IBankingAgent`、`AgentRequest`、`AgentResult`、`IAgentTool`、`ToolInvocation`、`AgentRole` |
+| `EventContracts.cs` | `DomainEvent`、`IDomainEventHandler`、`IEventPublisher` |
+| `CoreBankContracts.cs` | `ICoreBankClient` + 各类 Snapshot record（Account / Transfer / Transaction / Statement / Card / Beneficiary / Wealth / Bank） |
 
 **关键设计**：`ICoreBankClient` 是抽象层。插件只认这个接口，不认 Mock Bank 的 DTO。切换到真实 CBS 时改 `CoreBankClient` 的实现即可，**插件代码零改动**。
 
+跨行支持相关字段（`BankCode` / `BankName`）也在这层，因为「这张卡是哪家银行发的」是插件必须知道的业务事实。
+
 ---
 
-### 2.2 BankingAgent.Base（框架层，1857 行 / 16 文件）
+### 2.2 BankingAgent.Base（框架层）
 
 零业务逻辑，只提供能力。
 
 #### Agents/（Agent 基础设施）
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `BankingAgentBase.cs` | 120 | Agent 基类：自动计时、审计、异常兜底 |
-| `AgentRouter.cs` | 78 | 意图路由，**最长前缀优先**（避免 `transfer` 抢占 `transfer.receive`） |
-| `SlotReader.cs` | 89 | 槽位读取，兼容 JSON 反序列化产生的 `JsonElement` |
+| 文件 | 职责 |
+|------|------|
+| `BankingAgentBase.cs` | Agent 基类：自动计时、审计、异常兜底、`IntentOf()` 取意图上下文 |
+| `AgentRouter.cs` | 意图路由（**最长前缀优先**）；规则表反查采用**加权打分 + 否定词剔除**；未命中时返回带能力清单的友好兜底 |
+| `IntentContext.cs` | 把意图拆成**场景**（card / bill / transfer / wealth）与**动作**（card.status / transfer.execute）两层 |
+| `SessionMemory.cs` | 会话记忆：让「改成 800」这类省略句能接上一轮的意图与槽位；按用户隔离、过期淘汰 |
+| `SlotReader.cs` | 槽位读取，兼容 JSON 反序列化产生的 `JsonElement` |
+| `AgentOrchestrator.cs` | 多 Agent 编排（Supervisor），产出可回放的轨迹日志 |
+
+#### Ai/（大模型接入与意图识别）
+
+| 文件 | 职责 |
+|------|------|
+| `IIntentClassifier.cs` | 意图识别契约与 `IntentDecision` |
+| `LlmIntentClassifier.cs` | LLM 优先 + 规则兜底；模型判不准时**必定**退回规则表 |
+| `IntentPromptBuilder.cs` | 候选意图收集与系统提示词拼装（消歧规则由已注册 Agent 自动生成） |
+| `AiConnectivityProbe.cs` | 连通性探针：真实调一次模型，把「AI 通没通」变成可验证的事实 |
+| `SensitiveTextMasker.cs` | 送模型前的强制脱敏（账号 / 手机号 / 身份证） |
+| `OpenAiCompatibleLlmClient.cs` | OpenAI 兼容协议客户端（DeepSeek / 通义 / 智谱 / Ollama） |
+| `LlmOptions.cs` | 接入配置；未配密钥即自动降级规则表 |
 
 #### Plugins/（插件系统）
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `PluginRegistry.cs` | 324 | 可回收 `AssemblyLoadContext`、依赖拓扑排序、循环依赖检测、版本兼容校验 |
+| 文件 | 职责 |
+|------|------|
+| `PluginRegistry.cs` | 可回收 `AssemblyLoadContext`、依赖拓扑排序、循环依赖检测、版本兼容校验 |
 
 #### Data/（数据访问）
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `BankingDbContext.cs` | 256 | 审计字段自动填充、插件分区映射、脱敏快照 |
-| `BaseEntity.cs` | 43 | 实体基类（CreatedAt/By、RowVersion、IsDeleted） |
-| `UnitOfWork.cs` | 82 | 事务边界、幂等键登记 |
-| `SimpleDbContextFactory.cs` | 33 | 自实现工厂（EF 内置工厂不支持多参构造） |
-| `ICurrentUserAccessor` 等 | — | 当前用户（AsyncLocal）、时钟抽象 |
+| 文件 | 职责 |
+|------|------|
+| `BankingDbContext.cs` | 审计字段自动填充、插件分区映射、脱敏快照 |
+| `DbContextFactories.cs` | 运行时工厂 + 设计时工厂（迁移用） |
+| `BaseEntity.cs` | 实体基类（CreatedAt/By、RowVersion、IsDeleted） |
+| `UnitOfWork.cs` | 事务边界、幂等键登记 |
+| `ICurrentUserAccessor` 等 | 当前用户（AsyncLocal）、时钟抽象 |
 
 #### Security/（安全合规）
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `DataMasker.cs` | 145 | 脱敏：手机/身份证/银行卡/姓名/邮箱/账号，L4 永不返回明文 |
-| `AuditLogger.cs` | 240 | HMAC-SHA256 链式签名 + 文件归档 + 用户 ID 哈希 |
-| `Compliance/ComplianceGuard.cs` | 92 | 合规规则执行器 |
-| `Compliance/ComplianceRules.cs` | 152 | 4 条内置规则（金额阈值、自转、反洗钱、场景权限） |
+| 文件 | 职责 |
+|------|------|
+| `DataMasker.cs` | 脱敏：手机/身份证/银行卡/姓名/邮箱/账号，L4 永不返回明文 |
+| `AuditLogger.cs` | HMAC-SHA256 链式签名 + 文件归档 + 用户 ID 哈希 |
+| `Compliance/ComplianceGuard.cs` | 合规规则执行器 |
+| `Compliance/ComplianceRules.cs` | 4 条内置规则（金额阈值、自转、反洗钱、场景权限） |
 
 #### 其他
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `Events/InMemoryEventBus.cs` | 83 | 进程内事件总线，精确匹配 + 通配订阅、死信队列 |
-| `CoreBank/CoreBankClient.cs` | 420 | 银行系统 HTTP 客户端，DTO 映射与容错 |
-| `BankingCoreServiceCollectionExtensions.cs` | 133 | **一行装配**：`AddBankingCore()` |
+| 文件 | 职责 |
+|------|------|
+| `Events/InMemoryEventBus.cs` | 进程内事件总线，精确匹配 + 通配订阅、死信队列 |
+| `CoreBank/CoreBankClient.cs` | 银行系统 HTTP 客户端，DTO 映射与容错 |
+| `BankingCoreServiceCollectionExtensions.cs` | **一行装配**：`AddBankingCore()` |
 
 ---
 
 ### 2.3 BankingAgent.Host（宿主）
 
-| 职责 | 说明 |
+宿主只有**装配**与**中间件**两件事，端点实现按职责分文件，避免装配文件膨胀成几百行。
+
+| 文件 | 职责 |
 |------|------|
-| 装配框架 | `builder.Services.AddBankingCore(config)` |
-| 加载插件 | `PluginRegistry.LoadFromDirectoryAsync()` |
-| 注入插件服务 | 插件注册的服务并入主容器 |
-| 初始化数据库 | `DatabaseInitializer.InitializeAsync()` |
-| 启动插件 | 按依赖拓扑顺序 |
-| 暴露 API | 健康检查、鉴权、对话、编排、轨迹与插件管理端点 |
+| `Program.cs` | 装配流程：框架 → 插件加载 → 数据库初始化 → 插件启动 → 中间件 → 端点映射 |
+| `HostSecurity.cs` | 宿主安全辅助：403 响应、公开端点白名单、角色解析 |
+| `PluginLifecycleBridge.cs` | 插件生命周期钩子 → 容器内 `IPlugin` 的桥接 |
+| `Contracts/HostContracts.cs` | 对外请求/响应契约 |
+| `Endpoints/HealthEndpoints.cs` | `/health`、`/health/ready`、`/health/live` |
+| `Endpoints/AuthEndpoints.cs` | 令牌签发、身份查询、演示账号表 |
+| `Endpoints/PluginEndpoints.cs` | 插件清单、路由表、合规规则、事件总线、热插拔 |
+| `Endpoints/ChatEndpoints.cs` | 对话、人工确认、多 Agent 编排 |
+| `Endpoints/TrajectoryEndpoints.cs` | 轨迹回放 |
+| `Endpoints/AiEndpoints.cs` | **AI 连通性自检** `/api/ai/probe` |
 
 **为什么分两步（bootstrap 容器 → 正式容器）**：插件需要在容器 Build 之前注册服务。bootstrap 容器只用来拿 `ILoggerFactory` 和 `PluginRegistry`，用完即弃。
 
@@ -125,27 +148,29 @@
 
 ### 2.4 plugins/（4 个业务插件）
 
-| 插件 | 行数 | 演示重点 |
-|------|------|---------|
-| `BankingAgent.Plugin.Transfer` | 380 | 资金操作**完整范例**：槽位抽取 → 合规守卫 → 人工回环 → 幂等检查 → 调核心银行 → 落库 → 发事件 |
-| `BankingAgent.Plugin.BillAnalysis` | 165 | 只读场景 + **订阅他人事件**实现零耦合联动 |
-| `BankingAgent.Plugin.CardManagement` | 148 | 写操作但非资金 + **依赖声明** + L3 强制脱敏 |
-| `BankingAgent.Plugin.Wealth` | — | 只读理财场景：产品查询与推荐、账户余额查询；申购/赎回尚未实现 |
+| 插件 | 演示重点 |
+|------|---------|
+| `BankingAgent.Plugin.Transfer` | 资金操作**完整范例**：槽位抽取 → 合规守卫 → 人工回环 → 幂等检查 → 调核心银行（可跨行）→ 落库 → 发事件 |
+| `BankingAgent.Plugin.BillAnalysis` | 只读场景 + **订阅他人事件**实现零耦合联动 |
+| `BankingAgent.Plugin.CardManagement` | 写操作但非资金 + **依赖声明** + L3 强制脱敏 + **语义驱动的状态变更**（`CardStatusResolver`） |
+| `BankingAgent.Plugin.Wealth` | 只读理财场景：产品查询与推荐、账户余额查询、公募基金查询；申购/赎回尚未实现 |
 
 ---
 
-### 2.5 mock-bank/MockBank.Api（模拟银行，3451 行 / 28 文件）
+### 2.5 mock-bank/MockBank.Api（模拟银行，多银行核心系统）
 
-| 层 | 文件 | 职责 |
-|----|------|------|
-| Domain/ | 5 | Customer、Account、Transaction、Card、WealthProduct |
-| Data/ | 2 | `Money` 值对象（decimal）、`MockBankStore`（线程安全内存账本 + 种子数据） |
-| Contracts/ | 5 | 请求/响应 DTO，record 不可变 |
-| Services/ | 7 | 账户、转账（含完整校验）、账单、卡、理财、业务日志、OpenAPI 生成 |
-| Endpoints/ | 6 | 6 个端点组，Minimal API |
-| Middleware/ | 2 | 全局异常处理、故障注入 |
+一家银行 = 一个独立数据库文件，跨行能力由聚合门面提供。详见 [`../docs/13-database/02-multi-bank-databases.md`](../docs/13-database/02-multi-bank-databases.md)。
 
-**并发安全**：所有资金变动在单个 `SemaphoreSlim` 账本锁内完成，获取锁后**重新校验**，避免 TOCTOU。
+| 层 | 职责 |
+|----|------|
+| `Domain/` | 领域模型：Customer、Account、Transaction、Card、WealthProduct、PublicFund、**BankDescriptor** |
+| `Data/` | `BankLedger`（单行账本）、`BankDbContext`（单行 EF 上下文）、`BankLedgerFactory`（建库与种子）、`MockBankStore`（跨行聚合门面）、`BankSeedData`（各行种子） |
+| `Contracts/` | 请求/响应 DTO，record 不可变 |
+| `Services/` | 账户、转账（含跨行清算）、账单、卡、理财、基金、业务日志、OpenAPI 生成 |
+| `Endpoints/` | 端点组：账户、转账、账单、卡、理财、**银行目录**、基金、运维 |
+| `Middleware/` | 全局异常处理、故障注入 |
+
+**并发安全**：行内资金变动在**该行**的 `SemaphoreSlim` 锁内完成，获取锁后**重新校验**，避免 TOCTOU；跨行变动按行代码字典序取两把锁，避免死锁。
 
 ---
 
@@ -199,7 +224,7 @@
 | `02-event-schema.md` | `SDK/EventContracts.cs` | ⚠️ 简化版（未用 CloudEvents 全字段） |
 | `02-api/01-rest-api-spec.md` | `Host/Program.cs` | ⚠️ 演示版端点 |
 | `03-data-classification.md` | `Base/Security/DataMasker.cs` | ✅ 已实现 |
-| `04-audit-logging.md` | `Base/Security/Audit/AuditLogger.cs` | ✅ HMAC 链 + JSONL + 独立审计库双写 |
+| `04-audit-logging.md` | `Base/Security/Audit/AuditLogger.cs` | ✅ HMAC 链 + JSONL + 链签名（**权威记录**，请求返回前同步落盘）+ `audit_events`（**可检索副本**，有界队列批量异步提交，读前 flush） |
 | `02-compliance-matrix.md` | `Base/Security/Compliance/` | ⚠️ 4 条核心规则（设计中 14 条） |
 
 完整状态见 [`../docs/plugin/03-implementation-status.md`](../docs/plugin/03-implementation-status.md)。

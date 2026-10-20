@@ -81,8 +81,8 @@ public sealed class AccountService(MockBankStore store)
     }
 
     private AccountResponse ToResponse(Account account) =>
-        new(account.AccountNo, account.UserId, account.AccountTypeText, account.ProductName,
-            account.Balance, account.CreditLimit, account.CreditUsed, account.AvailableBalance,
-            account.DailyLimit, account.StatusText, account.Currency, account.OpenDate,
+        new(account.AccountNo, account.BankCode, BankCatalog.FullNameOf(account.BankCode), account.UserId,
+            account.AccountTypeText, account.ProductName, account.Balance, account.CreditLimit, account.CreditUsed,
+            account.AvailableBalance, account.DailyLimit, account.StatusText, account.Currency, account.OpenDate,
             account.BranchName, store.GetCardByAccount(account.AccountNo)?.CardNo);
 }

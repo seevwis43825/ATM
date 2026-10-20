@@ -267,8 +267,15 @@ Console.WriteLine($"  转账前余额: {beforeBal:N2}");
 // 小额转账的 sessionId 要留给场景 8 复用（验证幂等）
 var smallSession = Sess("small");
 
+// 显式指定付款账户：多银行之后「默认第一个账户」会随卡号段排序落到建行，
+// 这里固定用工行账户，让断言的余额对象明确、不随数据变化漂移。
 var r3 = await PostChat(TransferCtor + "6222020200000003\u8f6c\u8d26500\u5143", "u_demo01", smallSession,
-    new Dictionary<string, object?> { ["to_account"] = "6222020200000003", ["amount"] = 800 });
+    new Dictionary<string, object?>
+    {
+        ["to_account"] = "6222020200000003",
+        ["from_account"] = "6222020200000001",
+        ["amount"] = 800
+    });
 Console.WriteLine("  回复: " + S(r3, "content"));
 Check("执行成功", B(r3, "success"), S(r3, "errorMessage"));
 Check("不需人工确认", !B(r3, "requiresHumanInLoop"));
@@ -319,7 +326,12 @@ Check("确认后扣款 30000 元", Math.Abs(balDuringPending - balAfterLarge - 3
 // ===== 场景 6 =====
 Section("场景 6: 合规拦截 —— 转给自己应被拒绝");
 var r6 = await PostChat("\u8f6c\u8d26\u7ed9\u81ea\u5df1", "u_demo01", Sess("self"),
-    new Dictionary<string, object?> { ["to_account"] = "6222020200000001", ["amount"] = 500 });
+    new Dictionary<string, object?>
+    {
+        ["to_account"] = "6222020200000001",
+        ["from_account"] = "6222020200000001",
+        ["amount"] = 500
+    });
 Console.WriteLine("  错误: " + S(r6, "errorCode") + " / " + S(r6, "errorMessage"));
 Check("被合规规则拒绝", S(r6, "errorCode") == "COMPLIANCE_REJECTED", S(r6, "errorCode"));
 Check("无副作用", !B(r6, "sideEffectCommitted"));
@@ -338,7 +350,12 @@ var balBeforeDup = decimal.Parse(System.Text.RegularExpressions.Regex.Match(
     await http.GetStringAsync($"{bankBase}/api/corebank/v1/accounts/6222020200000001/balance"),
     @"""balance"":([\d.]+)").Groups[1].Value);
 var r8 = await PostChat("\u91cd\u590d\u8f6c\u8d26", "u_demo01", smallSession,
-    new Dictionary<string, object?> { ["to_account"] = "6222020200000003", ["amount"] = 800 });
+    new Dictionary<string, object?>
+    {
+        ["to_account"] = "6222020200000003",
+        ["from_account"] = "6222020200000001",
+        ["amount"] = 800
+    });
 Console.WriteLine("  回复: " + S(r8, "content"));
 var balAfterDup = decimal.Parse(System.Text.RegularExpressions.Regex.Match(
     await http.GetStringAsync($"{bankBase}/api/corebank/v1/accounts/6222020200000001/balance"),
@@ -387,6 +404,180 @@ if (found is not null)
 else
 {
     Check("审计文件存在", false, "未找到 audit-chain.log");
+}
+
+// ===== 场景 11：跨行卡片 =====
+Section("场景 11: 跨行卡片 —— 一个客户在多家银行的卡应一次返回");
+{
+    // 直接查核心系统，确认卡片确实来自多个独立的银行数据库。
+    var banksJson = await http.GetStringAsync($"{bankBase}/api/corebank/v1/banks");
+    using var banksDoc = JsonDocument.Parse(banksJson);
+    var bankCount = banksDoc.RootElement.GetArrayLength();
+    Check("模拟银行目录含 3 家银行", bankCount == 3, $"banks={bankCount}");
+
+    // 每家银行一个独立数据库文件
+    var dbFiles = banksDoc.RootElement.EnumerateArray()
+        .Select(b => b.GetProperty("bank").GetProperty("databaseFileName").GetString() ?? "")
+        .ToList();
+    Check("每家银行有独立数据库文件", dbFiles.Distinct().Count() == dbFiles.Count,
+        string.Join(", ", dbFiles));
+
+    var cardsJson = await http.GetStringAsync($"{bankBase}/api/corebank/v1/cards?userId=u_demo01");
+    using var cardsDoc = JsonDocument.Parse(cardsJson);
+    var cardBanks = cardsDoc.RootElement.EnumerateArray()
+        .Select(c => c.GetProperty("bankCode").GetString() ?? "")
+        .Distinct().ToList();
+    Check("演示用户持有多个银行的卡", cardBanks.Count >= 3, string.Join(",", cardBanks));
+
+    // 通过对话入口同样能看到跨行卡片
+    var r11 = await PostChat(CardQuery, "u_demo01");
+    var r11Text = r11.GetRawText();
+    Check("对话返回包含发卡行信息", r11Text.Contains("bankCode") || r11Text.Contains("bank_name"),
+        S(r11, "content"));
+}
+
+// ===== 场景 12：跨行转账 =====
+Section("场景 12: 跨行转账 —— 付款行与收款行不同");
+{
+    // 建行账户 -> 工行账户（李华），验证双边记账
+    var body = new Dictionary<string, object?>
+    {
+        ["fromAccountNo"] = "6217000100000001",
+        ["toAccountNo"] = "6222020200000003",
+        ["amount"] = 123.45m,
+        ["remark"] = "e2e interbank"
+    };
+    var resp = await http.PostAsync($"{bankBase}/api/corebank/v1/transfers",
+        new StringContent(JsonSerializer.Serialize(body, jsonOpts), Encoding.UTF8, "application/json"));
+    var text = await resp.Content.ReadAsStringAsync();
+    using var doc = JsonDocument.Parse(text);
+
+    Check("跨行转账成功", (int)resp.StatusCode == 200, $"HTTP {(int)resp.StatusCode}");
+    Check("标记为跨行", doc.RootElement.GetProperty("isInterBank").GetBoolean());
+    Check("返回双边流水号",
+        doc.RootElement.GetProperty("txNo").GetString() != doc.RootElement.GetProperty("toTxNo").GetString());
+
+    // 付款行记支出，收款行记收入
+    var fromTx = doc.RootElement.GetProperty("txNo").GetString() ?? "";
+    var toTx = doc.RootElement.GetProperty("toTxNo").GetString() ?? "";
+    Check("付款行流水带行代码", fromTx.Contains("CCB"), fromTx);
+    Check("收款行流水带行代码", toTx.Contains("ICBC"), toTx);
+}
+
+// ===== 场景 13：语义触发写操作 =====
+Section("场景 13: 语义触发 —— 「我的卡不见了」应触发挂失而不是只返回卡列表");
+{
+    // 先确认目标卡当前状态正常
+    var before = await http.GetStringAsync($"{bankBase}/api/corebank/v1/cards/6222020200000001");
+    Check("目标卡初始状态为正常", before.Contains("正常"), "");
+
+    // 演示用户有 6 张卡（3 家银行），语义触发后应追问是哪一张，而不是随便挑一张。
+    var ambiguous = await PostChat("\u6211\u7684\u5361\u4E0D\u89C1\u4E86", "u_demo01", Sess("lostcard"));
+    Console.WriteLine("  多卡追问: " + S(ambiguous, "content"));
+    Check("进入卡片场景", S(ambiguous, "intent").StartsWith("card"), "intent=" + S(ambiguous, "intent"));
+    Check("多张卡时追问具体卡号", S(ambiguous, "errorCode") == "CARD_NOT_SPECIFIED", S(ambiguous, "errorCode"));
+    Check("追问里列出了候选卡", S(ambiguous, "content").Contains("你名下有"), S(ambiguous, "content"));
+
+    // 指定卡号后应真正执行挂失
+    var r13 = await PostChat("\u6211\u7684\u5361\u4E0D\u89C1\u4E86", "u_demo01", Sess("lostcard2"),
+        new Dictionary<string, object?> { ["card_no"] = "6222020200000001" });
+    Console.WriteLine("  回复: " + S(r13, "content"));
+    Check("命中卡片场景", S(r13, "intent").StartsWith("card"), "intent=" + S(r13, "intent"));
+    Check("执行了状态变更", S(r13, "resultIntent") == "card.status.updated", S(r13, "resultIntent"));
+
+    var after = await http.GetStringAsync($"{bankBase}/api/corebank/v1/cards/6222020200000001");
+    Check("卡片状态已变为挂失", after.Contains("挂失"), "");
+
+    // 复原，避免影响后续运行
+    var restore = new StringContent(
+        JsonSerializer.Serialize(new { newStatus = "解挂", reason = "e2e restore" }, jsonOpts),
+        Encoding.UTF8, "application/json");
+    await http.PostAsync($"{bankBase}/api/corebank/v1/cards/6222020200000001/status", restore);
+}
+
+// ===== 场景 14：未知意图的友好兜底 =====
+Section("场景 14: 未知意图 —— 应给出能力清单而不是死胡同");
+{
+    var r14 = await PostChat("\u4ECA\u5929\u5929\u6C14\u600E\u4E48\u6837", "u_demo01", Sess("unknown"));
+    Console.WriteLine("  回复: " + S(r14, "content"));
+    Check("返回未解析错误码", S(r14, "errorCode") == "INTENT_UNRESOLVED", S(r14, "errorCode"));
+    Check("回复里列出了可办理的能力", S(r14, "content").Contains("可以办理"), S(r14, "content"));
+}
+
+// ===== 场景 15：多轮省略句 =====
+Section("场景 15: 多轮上下文 —— 「改成 800」应接上上一轮的转账意图");
+{
+    var session = Sess("followup");
+
+    // 第一轮：完整表述
+    var first = await PostChat("\u7ED9\u674E\u534E\u8F6C500\u5143", "u_demo01", session);
+    Console.WriteLine("  第一轮: " + S(first, "content"));
+    Check("第一轮识别为转账", S(first, "intent").StartsWith("transfer"), "intent=" + S(first, "intent"));
+
+    // 第二轮：省略句，金额变了，收款人沿用
+    var second = await PostChat("\u6539\u6210800\u5143", "u_demo01", session);
+    Console.WriteLine("  第二轮: " + S(second, "content"));
+    Check("第二轮仍路由到转账", S(second, "intent").StartsWith("transfer"), "intent=" + S(second, "intent"));
+    Check("第二轮金额为 800", S(second, "data").Contains("800"), S(second, "data"));
+}
+
+// ===== 场景 16：AI 连通性自检 =====
+Section("场景 16: AI 连通性自检 —— 让「AI 通没通」可被验证");
+{
+    var req = new HttpRequestMessage(HttpMethod.Post, $"{hostBase}/api/ai/probe")
+    {
+        Content = new StringContent("{}", Encoding.UTF8, "application/json")
+    };
+    req.Headers.Add("Authorization", $"Bearer {token}");
+    var resp = await http.SendAsync(req);
+    var text = await resp.Content.ReadAsStringAsync();
+
+    Check("自检端点可用", (int)resp.StatusCode == 200, $"HTTP {(int)resp.StatusCode}");
+    using var doc = JsonDocument.Parse(text);
+    Check("返回模型配置状态", doc.RootElement.TryGetProperty("modelConfigured", out _), "");
+    Check("返回一句话结论", doc.RootElement.TryGetProperty("summary", out var sum) && !string.IsNullOrEmpty(sum.GetString()));
+
+    // /health 里应能看到最近一次自检结果
+    var healthJson = await http.GetStringAsync($"{hostBase}/health");
+    Check("/health 暴露 AI 自检结果", healthJson.Contains("lastProbe"), "");
+}
+
+// ===== 场景 17：公募基金 =====
+Section("场景 17: 公募基金 —— 代销清单、详情、净值与纯代码路由");
+{
+    // 核心系统侧：代销清单
+    var fundsJson = await http.GetStringAsync($"{bankBase}/api/corebank/v1/funds?limit=100");
+    using var fundsDoc = JsonDocument.Parse(fundsJson);
+    var fundCount = fundsDoc.RootElement.GetArrayLength();
+    Check("代销清单有基金", fundCount >= 8, $"funds={fundCount}");
+
+    // 核心系统侧：单只详情带净值序列
+    var detailJson = await http.GetStringAsync($"{bankBase}/api/corebank/v1/funds/000001");
+    using var detailDoc = JsonDocument.Parse(detailJson);
+    var navPoints = detailDoc.RootElement.GetProperty("navPoints").GetArrayLength();
+    Check("基金详情带 90 个净值点", navPoints == 90, $"navPoints={navPoints}");
+
+    // 核心系统侧：排行按近一年收益率倒序
+    var rankJson = await http.GetStringAsync($"{bankBase}/api/corebank/v1/funds/rankings?metric=yearly&limit=5");
+    using var rankDoc = JsonDocument.Parse(rankJson);
+    var returns = rankDoc.RootElement.EnumerateArray()
+        .Select(f => f.GetProperty("yearlyReturn").GetDecimal())
+        .ToList();
+    Check("排行按近一年收益率倒序",
+        returns.Zip(returns.Skip(1)).All(p => p.First >= p.Second),
+        string.Join(" >= ", returns));
+
+    // 对话入口：基金列表
+    var r17 = await PostChat("\u6709\u54EA\u4E9B\u516C\u52DF\u57FA\u91D1", "u_demo01", Sess("funds"));
+    Console.WriteLine("  回复: " + S(r17, "content"));
+    Check("对话路由到理财场景", S(r17, "intent").StartsWith("wealth"), "intent=" + S(r17, "intent"));
+    Check("返回基金结果", S(r17, "resultIntent") == "wealth.funds", S(r17, "resultIntent"));
+
+    // 对话入口：只报一个 6 位代码（没有任何业务关键词）
+    var r17b = await PostChat("000001", "u_demo01", Sess("fundcode"));
+    Console.WriteLine("  纯代码回复: " + S(r17b, "content"));
+    Check("纯 6 位代码也能路由到理财", S(r17b, "intent").StartsWith("wealth"), "intent=" + S(r17b, "intent"));
+    Check("纯代码命中具体基金", S(r17b, "content").Contains("000001"), S(r17b, "content"));
 }
 
 // ===== 汇总 =====

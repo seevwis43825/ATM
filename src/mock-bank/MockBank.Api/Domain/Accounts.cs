@@ -28,8 +28,11 @@ public enum AccountStatus
 /// <summary>银行账户实体，模拟核心系统的账户表。</summary>
 public sealed record Account
 {
-    /// <summary>账号，19 位，形如 6222020200000001。</summary>
+    /// <summary>账号，形如 6222020200000001。跨行唯一：各家银行使用不同的卡号 BIN 段。</summary>
     public required string AccountNo { get; init; }
+
+    /// <summary>账户所属银行的行代码（如 ICBC）。跨库路由与跨行清算的依据。</summary>
+    public required string BankCode { get; init; }
 
     /// <summary>账户归属客户号。</summary>
     public required string UserId { get; init; }

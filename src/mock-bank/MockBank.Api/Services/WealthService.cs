@@ -85,18 +85,20 @@ public sealed class WealthService(MockBankStore store, AccountService accounts, 
                 StatusCodes.Status400BadRequest, ErrorCodes.VALIDATION_ERROR, "客户号与产品代码均不能为空。");
         }
 
-        var customer = store.GetCustomer(request.UserId);
-        if (customer is null)
-        {
-            return SubscribeOutcome.Failure(
-                StatusCodes.Status404NotFound, ErrorCodes.CUSTOMER_NOT_FOUND, $"客户号 {request.UserId} 不存在。");
-        }
-
         var product = store.GetProduct(request.ProductCode);
         if (product is null)
         {
             return SubscribeOutcome.Failure(
                 StatusCodes.Status404NotFound, ErrorCodes.PRODUCT_NOT_FOUND, $"产品代码 {request.ProductCode} 不存在。");
+        }
+
+        // 客户评级是**行内**评级，必须取产品所属银行的那份客户主档。
+        var customer = store.GetCustomer(request.UserId, product.BankCode);
+        if (customer is null)
+        {
+            return SubscribeOutcome.Failure(
+                StatusCodes.Status404NotFound, ErrorCodes.CUSTOMER_NOT_FOUND,
+                $"客户号 {request.UserId} 在 {BankCatalog.FullNameOf(product.BankCode)} 没有客户主档。");
         }
 
         if (request.Amount <= 0m)
@@ -140,13 +142,15 @@ public sealed class WealthService(MockBankStore store, AccountService accounts, 
                 $"产品 {product.Code} 剩余可募集金额 {product.RemainingAmount:F2} 不足。");
         }
 
+        // 认购本行理财，扣款账户必须是**本行**的储蓄账户（跨行理财需另走代理销售）。
         var savings = store.GetAccountsByUser(customer.UserId)
-            .FirstOrDefault(a => a.AccountType == AccountType.Savings);
+            .FirstOrDefault(a => a.AccountType == AccountType.Savings
+                                 && string.Equals(a.BankCode, product.BankCode, StringComparison.OrdinalIgnoreCase));
         if (savings is null)
         {
             return SubscribeOutcome.Failure(
                 StatusCodes.Status404NotFound, ErrorCodes.ACCOUNT_NOT_FOUND,
-                $"客户 {customer.UserId} 没有可用于认购扣款的储蓄账户。");
+                $"客户 {customer.UserId} 在 {BankCatalog.FullNameOf(product.BankCode)} 没有可用于认购扣款的储蓄账户。");
         }
 
         if (savings.Status != AccountStatus.Normal)
@@ -156,54 +160,51 @@ public sealed class WealthService(MockBankStore store, AccountService accounts, 
                 $"扣款账户 {savings.AccountNo} 状态为 {savings.StatusText}，不予受理。");
         }
 
-        await store.LedgerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        // 认购只动产品所属银行的那一个库，锁也只取该行。
+        await using var ledgerLocks = await store
+            .AcquireLedgerLocksAsync([product.BankCode], cancellationToken).ConfigureAwait(false);
+
+        // 等待锁期间余额可能被并发请求改变，这里重新读取一次。
+        savings = store.GetAccount(savings.AccountNo)!;
+        if (request.Amount > savings.AvailableBalance)
         {
-            // 等待闸门期间余额可能被并发请求改变，这里重新读取一次。
-            savings = store.GetAccount(savings.AccountNo)!;
-            if (request.Amount > savings.AvailableBalance)
-            {
-                return SubscribeOutcome.Failure(
-                    StatusCodes.Status400BadRequest, ErrorCodes.INSUFFICIENT_FUNDS,
-                    $"账户 {savings.AccountNo} 可用余额 {savings.AvailableBalance:F2} 不足以认购 {request.Amount:F2}。");
-            }
-
-            var updatedAccount = accounts.AdjustBalance(savings, -request.Amount);
-            var latestProduct = store.GetProduct(product.Code)!;
-            store.UpdateProduct(latestProduct with { RaisedAmount = latestProduct.RaisedAmount + request.Amount });
-
-            var now = DateTimeOffset.Now;
-            var subscribeNo = store.NextTransactionNo(now);
-            store.AddTransaction(new BankTransaction
-            {
-                TxNo = subscribeNo,
-                UserId = customer.UserId,
-                AccountNo = savings.AccountNo,
-                Direction = TransactionDirection.Expense,
-                Amount = request.Amount,
-                Category = "理财",
-                Merchant = $"理财认购-{product.Name}",
-                CounterpartyName = $"{MockBankStore.BankName} 理财中心",
-                CounterpartyAccountNo = product.Code,
-                Remark = $"认购 {product.Name}（{product.TermDays}天）",
-                Channel = TransactionChannel.MobileApp,
-                Currency = savings.Currency,
-                Timestamp = now,
-            });
-
-            logger.LogInformation(
-                "理财认购成功 {SubscribeNo}: 用户 {UserId} 认购 {Code} 金额 {Amount:F2}, 扣款后余额 {Balance:F2}",
-                subscribeNo, customer.UserId, product.Code, request.Amount, updatedAccount.Balance);
-
-            var message = $"认购 {product.Name} 成功，金额 {request.Amount:F2} 元";
-            return SubscribeOutcome.Success(new SubscribeResponse(
-                subscribeNo, customer.UserId, product.Code, product.Name, request.Amount,
-                savings.AccountNo, updatedAccount.Balance, product.RiskLevel.ToText(),
-                customer.RiskLevel.ToText(), product.AnnualRate, product.TermDays, now, message));
+            return SubscribeOutcome.Failure(
+                StatusCodes.Status400BadRequest, ErrorCodes.INSUFFICIENT_FUNDS,
+                $"账户 {savings.AccountNo} 可用余额 {savings.AvailableBalance:F2} 不足以认购 {request.Amount:F2}。");
         }
-        finally
+
+        var updatedAccount = accounts.AdjustBalance(savings, -request.Amount);
+        var latestProduct = store.GetProduct(product.Code)!;
+        store.UpdateProduct(latestProduct with { RaisedAmount = latestProduct.RaisedAmount + request.Amount });
+
+        var now = DateTimeOffset.Now;
+        var subscribeNo = store.NextTransactionNo(product.BankCode, now);
+        store.AddTransaction(new BankTransaction
         {
-            store.LedgerGate.Release();
-        }
+            TxNo = subscribeNo,
+            BankCode = product.BankCode,
+            UserId = customer.UserId,
+            AccountNo = savings.AccountNo,
+            Direction = TransactionDirection.Expense,
+            Amount = request.Amount,
+            Category = "理财",
+            Merchant = $"理财认购-{product.Name}",
+            CounterpartyName = $"{BankCatalog.ShortNameOf(product.BankCode)} 理财中心",
+            CounterpartyAccountNo = product.Code,
+            Remark = $"认购 {product.Name}（{product.TermDays}天）",
+            Channel = TransactionChannel.MobileApp,
+            Currency = savings.Currency,
+            Timestamp = now,
+        });
+
+        logger.LogInformation(
+            "理财认购成功 {SubscribeNo}: 用户 {UserId} 在 {BankCode} 认购 {Code} 金额 {Amount:F2}, 扣款后余额 {Balance:F2}",
+            subscribeNo, customer.UserId, product.BankCode, product.Code, request.Amount, updatedAccount.Balance);
+
+        var message = $"认购 {product.Name} 成功，金额 {request.Amount:F2} 元";
+        return SubscribeOutcome.Success(new SubscribeResponse(
+            subscribeNo, customer.UserId, product.Code, product.Name, request.Amount,
+            savings.AccountNo, updatedAccount.Balance, product.RiskLevel.ToText(),
+            customer.RiskLevel.ToText(), product.AnnualRate, product.TermDays, now, message));
     }
 }

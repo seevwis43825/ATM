@@ -7,7 +7,7 @@
 
 ## 0. 现状与目标边界
 
-> **Current（源码可验证）**：默认是单机 SQLite + `EnsureCreated`，没有仓库内可验证的自动备份、PITR、跨 AZ/Region、PostgreSQL 主从、Redis/Kafka 复制、KMS/Vault 或 WORM 归档。审计当前双写本地 HMAC 链 JSONL 与独立 `audit_events`；任一路径写失败记录 Critical，但不阻断业务。
+> **Current（源码可验证）**：默认是单机 SQLite + `EnsureCreated`，没有仓库内可验证的自动备份、PITR、跨 AZ/Region、PostgreSQL 主从、Redis/Kafka 复制、KMS/Vault 或 WORM 归档。审计当前双写本地 HMAC 链 JSONL（**权威记录**，请求返回前同步落盘）与独立 `audit_events`（**可检索副本**，批量异步提交，崩溃时最多落后于文件）；任一路径写失败记录 Critical，但不阻断业务。
 >
 > **Target / Runbook（规划）**：本文的 SLA、RTO/RPO、K8s 多副本、PostgreSQL HA、异地温备、PITR、Vault/KMS 和演练频率均为生产目标。未完成部署和恢复演练前，不得宣称已达到这些指标。
 

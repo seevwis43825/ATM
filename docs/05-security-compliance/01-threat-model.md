@@ -7,7 +7,7 @@
 
 ## 0. 评估基线
 
-> **Current（源码可验证）**：当前信任边界是本地 HTTP `BankingAgent.Host :5243` → `MockBank.Api :5200`，默认 SQLite/`EnsureCreated`。已实现 JWT/RBAC、速率限制中间件、安全响应头、人工确认、HMAC 链审计 JSONL + `audit_events` 双写，以及 `TransferRecord` 的 `[Encrypted]` 字段转换器。MFA、KMS/Vault 托管、TDE、WORM、PostgreSQL RLS、mTLS 和生产 K8s 边界均未实现。
+> **Current（源码可验证）**：当前信任边界是本地 HTTP `BankingAgent.Host :5243` → `MockBank.Api :5200`，默认 SQLite/`EnsureCreated`。已实现 JWT/RBAC、速率限制中间件、安全响应头、人工确认、HMAC 链审计 JSONL + 链签名（**权威记录**，请求返回前同步落盘）+ `audit_events`（**可检索副本**，有界队列批量异步提交，读前 flush），以及 `TransferRecord` 的 `[Encrypted]` 字段转换器。MFA、KMS/Vault 托管、TDE、WORM、PostgreSQL RLS、mTLS 和生产 K8s 边界均未实现。
 >
 > **Target**：下文 CDN/WAF、K8s、PostgreSQL/Redis/Kafka、外部 CBS 与 LLM 边界是生产威胁建模目标。缓解措施表描述应达到的控制，不等于当前全部生效。
 
@@ -256,7 +256,7 @@
 | **认证** | JWT 签发/校验；演示账号；**无 MFA/OTP** |
 | **授权** | RBAC + 请求身份绑定/ownership 校验；**无数据库 RLS** |
 | **加密** | AES-256-GCM 密码框架；`TransferRecord` 敏感字段经 `[Encrypted]` 转换器加密；**无 KMS/TDE，默认 HTTP** |
-| **审计** | HMAC-SHA256 链 JSONL + 独立 `audit_events` 双写；失败记 Critical 且不阻断；**无 WORM** |
+| **审计** | HMAC-SHA256 链 JSONL（**权威记录**，同步落盘）+ 独立 `audit_events` **可检索副本**（批量异步提交，崩溃时最多落后于文件）；失败记 Critical 且不阻断；**无 WORM** |
 | **HITL** | 高风险操作强制人工回环 |
 | **输入** | 参数化查询 + JSON Schema 校验 + 长度限制 |
 | **输出** | 数据脱敏与安全响应头 |

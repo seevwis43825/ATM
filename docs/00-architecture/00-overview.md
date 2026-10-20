@@ -18,13 +18,14 @@
 | 项目/组件 | 当前职责与事实 |
 |---|---|
 | `src/src/BankingAgent.Host` | ASP.NET Core 宿主，默认 `http://localhost:5243`；Minimal API；`wwwroot` 内置静态演示 UI |
-| `src/src/BankingAgent.Base` | AgentRouter/AgentOrchestrator、合规与审计、EF Core、多 Provider 数据层、`InMemoryEventBus`、核心银行 HTTP 客户端 |
-| `src/src/BankingAgent.Plugin.Sdk` | `IPluginEntryPoint`、`IBankingAgent`、`IEventPublisher`、`DomainEvent` 等共享契约；命名空间为 `BankingAgent.PluginSdk` |
+| `src/src/BankingAgent.Base` | AgentRouter/AgentOrchestrator、`IntentContext`（场景/动作两层）、`SessionMemory`（会话记忆）、`AiConnectivityProbe`（AI 自检）、合规与审计、EF Core、多 Provider 数据层、`InMemoryEventBus`、核心银行 HTTP 客户端 |
+| `src/src/BankingAgent.Plugin.Sdk` | `IPluginEntryPoint`、`IBankingAgent`（含 `TriggerKeywords` / `TriggerPatterns`）、`IEventPublisher`、`DomainEvent` 等共享契约；命名空间为 `BankingAgent.PluginSdk` |
 | `src/plugins/*` | 四个动态加载插件：Transfer、BillAnalysis、CardManagement、Wealth |
-| `src/mock-bank/MockBank.Api` | 独立模拟核心银行 API，默认 `http://localhost:5200`，数据为进程内 `MockBankStore` |
-| 数据库 | 默认 SQLite：`bankingagent.db`，`InitMode=EnsureCreated`；另支持 PostgreSQL/SQL Server 配置，但不是默认运行态 |
+| `src/mock-bank/MockBank.Api` | 独立模拟核心银行 API，默认 `http://localhost:5200`。**模拟 3 家银行，每家一个独立 SQLite 数据库文件**（工行 / 建行 / 招行），`MockBankStore` 是跨行聚合门面 |
+| 数据库 | 宿主默认 SQLite：`bankingagent.db`，`InitMode=EnsureCreated`；另支持 PostgreSQL/SQL Server 配置，但不是默认运行态。**模拟银行另有 3 个独立库**（`App_Data/mockbank_*.db`） |
 | 事件 | `InMemoryEventBus`，同步逐个调用处理器；仅内存历史与死信，重启丢失 |
-| 意图识别 | 默认规则路径来自插件声明的 `SupportedIntents`/`TriggerKeywords`；配置 `Ai:ApiKey` 后可用 `LlmIntentClassifier`，失败回退规则 |
+| 意图识别 | 默认规则路径来自插件声明的 `SupportedIntents`/`TriggerKeywords`/`TriggerPatterns`（正则仅作兜底）；配置 `Ai:ApiKey` 后可用 `LlmIntentClassifier`，失败回退规则 |
+| AI 可观测 | `POST /api/ai/probe` 真实调一次模型并回报链路结果；`/health` 暴露最近一次自检 |
 
 当前仓库**没有**独立 Next.js 前端、Python/FastAPI AI 服务、API Gateway、K8s 运行单元，也没有默认 PostgreSQL、Redis、Kafka 服务。它们只可作为 Target 讨论。
 

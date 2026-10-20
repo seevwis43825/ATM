@@ -18,6 +18,8 @@
   <ItemGroup>
     <ProjectReference Include="..\src\BankingAgent.Base\BankingAgent.Base.csproj" />
     <ProjectReference Include="..\src\BankingAgent.Plugin.Sdk\BankingAgent.Plugin.Sdk.csproj" />
+    <!-- 卡片插件的语义解析器需要被直接测试：它的行为决定「我的卡不见了」会不会触发挂失 -->
+    <ProjectReference Include="..\plugins\BankingAgent.Plugin.CardManagement\BankingAgent.Plugin.CardManagement.csproj" />
   </ItemGroup>
 
 </Project>

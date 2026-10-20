@@ -34,6 +34,8 @@
 
 ---
 
+<a id="adr-0001"></a>
+
 ## ADR-0001：采用模块化单体架构
 
 **日期**：2026-09-21
@@ -65,6 +67,8 @@
 
 ---
 
+<a id="adr-0002"></a>
+
 ## ADR-0002：未来可演进为微服务
 
 **日期**：2026-09-21
@@ -95,6 +99,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 
 ---
 
+<a id="adr-0003"></a>
+
 ## ADR-0003：进程内事件总线 → 未来持久化消息总线
 
 **日期**：2026-09-21
@@ -113,6 +119,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 详见 [`07-event-driven-contract.md`](07-event-driven-contract.md)
 
 ---
+
+<a id="adr-0004"></a>
 
 ## ADR-0004：双语言栈：C# .NET 8 + Python 3.11
 
@@ -139,6 +147,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 
 ---
 
+<a id="adr-0005"></a>
+
 ## ADR-0005：LLM 主用国内模型（Qwen3/DeepSeek）
 
 **日期**：2026-09-21
@@ -160,6 +170,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 
 ---
 
+<a id="adr-0006"></a>
+
 ## ADR-0006：数据库选型 PostgreSQL 16 + pgvector
 
 **日期**：2026-09-21
@@ -180,6 +192,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 
 ---
 
+<a id="adr-0007"></a>
+
 ## ADR-0007：API 网关使用 Kong / APISIX
 
 **日期**：2026-09-21
@@ -191,6 +205,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 - Traefik（轻量）
 
 ---
+
+<a id="adr-0008"></a>
 
 ## ADR-0008：强制人工回环（Human-in-the-Loop）
 
@@ -220,6 +236,8 @@ ADR-0001 决定采用模块化单体，但某些模块（如 CrossScenario Coord
 
 ---
 
+<a id="adr-0009"></a>
+
 ## ADR-0009：可插拔 Agent 注册机制
 
 **日期**：2026-09-21
@@ -247,6 +265,8 @@ public interface IBankingAgent
 详见 [`06-extension-points.md`](06-extension-points.md)
 
 ---
+
+<a id="adr-0010"></a>
 
 ## ADR-0010：功能开关系统（FeatureFlag）
 

@@ -31,8 +31,11 @@ public enum ProductStatus
 /// <summary>理财产品实体，模拟核心系统的理财产品表。</summary>
 public sealed record WealthProduct
 {
-    /// <summary>产品代码，形如 WP001。</summary>
+    /// <summary>产品代码，形如 WP001。跨行唯一：各行使用互不重叠的代码段。</summary>
     public required string Code { get; init; }
+
+    /// <summary>产品所属银行的行代码（如 ICBC）。银行自营理财由本行发行。</summary>
+    public required string BankCode { get; init; }
 
     /// <summary>产品名称。</summary>
     public required string Name { get; init; }

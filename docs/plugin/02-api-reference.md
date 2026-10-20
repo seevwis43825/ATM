@@ -3,7 +3,7 @@
 > **说明**：本文件记录**代码里真实存在**的端点。
 > 设计层面的完整 API 规范见 [`../02-api/01-rest-api-spec.md`](../02-api/01-rest-api-spec.md)，
 > 两者差异见 [`03-implementation-status.md`](03-implementation-status.md)。
-> **验证口径**：单元测试 149 项已实测通过；E2E/Stress 的检查项以程序最终输出和 CI 为准。
+> **验证口径**：单元测试 187 项已实测通过（2026-10-20）；E2E 70 断言、Stress 31 项已本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
 
 ---
 
@@ -15,15 +15,16 @@ Base URL：`http://localhost:5243`
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/health`、`/health/ready`、`/health/live` | 健康、就绪、存活探针 |
+| GET | `/health`、`/health/ready`、`/health/live` | 健康、就绪、存活探针（`/health` 含 AI 连通性自检结果） |
 | POST | `/api/auth/token` | 获取 JWT |
 | GET | `/api/auth/me` | 当前身份 |
 | GET | `/api/plugins`、`/api/plugins/agents` | 插件与 Agent 清单 |
 | POST | `/api/orchestrate` | Supervisor 编排 |
 | GET | `/api/trajectory/{sessionId}`、`/api/trajectory` | 轨迹回放与最近事件 |
 | GET | `/api/plugins/compliance`、`/api/plugins/events` | 合规规则与事件总线状态 |
-| POST | `/api/plugins/{pluginId}/stop|start` | 插件启停（仅 admin） |
+| POST | `/api/plugins/{pluginId}/stop\|start` | 插件启停（仅 admin） |
 | POST | `/api/chat`、`/api/chat/confirm` | 对话与人工确认 |
+| **POST** | **`/api/ai/probe`** | **AI 连通性自检：真实调一次模型并回报链路结果** |
 
 ### 1.0 身份认证（必须先获取令牌）
 
@@ -304,7 +305,7 @@ Content-Type: application/json; charset=utf-8
 |------|------|------|------|
 | `message` | string | ✅ | 用户自然语言输入 |
 | `userId` | string | ✅ | 用户 ID |
-| `sessionId` | string | | 会话 ID，**同时作为幂等键** |
+| `sessionId` | string | | 会话 ID。幂等键 = **会话 + 付款方 + 收款方 + 金额**（同一会话里重复提交同样的转账会被拦截，改了金额则正常执行） |
 | `slots` | object | | 预抽取槽位，避免 Agent 重复解析 |
 
 ```json
@@ -320,14 +321,18 @@ Content-Type: application/json; charset=utf-8
 
 | 字段 | 说明 |
 |------|------|
-| `intent` | 识别出的意图 |
+| `echo` | 回显的用户原话 |
+| `intent` | 本轮路由使用的意图（场景级或动作级） |
+| `resultIntent` | Agent 产出的**更精确**的结果意图（如 `card.list` / `wealth.funds` / `transfer.completed`） |
 | `success` | 是否成功 |
-| `content` | 自然语言回复 |
+| `content` | 自然语言回复。**失败时也会给出**（取 `errorMessage`），前端只渲染 `content` |
 | `requiresHumanInLoop` | **是否需要人工确认** |
 | `sideEffectCommitted` | **是否已产生不可回滚副作用** |
 | `errorCode` / `errorMessage` | 失败原因 |
 | `data` | 结构化数据（**已脱敏**） |
+| `confidence` | 置信度 0~1 |
 | `elapsedMs` | 耗时 |
+| `intentSource` | 意图来源：`llm`（大模型判定）/ `rule`（规则表兜底）/ `session`（继承上一轮） |
 
 **响应示例 A — 人工回环**
 
@@ -574,7 +579,60 @@ POST /api/corebank/v1/cards/6222020200000001/limit
 
 ---
 
-### 2.6 理财
+### 2.6 客户档案
+
+```http
+GET /api/corebank/v1/customers/{userId}
+```
+
+```json
+[
+  { "userId": "u_demo01", "bankCode": "ICBC", "bankName": "中国工商银行", "name": "张明", "riskLevel": "R3", "customerLevel": "金卡", "branchName": "工行北京分行营业部" },
+  { "userId": "u_demo01", "bankCode": "CCB",  "bankName": "中国建设银行", "name": "张明", "riskLevel": "R2", "customerLevel": "金卡", "branchName": "建行北京分行营业部" },
+  { "userId": "u_demo01", "bankCode": "CMB",  "bankName": "招商银行",     "name": "张明", "riskLevel": "R3", "customerLevel": "金卡", "branchName": "招行北京分行营业部" }
+]
+```
+
+> **响应不含身份证号与手机号** —— 插件做理财风险匹配只需要行内评级，不需要这些。
+> 同一客户号在多家银行各有一份主档，因为**客户评级是行内评级**（张明在建行是 R2、在工行是 R3）。
+
+---
+
+### 2.7 银行目录（多银行核心系统）
+
+```http
+GET  /api/corebank/v1/banks
+GET  /api/corebank/v1/banks/{bankCode}
+POST /api/corebank/v1/_admin/reset      # 重置各行数据库并重写种子
+```
+
+```json
+[
+  {
+    "bank": {
+      "bankCode": "ICBC",
+      "bankName": "中国工商银行",
+      "shortName": "工商银行",
+      "binPrefix": "6222",
+      "branchName": "工行北京分行营业部",
+      "serviceHotline": "95588",
+      "databaseFileName": "mockbank_icbc.db"
+    },
+    "customerCount": 3,
+    "accountCount": 6,
+    "cardCount": 6,
+    "transactionCount": 83,
+    "productCount": 2
+  }
+]
+```
+
+> `databaseFileName` 刻意暴露在响应里：它直接证明「每家银行一个独立数据库文件」，
+> 而不是单库加一个 `bank_code` 字段。
+
+---
+
+### 2.8 理财
 
 ```http
 GET  /api/corebank/v1/products?riskLevel=R2
@@ -592,14 +650,67 @@ POST /api/corebank/v1/wealth/subscribe
 | `BELOW_MIN_INVESTMENT` | 低于起投金额 |
 | `PRODUCT_NOT_ON_SALE` | 产品已停售 |
 
+> 认购会校验**产品所属银行**的客户评级，并要求扣款账户是**本行**储蓄账户 ——
+> 跨行代销需另走代理销售流程。详见 [`../13-database/02-multi-bank-databases.md`](../13-database/02-multi-bank-databases.md) §4。
+
 ---
 
-### 2.7 运维
+### 2.9 公募基金（代销产品）
+
+```http
+GET /api/corebank/v1/funds?category=债券型&riskLevel=R2&company=易方达&keyword=000&limit=20
+GET /api/corebank/v1/funds/{fundCode}
+GET /api/corebank/v1/funds/{fundCode}/nav?days=60
+GET /api/corebank/v1/funds/rankings?metric=daily|monthly|yearly&limit=10
+```
+
+筛选参数全部可空，空表示不限：
+
+| 参数 | 取值 | 说明 |
+|---|---|---|
+| `category` | 货币型 / 债券型 / 混合型 / 股票型 / 指数型 / QDII / FOF | 基金类型 |
+| `riskLevel` | R1-R5 | 风险等级（**注意**：公募基金是 R1-R5，与银行客户评级 R1-R4 是两套） |
+| `company` | 片段 | 基金公司 |
+| `keyword` | 片段 | 基金代码或名称 |
+| `limit` | 1-100 | 返回条数，默认 20 |
+
+排行维度 `metric`：`daily`（当日增长率）/ `monthly`（近一月收益率）/ `yearly`（近一年收益率）。
+
+```json
+{
+  "fundCode": "000001",
+  "fundName": "华夏成长混合",
+  "fundFullName": "华夏成长证券投资基金",
+  "category": "混合型",
+  "riskLevel": "R3",
+  "fundCompany": "华夏基金管理有限公司",
+  "fundManager": "潘学军",
+  "unitNav": 1.6714,
+  "accumulatedNav": 6.5231,
+  "dailyGrowthRate": -0.42,
+  "monthlyReturn": 3.18,
+  "yearlyReturn": 12.47,
+  "sinceInceptionReturn": 842.15,
+  "fundScale": 43.15,
+  "managementFeeRate": 1.20,
+  "custodyFeeRate": 0.20,
+  "subscriptionStatus": "开放申购",
+  "navDate": "2026-10-20T00:00:00",
+  "distributorBankCodes": "ICBC,CMB"
+}
+```
+
+> `distributorBankCodes` 是**代销行**：同一只基金可被多家银行代销，各行在自己的库里存一份。
+> 理财 Agent 会据此告诉用户「这只基金在你名下的哪些行能买到」。
+
+---
+
+### 2.10 运维
 
 ```http
 GET /health
 GET /api/corebank/v1/_admin/stats
-GET /openapi/v1.json          # OpenAPI 3.0 文档，17 paths / 22 schemas
+GET /openapi/v1.json          # OpenAPI 3.0 文档，26 paths / 30 schemas
 ```
 
 ---
@@ -655,35 +766,77 @@ dotnet run --project src/E2ETest/E2ETest.csproj -- `
 
 ## 5. 演示数据
 
-### 5.1 客户
+> 模拟银行里有**三家彼此独立的银行**，每家一个独立数据库文件。
+> 跨行卡片、跨行转账都基于这个结构。设计说明见 [`../13-database/02-multi-bank-databases.md`](../13-database/02-multi-bank-databases.md)。
 
-| 用户 ID | 姓名 | 风险等级 |
-|---------|------|---------|
-| `u_demo01` | 张明 | R3 |
-| `u_demo02` | 李华 | R2 |
-| `u_demo03` | 王芳 | R4 |
+### 5.1 银行
 
-### 5.2 账户
+| 行代码 | 银行 | 卡号 BIN 段 | 数据库文件 | 客户/账户/卡/理财 |
+|---|---|---|---|---|
+| `ICBC` | 中国工商银行 | `6222` | `mockbank_icbc.db` | 3 / 6 / 6 / 2 |
+| `CCB` | 中国建设银行 | `6217` | `mockbank_ccb.db` | 2 / 3 / 3 / 2 |
+| `CMB` | 招商银行 | `6225` | `mockbank_cmb.db` | 2 / 3 / 3 / 2 |
 
-| 账号 | 归属 | 类型 | 余额/额度 |
-|------|------|------|----------|
-| `6222020200000001` | 张明 | 储蓄卡 | 250,000.00 |
-| `6222020200000002` | 张明 | 信用卡 | 额度 50,000 / 已用 12,800 |
-| `6222020200000003` | 李华 | 储蓄卡 | 88,000.50 |
-| `6222020200000004` | 李华 | 信用卡 | 额度 30,000 / 已用 3,200 |
-| `6222020200000005` | 王芳 | 储蓄卡 | 152,000.00 |
-| `6222020200000006` | 王芳 | 信用卡 | 额度 80,000 / 已用 45,000 |
+> 流水笔数随种子生成而变（转账、理财认购都会新增），**实时值见 `GET /api/corebank/v1/_admin/stats`**。
 
-### 5.3 理财产品
+### 5.2 客户（**按行拆分**）
 
-| 代码 | 名称 | 风险 | 年化 | 起投 | 期限 |
-|------|------|------|------|------|------|
-| WP001 | 短债现金管理 | R1 | 2.15% | 100 | 30 天 |
-| WP002 | 稳健增利90天 | R2 | 3.20% | 1000 | 90 天 |
-| WP003 | 安心纯债180天 | R2 | 3.85% | 5000 | 180 天 |
-| WP004 | 平衡优选混合 | R3 | 5.10% | 10000 | 365 天 |
-| WP005 | 成长精选30天 | R3 | 4.25% | 1000 | 30 天 |
-| WP006 | 进取科技主题 | R4 | 8.50% | 50000 | 365 天 |
+同一个自然人在多家银行有**各自独立的客户主档**（客户评级是行内评级，各行可不同）。
+
+| 用户 ID | 姓名 | 工行 | 建行 | 招行 |
+|---------|------|------|------|------|
+| `u_demo01` | 张明 | R3 金卡 | R2 金卡 | R3 金卡 |
+| `u_demo02` | 李华 | R2 普通 | — | — |
+| `u_demo03` | 王芳 | R4 白金 | R3 白金 | R3 白金 |
+
+> 李华只在工行有储蓄账户，这是**刻意**的：收款人检索按姓名返回全部同名储蓄账户，
+> 李华若在多家行都有储蓄账户，「给李华转 500」就会变成多义匹配。
+> 王芳在三家行都有储蓄账户，用来演示跨行收款人的多义提示。
+
+### 5.3 账户（跨行汇总）
+
+| 账号 | 开户行 | 归属 | 类型 | 余额/额度 |
+|------|--------|------|------|----------|
+| `6217000100000001` | 建行 | 张明 | 储蓄卡 | 85,000.00 |
+| `6217000100000002` | 建行 | 张明 | 信用卡 | 额度 40,000 / 已用 6,800 |
+| `6222020200000001` | 工行 | 张明 | 储蓄卡 | 250,000.00 |
+| `6222020200000002` | 工行 | 张明 | 信用卡 | 额度 50,000 / 已用 12,800 |
+| `6225000100000001` | 招行 | 张明 | 储蓄卡 | 32,000.00 |
+| `6225000100000002` | 招行 | 张明 | 信用卡 | 额度 60,000 / 已用 23,000 |
+| `6222020200000003` | 工行 | 李华 | 储蓄卡 | 88,000.50 |
+| `6222020200000004` | 工行 | 李华 | 信用卡 | 额度 30,000 / 已用 3,200 |
+| `6217000100000003` | 建行 | 王芳 | 储蓄卡 | 120,000.00 |
+| `6222020200000005` | 工行 | 王芳 | 储蓄卡 | 152,000.00 |
+| `6222020200000006` | 工行 | 王芳 | 信用卡 | 额度 80,000 / 已用 45,000 |
+| `6225000100000003` | 招行 | 王芳 | 储蓄卡 | 66,000.00 |
+
+> **张明名下 6 张卡、3 家银行** —— 这就是「跨行卡片」演示的数据基础。
+> 按账号排序时建行（`6217`）在最前，因此不指定付款账户的转账**默认从建行账户扣款**，
+> 而李华的账户在工行，于是默认演示路径天然就是一笔**跨行转账**。
+
+### 5.4 理财产品（银行自营，各行独立）
+
+| 代码 | 发行行 | 名称 | 风险 | 年化 | 起投 | 期限 |
+|------|--------|------|------|------|------|------|
+| WP001 | 工行 | 稳健增利90天 | R2 | 3.20% | 1000 | 90 天 |
+| WP002 | 工行 | 安心纯债180天 | R2 | 3.85% | 5000 | 180 天 |
+| WP101 | 建行 | 平衡优选混合 | R3 | 5.10% | 10000 | 365 天 |
+| WP102 | 建行 | 成长精选30天 | R3 | 4.25% | 5000 | 30 天 |
+| WP201 | 招行 | 进取科技主题 | R4 | 8.50% | 20000 | 180 天 |
+| WP202 | 招行 | 短债现金管理 | R1 | 2.15% | 100 | 7 天 |
+
+### 5.5 公募基金（代销产品，各行独立代销清单）
+
+基金是**代销**产品：同一只基金可被多家银行代销，各自存在自己的库里。
+每家行代销 9~12 只（工行 12 / 建行 10 / 招行 9，全系统去重后 20 只），覆盖货币型 / 债券型 / 混合型 / 股票型 / 指数型 / QDII / FOF，
+风险等级 R1-R5，每只带 90 个自然日的净值序列。
+
+```http
+GET /api/corebank/v1/funds?category=债券型&riskLevel=R2
+GET /api/corebank/v1/funds/000001
+GET /api/corebank/v1/funds/000001/nav?days=60
+GET /api/corebank/v1/funds/rankings?metric=yearly&limit=5
+```
 
 ---
 
@@ -696,5 +849,8 @@ dotnet run --project src/E2ETest/E2ETest.csproj -- `
 | `/api/v1/transfers` | ✅ 设计 | ❌ 未实现 | 内部走 `ICoreBankClient` |
 | `/api/v1/users/me/*` | ✅ 设计 | ❌ 未实现 | 用户权利响应接口未做 |
 | `/api/plugins/*` | ❌ 未设计 | ✅ 已实现 | 插件管理是新增能力 |
+| `/api/ai/probe` | ❌ 未设计 | ✅ 已实现 | AI 连通性自检是新增能力 |
+| `/api/corebank/v1/banks` | ❌ 未设计 | ✅ 已实现 | 银行目录（多银行核心系统） |
+| `/api/corebank/v1/funds` | ❌ 未设计 | ✅ 已实现 | 公募基金代销清单 |
 
 设计文档的完整 API 规范在 [`../02-api/01-rest-api-spec.md`](../02-api/01-rest-api-spec.md)，接入真实业务时需补齐上述端点。

@@ -60,7 +60,7 @@ public static class OpsEndpoints
         var ready = store.Customers.Count > 0 && store.AllAccounts.Count > 0;
         var response = new HealthResponse(
             ready ? "OK" : "DEGRADED",
-            MockBankStore.BankName,
+            MockBankStore.PlatformName,
             ServiceVersion,
             DateTimeOffset.Now,
             Math.Round((DateTimeOffset.Now - ProcessStartTime).TotalSeconds, 1));
