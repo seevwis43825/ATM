@@ -383,7 +383,7 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 
 ```powershell
 # 单元测试
-dotnet test src/UnitTests/UnitTests.csproj  # 当前 200 项
+dotnet test src/UnitTests/UnitTests.csproj  # 当前 209 项
 
 # 密码学自检（含抗量子；以本次程序输出为准）
 dotnet run --project src/CryptoSelfTest

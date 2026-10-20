@@ -20,6 +20,15 @@
     <ProjectReference Include="..\src\BankingAgent.Plugin.Sdk\BankingAgent.Plugin.Sdk.csproj" />
     <!-- 卡片插件的语义解析器需要被直接测试：它的行为决定「我的卡不见了」会不会触发挂失 -->
     <ProjectReference Include="..\plugins\BankingAgent.Plugin.CardManagement\BankingAgent.Plugin.CardManagement.csproj" />
+    <!-- 模拟核心系统：演示数据重置的并发正确性必须被自动化覆盖。
+         它此前只有"能跑通"的人工验证，没有回归护栏 —— 而重置要同时拿各行写锁，
+         与跨行转账的加锁顺序必须一致，错了就是死锁。 -->
+    <ProjectReference Include="..\mock-bank\MockBank.Api\MockBank.Api.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MockBank.Api 是 Web SDK 项目，引用它需要一并引入 ASP.NET Core 框架引用 -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
 </Project>

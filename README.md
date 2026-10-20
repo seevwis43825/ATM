@@ -4,7 +4,7 @@
 >
 > 架构：**模块化单体 + 插件化扩展 + 领域驱动设计 + 事件驱动**
 > 技术栈：.NET 8（C#）、EF Core、SQLite / PostgreSQL、ASP.NET Core Minimal API
-> 当前状态：**可运行基座**。单元测试 200 项已实测通过；端到端（71 断言 / 20 个场景）与并发压测（31 项）已在本机实测全绿（E2E 第 0A 步自动重置 MockBank 演示数据，**无需手工准备**），CI 持续复验。
+> 当前状态：**可运行基座**。单元测试 209 项已实测通过；端到端（71 断言 / 20 个场景）与并发压测（31 项）已在本机实测全绿（E2E 第 0A 步自动重置 MockBank 演示数据，**无需手工准备**），CI 持续复验。
 
 ---
 
@@ -97,7 +97,7 @@ ATM/
 │   │   └── App_Data/                       各行独立数据库文件（运行后生成）
 │   ├── templates/banking-plugin/           [*] dotnet new 插件脚手架
 │   ├── PluginValidator/                    [*] 插件契约校验器（CI 门禁）
-│   ├── UnitTests/                          单元测试（当前 200 项）
+│   ├── UnitTests/                          单元测试（当前 209 项）
 │   ├── E2ETest/                            端到端场景测试（20 个场景）
 │   ├── StressTest/                         并发与稳定性压测
 │   ├── LoadTest/                           容量阶梯加压
@@ -186,7 +186,7 @@ curl http://localhost:5243/health        # 含真实数据库健康检查
 
 ```bash
 # 单元测试
-dotnet test src/UnitTests/UnitTests.csproj                    # 当前 200 项单元测试
+dotnet test src/UnitTests/UnitTests.csproj                    # 当前 209 项单元测试
 
 # 以下需要两个服务已启动
 dotnet run --project src/E2ETest   -- http://localhost:5243 http://localhost:5200
