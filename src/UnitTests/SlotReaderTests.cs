@@ -42,7 +42,8 @@ public class SlotReaderTests
     {
         var req = new AgentRequest
         {
-            UserInput = "t", UserId = "u",
+            UserInput = "t",
+            UserId = "u",
             Slots = new Dictionary<string, object?> { ["k"] = "value" }
         };
         Assert.Equal("value", SlotReader.String(req, "k"));
@@ -90,7 +91,8 @@ public class SlotReaderTests
     {
         var req = new AgentRequest
         {
-            UserInput = "t", UserId = "u",
+            UserInput = "t",
+            UserId = "u",
             Slots = new Dictionary<string, object?> { ["amount"] = 888.88m }
         };
         Assert.Equal(888.88m, SlotReader.Decimal(req, "amount"));
@@ -101,7 +103,8 @@ public class SlotReaderTests
     {
         var req = new AgentRequest
         {
-            UserInput = "t", UserId = "u",
+            UserInput = "t",
+            UserId = "u",
             Slots = new Dictionary<string, object?> { ["amount"] = 800 }
         };
         Assert.Equal(800m, SlotReader.Decimal(req, "amount"));

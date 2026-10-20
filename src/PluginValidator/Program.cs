@@ -161,11 +161,17 @@ internal static class Program
                 pluginCount = manifests.Count,
                 plugins = manifests.Select(m => new
                 {
-                    m.Path, m.EntryPointType, m.Agents, m.PartitionName, m.ReferencedAssemblies
+                    m.Path,
+                    m.EntryPointType,
+                    m.Agents,
+                    m.PartitionName,
+                    m.ReferencedAssemblies
                 }),
                 findings = findings.Select(f => new
                 {
-                    severity = f.Severity.ToString(), f.Subject, f.Message
+                    severity = f.Severity.ToString(),
+                    f.Subject,
+                    f.Message
                 })
             }, new JsonSerializerOptions { WriteIndented = true }));
             return findings.Any(f => f.Severity == Severity.Error) ? 1 : 0;

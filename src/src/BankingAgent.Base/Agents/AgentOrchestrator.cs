@@ -356,55 +356,55 @@ public class AgentOrchestrator
             switch (step.Kind)
             {
                 case StepKind.Direct:
-                {
-                    var agent = ResolveAgent(step.Targets.FirstOrDefault());
-                    if (agent is null)
                     {
-                        return Failed(step.Id, $"未找到 Agent: {step.Targets.FirstOrDefault()}", total, startedAt);
+                        var agent = ResolveAgent(step.Targets.FirstOrDefault());
+                        if (agent is null)
+                        {
+                            return Failed(step.Id, $"未找到 Agent: {step.Targets.FirstOrDefault()}", total, startedAt);
+                        }
+                        results[agent.Id.Value] = await InvokeAsync(sessionId, step, agent, request, timeoutCts.Token);
+                        break;
                     }
-                    results[agent.Id.Value] = await InvokeAsync(sessionId, step, agent, request, timeoutCts.Token);
-                    break;
-                }
 
                 case StepKind.Parallel:
-                {
-                    var targets = step.Targets.Select(ResolveAgent).Where(a => a is not null).ToList();
-                    if (targets.Count == 0)
                     {
-                        return Failed(step.Id, "并行步骤无可用 Agent", total, startedAt);
-                    }
+                        var targets = step.Targets.Select(ResolveAgent).Where(a => a is not null).ToList();
+                        if (targets.Count == 0)
+                        {
+                            return Failed(step.Id, "并行步骤无可用 Agent", total, startedAt);
+                        }
 
-                    var parallel = targets.Take(budget.MaxParallelism);
-                    var tasks = parallel.Select(async agent =>
-                    {
-                        var r = await InvokeAsync(sessionId, step, agent!, request, timeoutCts.Token);
-                        return (agent!.Id.Value, r);
-                    });
+                        var parallel = targets.Take(budget.MaxParallelism);
+                        var tasks = parallel.Select(async agent =>
+                        {
+                            var r = await InvokeAsync(sessionId, step, agent!, request, timeoutCts.Token);
+                            return (agent!.Id.Value, r);
+                        });
 
-                    foreach (var (id, r) in await Task.WhenAll(tasks))
-                    {
-                        results[id] = r;
+                        foreach (var (id, r) in await Task.WhenAll(tasks))
+                        {
+                            results[id] = r;
+                        }
+                        break;
                     }
-                    break;
-                }
 
                 case StepKind.Sequential:
-                {
-                    AgentResult? carry = null;
-                    foreach (var targetId in step.Targets)
                     {
-                        var agent = ResolveAgent(targetId);
-                        if (agent is null) continue;
+                        AgentResult? carry = null;
+                        foreach (var targetId in step.Targets)
+                        {
+                            var agent = ResolveAgent(targetId);
+                            if (agent is null) continue;
 
-                        var r = await InvokeAsync(sessionId, step, agent, request with { Upstream = carry },
-                            timeoutCts.Token);
-                        results[agent.Id.Value] = r;
-                        carry = r;
+                            var r = await InvokeAsync(sessionId, step, agent, request with { Upstream = carry },
+                                timeoutCts.Token);
+                            results[agent.Id.Value] = r;
+                            carry = r;
 
-                        if (!r.Success) break;
+                            if (!r.Success) break;
+                        }
+                        break;
                     }
-                    break;
-                }
             }
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)

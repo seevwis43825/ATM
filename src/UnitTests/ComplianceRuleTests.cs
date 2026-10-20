@@ -277,7 +277,9 @@ public class ComplianceRuleTests
         var rule = new AmlThresholdRule(Default());
         var wealthCtx = new ComplianceContext
         {
-            UserId = "u_1", Scenario = "wealth", Amount = 80_000m
+            UserId = "u_1",
+            Scenario = "wealth",
+            Amount = 80_000m
         };
 
         // AML 规则声明了 wealth 场景，应生效

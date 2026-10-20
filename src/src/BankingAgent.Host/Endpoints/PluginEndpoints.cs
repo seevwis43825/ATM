@@ -115,7 +115,10 @@ public static class PluginEndpoints
             deadLetters = bus?.DeadLetters.Count ?? 0,
             recent = bus?.History.TakeLast(20).Select(e => new
             {
-                e.EventType, e.Source, e.OccurredAt, e.Payload
+                e.EventType,
+                e.Source,
+                e.OccurredAt,
+                e.Payload
             })
         });
 
