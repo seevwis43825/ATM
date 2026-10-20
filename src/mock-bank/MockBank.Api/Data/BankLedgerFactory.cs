@@ -1,5 +1,6 @@
 // ===== 银行账本工厂：按配置创建各行核心系统实例并完成建库与种子写入 =====
 
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MockBank.Api.Domain;
@@ -19,6 +20,9 @@ public sealed class BankLedgerFactory
     private readonly string _dataDirectory;
     private readonly Dictionary<string, BankLedger> _ledgers = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sync = new();
+
+    /// <summary>重置时等待各行写锁的上限；超时即放弃，避免管理端点无限期挂起。</summary>
+    private static readonly TimeSpan ResetLockTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>构造工厂。</summary>
     /// <param name="options">模拟银行配置。</param>
@@ -60,28 +64,114 @@ public sealed class BankLedgerFactory
         return enabled.Select(Get).ToList();
     }
 
-    /// <summary>按配置重建全部银行数据库（清空后重新写入种子数据）。</summary>
+    /// <summary>
+    /// 按配置重建全部银行数据库（清空后重新写入种子数据）。
+    ///
+    /// ===== 为什么必须「原地重置」而不是换一个新账本实例 =====
+    /// 账本实例注册为**容器单例**，而 <c>MockBankStore</c> 在构造时就把账本列表
+    /// 固化下来了（<c>_ledgers = ledgers.ToList()</c>）。若这里换新实例，
+    /// 存储层仍持有旧实例的**内存快照**，读接口会继续返回重置前的数据 ——
+    /// 表现为「接口返回 200，但数据根本没重置」，比直接报错更难查。
+    /// </summary>
     public void ResetAll()
     {
         lock (_sync)
         {
-            foreach (var bank in EnabledBanks())
+            // 加锁顺序必须与 MockBankStore.AcquireLedgerLocksAsync 一致（行代码字典序），
+            // 否则会与跨行转账形成「A 持 A 锁等 B 锁、B 持 B 锁等 A 锁」的死锁。
+            var ledgers = EnabledBanks()
+                .OrderBy(b => b.BankCode, StringComparer.Ordinal)
+                .Select(Get)
+                .ToList();
+
+            var acquired = new List<BankLedger>();
+            try
             {
-                var dbPath = DatabasePath(bank);
-                if (File.Exists(dbPath))
+                foreach (var ledger in ledgers)
                 {
-                    File.Delete(dbPath);
+                    if (!ledger.Gate.Wait(ResetLockTimeout))
+                    {
+                        throw new TimeoutException(
+                            $"重置超时：银行 {ledger.Bank.BankCode} 的写锁在 {ResetLockTimeout.TotalSeconds:F0} 秒内未被释放。");
+                    }
+
+                    acquired.Add(ledger);
                 }
 
-                // 重新建库并写种子
-                var ledger = new BankLedger(bank, ConnectionString(bank), _loggerFactory.CreateLogger<BankLedger>());
-                ledger.EnsureCreated();
-                ConfigureConcurrencyMode(ledger);
-                var anchor = DateTimeOffset.Now;
-                ledger.Seed(BankSeedFactory.Create(bank, anchor), anchor);
-                ledger.InitializeTransactionSequence();
-                _ledgers[bank.BankCode] = ledger;
+                foreach (var ledger in acquired)
+                {
+                    ResetLedger(ledger);
+                }
             }
+            finally
+            {
+                // 取锁失败或重置抛异常时必须把已拿到的锁还回去，否则写路径会被永久阻塞。
+                for (var i = acquired.Count - 1; i >= 0; i--)
+                {
+                    acquired[i].Gate.Release();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 把单个银行的库重建为初始种子状态（原地重置，实例不变、只换数据）。
+    /// </summary>
+    /// <param name="ledger">该行账本。</param>
+    private void ResetLedger(BankLedger ledger)
+    {
+        var bank = ledger.Bank;
+        var dbPath = DatabasePath(bank);
+        var connectionString = ConnectionString(bank);
+
+        // ===== 必须先释放连接池，否则文件删不掉 =====
+        // Microsoft.Data.Sqlite 6.0 起默认开启连接池：`using` 释放 DbContext
+        // 只是把连接**还回池里**，文件句柄仍然开着。此时 File.Delete 会抛
+        // IOException（"being used by another process" —— 其实是同一个进程），
+        // 表现为 POST /_admin/reset 直接 500。
+        ReleaseDatabaseHandles(connectionString, bank.BankCode);
+
+        // 连 -wal/-shm 一起删：只删 .db 会让残留 WAL 在新库打开时被回放，
+        // 把重置前的数据"复活"回来（DeleteDatabaseFiles 的注释已警告过这一点）。
+        DeleteDatabaseFiles(dbPath);
+
+        // 先清空内存快照：LoadSnapshot 只做覆盖、不做删除，
+        // 不先清空的话重置前的账户/卡片会残留在快照里继续被读出去。
+        ledger.ClearSnapshot();
+
+        // 重新建库并写种子
+        ledger.EnsureCreated();
+        ConfigureConcurrencyMode(ledger);
+        var anchor = DateTimeOffset.Now;
+        ledger.Seed(BankSeedFactory.Create(bank, anchor), anchor);
+        ledger.InitializeTransactionSequence();
+        ledger.LoadSnapshot();
+    }
+
+    /// <summary>
+    /// 释放指定连接串上的 SQLite 连接池，让数据库文件真正可以被删除。
+    ///
+    /// 为什么需要：Microsoft.Data.Sqlite 6.0 起**默认开启连接池**，
+    /// <c>using</c> 释放 <c>DbContext</c> 只是把连接还回池里，操作系统层面的
+    /// 文件句柄仍然开着。此时 <c>File.Delete</c> 在 Windows 上会抛
+    /// <c>IOException: ... being used by another process</c>（其实是同一个进程）。
+    /// <c>ClearPool</c> 是官方释放句柄的入口：它关闭池中的空闲连接，
+    /// 并让之后归还的连接直接关闭而不是回到池里。
+    /// </summary>
+    /// <param name="connectionString">数据库连接串。</param>
+    /// <param name="bankCode">行代码，仅用于日志。</param>
+    private void ReleaseDatabaseHandles(string connectionString, string bankCode)
+    {
+        try
+        {
+            using var probe = new SqliteConnection(connectionString);
+            SqliteConnection.ClearPool(probe);
+        }
+        catch (Exception ex)
+        {
+            // 释放失败不阻断流程：随后的删除会抛出真实异常，信息更准确。
+            _loggerFactory.CreateLogger<BankLedgerFactory>()
+                .LogWarning(ex, "银行 {BankCode} 释放数据库连接池失败", bankCode);
         }
     }
 
@@ -137,13 +227,15 @@ public sealed class BankLedgerFactory
         Directory.CreateDirectory(_dataDirectory);
 
         var dbPath = DatabasePath(bank);
+        var connectionString = ConnectionString(bank);
         if (_options.ResetOnStartup && File.Exists(dbPath))
         {
+            ReleaseDatabaseHandles(connectionString, bank.BankCode);
             DeleteDatabaseFiles(dbPath);
         }
 
         var ledger = new BankLedger(
-            bank, ConnectionString(bank), _loggerFactory.CreateLogger<BankLedger>());
+            bank, connectionString, _loggerFactory.CreateLogger<BankLedger>());
 
         // ===== 结构漂移自愈 =====
         // EnsureCreated 对已存在的库不做任何演进，模型加表后旧库会一直缺表，
@@ -157,9 +249,14 @@ public sealed class BankLedgerFactory
                 "银行 {BankCode} 数据库结构与当前模型不一致（缺少表：{Missing}），正在重建该行数据库。",
                 bank.BankCode, string.Join(", ", missingTables));
 
+            // IsSchemaCompatible 刚刚打开过该库的连接（连接池默认开启，连接已还回池里，
+            // 文件句柄仍开着）。不先释放池就直接删文件会抛 IOException，
+            // 而这段自愈逻辑的立意正是「别让服务起不来」—— 删失败反而成了启动即崩。
+            ReleaseDatabaseHandles(connectionString, bank.BankCode);
+
             DeleteDatabaseFiles(dbPath);
             ledger = new BankLedger(
-                bank, ConnectionString(bank), _loggerFactory.CreateLogger<BankLedger>());
+                bank, connectionString, _loggerFactory.CreateLogger<BankLedger>());
         }
 
         ledger.EnsureCreated();

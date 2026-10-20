@@ -587,6 +587,25 @@ public sealed class BankLedger
             seed.Transactions.Count, seed.Products.Count, seed.PublicFunds.Count, seed.FundNavPoints.Count);
     }
 
+    /// <summary>
+    /// 清空本行的内存快照。
+    ///
+    /// 为什么需要单独提供：<see cref="LoadSnapshot"/> 只做**覆盖**、不做删除 ——
+    /// 直接拿它当「重置」用，重置前的账户 / 卡片 / 流水会残留在快照里继续被读出去，
+    /// 表现为库里已经清空、接口却还能查到旧数据。
+    /// 重建数据库后必须先清空快照，再重新载入。
+    /// </summary>
+    public void ClearSnapshot()
+    {
+        _customers.Clear();
+        _accounts.Clear();
+        _cards.Clear();
+        _transactions.Clear();
+        _products.Clear();
+        _funds.Clear();
+        _fundNavs.Clear();
+    }
+
     /// <summary>老库升级时补写基金代销清单与净值历史。</summary>
     /// <param name="db">本行数据库上下文。</param>
     private void EnsureFundCatalog(BankDbContext db)
