@@ -256,7 +256,7 @@ dotnet run --project src/LoadTest -c Release -- http://localhost:5243 http://loc
 | 9 | **轨迹日志无上限** | 内存累积 2000 条 | 落盘 + 环形缓冲 | P1 |
 | 10 | **每个请求 5~8 行 Information 控制台日志** | ⚠️ 仍存在（应用自身日志，非 HttpClient 噪声） | 生产按类别降级到 Warning/Debug | P1 |
 | 11 | **审计批量提交失败无补偿** | ⚠️ 只记 `Critical`，该批数据库副本丢失且不重试 | 可靠队列 + 对账 + 告警闭环 | **P0** |
-| 12 | **审计链无法仅凭归档重算 HMAC** | ⚠️ 签名输入含操作者原始 ID，归档按最小化原则只存哈希 | 保留签名输入或引入可信时间戳锚定 | **P0** |
+| 12 | **审计链无法仅凭归档重算 HMAC** | ✅ 已修：签名输入里的操作者改用**哈希**（与归档 `actor` 同一份）→ 归档自足可验；金额改用 `InvariantCulture` 格式化，避免签名随机器区域设置变化 | 仍需链尾锚定（WORM/KMS）才能自证起点 | **已解决** |
 
 ---
 
@@ -294,7 +294,7 @@ dotnet run --project src/LoadTest -c Release -- http://localhost:5243 http://loc
 | PostgreSQL 后端 | 未配置 |
 | 网络抖动与重试 | 未构造故障注入 |
 | **审计批量提交的失败补偿与对账** | 当前只记 `Critical`，不重试、不补偿（见 §1.1、§5 第 11 项） |
-| **审计链 HMAC 离线重算** | 签名输入含原始操作者 ID，归档不落原文，无法仅凭归档重算（见 §5 第 12 项） |
+| **审计链 HMAC 离线重算** | ✅ 已支持：签名输入里的操作者用哈希（与归档 `actor` 同一份），归档自足可验；`scripts/read-audit-chain.ps1 -VerifyHmac -SigningKey <key>` 实测 69 条全部重算一致 |
 
 ---
 

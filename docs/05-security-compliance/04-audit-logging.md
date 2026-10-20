@@ -293,20 +293,30 @@ CREATE TRIGGER no_delete BEFORE DELETE ON audit.events
 
 #### 4.6.1 离线校验的能力边界（务必知情）
 
-归档文件里**能**校验的与**不能**校验的，不是同一件事：
+归档文件**能**校验的与**不能**校验的，不是同一件事：
 
 | 校验项 | 仅凭归档文件能否完成 | 说明 |
 |--------|--------------------|------|
 | **链式结构**（前序签名衔接） | ✅ 能 | 每条的 `prev` 必须等于上一条的 `sig`，链首唯一。改任何一条记录，其后继立刻对不上 |
-| **HMAC 签名值重算** | ❌ **不能** | 签名输入含**操作者原始 ID**，而按最小化原则归档里只存它的哈希（`actor` 字段）。没有原始 ID 就无法重算 HMAC |
+| **HMAC 签名值重算** | ✅ 能 | 签名输入里的操作者用的是**哈希**（与归档 `actor` 字段同一份），因此归档自身包含重算所需的全部输入 |
 
-这意味着：**归档文件能证明"记录没被改过"（结构衔接），但不能独立证明"记录确实由持有密钥的一方产生"**（需要重算签名）。
+签名输入（与 `AuditLogger.Canonicalize` 严格一致，字段顺序固定）：
 
-配套：`scripts/read-audit-chain.ps1` 做结构校验（读侧需用 `FileShare.ReadWrite`，
-因为宿主默认持有常驻写句柄）。
+```
+AuditId | ts(Unix 毫秒) | ActorType | actor(哈希) | Operation | Scenario
+        | Decision | RuleId | Amount(F2) | prev
+```
 
-Target 补法二选一：把签名输入原文一并归档（牺牲一部分最小化），或引入**可信时间戳/签名锚定**
-（把链尾定期锚到 WORM 存储或独立 KMS，由锚点反推链未被重写）。
+链首参与签名的是 `GENESIS`，而归档里存的是 `null` —— 校验时需要还原。
+金额一律用 `InvariantCulture` 格式化，否则签名会随机器区域设置变化，跨机无法重算。
+
+配套工具：`scripts/read-audit-chain.ps1`
+- `-VerifyChain`：只校验链式结构（不需要密钥）；
+- `-VerifyChain -VerifyHmac -SigningKey <key>`：**完整密码学校验**（结构 + 签名值重算）。
+
+> 仍然存在的边界：HMAC 只证明"记录由持有密钥的一方产生"，
+> **不能**证明操作者本人实施了该操作（那需要额外的身份认证与抗抵赖机制，如可信时间戳或签名锚定）。
+> 归档链的**起点**（第一条记录）同样无法自证 —— 生产需把链尾定期锚到 WORM 存储或独立 KMS。
 
 ---
 
@@ -518,8 +528,8 @@ public class AuditBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TR
 - [x] HMAC 链签名已实现（§4.6）
 - [x] JSONL + `audit_events` 双写已实现（失败不阻断）
 - [x] 审计文件常驻句柄已实现（`Audit:KeepFileOpen`，读取方须用 `FileShare.ReadWrite`）
-- [x] 归档链结构校验工具已提供（`scripts/read-audit-chain.ps1`）
-- [ ] HMAC 签名值可离线重算（§4.6.1）—— 当前归档只存操作者哈希，无法重算
+- [x] 归档链校验工具已提供（`scripts/read-audit-chain.ps1`：结构校验 + HMAC 离线重算）
+- [x] HMAC 签名值可离线重算（§4.6.1）—— 签名输入改用操作者哈希，归档自足可验
 - [ ] 签名锚定到 WORM / 可信时间戳（§4.6.1）
 - [ ] 批量落库失败的补偿与对账闭环（§4.1）—— 当前只记 Critical，不重试
 - [ ] 查询接口已实现 + 权限控制（§6.1）

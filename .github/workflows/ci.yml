@@ -137,10 +137,14 @@ jobs:
 
       - name: 运行单元测试
         run: |
+          # --results-directory 必须显式指到 src/UnitTests/TestResults：
+          # 步骤的工作目录是仓库根，相对路径 "TestResults" 会落到仓库根，
+          # 与下方 upload-artifact 的 path（src/UnitTests/TestResults/**）对不上，
+          # 结果 trx 与覆盖率产物都传不上去（上传步骤是 ignore，不会报错，只会静默丢产物）。
           dotnet test src/UnitTests/UnitTests.csproj \
             --configuration Release \
             --logger "trx;LogFileName=unit-tests.trx" \
-            --results-directory TestResults \
+            --results-directory src/UnitTests/TestResults \
             --collect:"XPlat Code Coverage"
 
       - name: 上传测试报告

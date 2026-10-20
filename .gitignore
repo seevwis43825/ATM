@@ -13,6 +13,10 @@ obj/
 *.db-shm
 logs/
 *.log
+# 服务启动时的 stderr 落盘（CI 集成作业同样会生成，靠 upload-artifact 收集，不入库）
+*.err
+# 启动脚本记录的进程号
+*.pid
 e2e-result.txt
 stress-result.txt
 

@@ -229,7 +229,7 @@ public class AuditLoggerTests : IDisposable
             .ToList();
 
         // 链首唯一：新进程接上了旧链尾，而不是重开 GENESIS
-        Assert.Single(prevs.Where(p => p is null));
+        Assert.Single(prevs, p => p is null);
         Assert.Equal(sigs[1], prevs[2]);
         Assert.Equal(sigs[0], prevs[1]);
     }

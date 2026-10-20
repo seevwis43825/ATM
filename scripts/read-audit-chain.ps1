@@ -11,6 +11,7 @@
 #   powershell -File scripts\read-audit-chain.ps1                      # 打印全部行
 #   powershell -File scripts\read-audit-chain.ps1 -Tail 20             # 只看最后 20 行
 #   powershell -File scripts\read-audit-chain.ps1 -VerifyChain         # 校验链式结构
+#   powershell -File scripts\read-audit-chain.ps1 -VerifyChain -VerifyHmac -SigningKey <key>
 #   powershell -File scripts\read-audit-chain.ps1 -Path D:\x\audit.log
 #
 # 退出码：0 = 通过；1 = 链断裂或文件不可读。
@@ -18,7 +19,9 @@
 param(
     [string]$Path = '',
     [int]$Tail = 0,
-    [switch]$VerifyChain
+    [switch]$VerifyChain,
+    [switch]$VerifyHmac,
+    [string]$SigningKey = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,13 +81,17 @@ if (-not $VerifyChain) {
 # 校验的是"前序签名衔接"：每条的 prev 必须等于上一条的 sig，首条 prev 为空。
 # 这能检出任何对已落盘记录的改动（改了记录，其后继的 prev 立刻对不上）。
 #
-# 注意：这里**不能**重算 HMAC —— HMAC 的签名输入里含操作者原始 ID，
-# 而按最小化原则归档里只存了它的哈希，因此仅凭归档文件无法重算签名值。
-# 完整的密码学重算需要签名输入原文或可信时间戳锚定（见 docs/05-security-compliance/04-audit-logging.md）。
+# 签名输入（与 AuditLogger.Canonicalize 完全一致）：
+#   AuditId | ts(Unix 毫秒) | ActorType | actor(哈希) | Operation | Scenario
+#           | Decision | RuleId | Amount(F2) | prev
+# 注意 prev 在链首处参与签名的是 "GENESIS"，而归档里存的是 null —— 校验时要还原。
 $prev = $null
 $broken = @()
 $genesis = 0
 $index = 0
+$hmacBroken = 0
+$hmacChecked = 0
+$keyBytes = if ($SigningKey) { [System.Text.Encoding]::UTF8.GetBytes($SigningKey) } else { $null }
 
 foreach ($line in $lines) {
     $index++
@@ -101,12 +108,41 @@ foreach ($line in $lines) {
     if ([string]::IsNullOrWhiteSpace($curSig)) {
         $broken += "第 $index 行缺少 sig"
     }
+
+    # ===== HMAC 离线重算 =====
+    # 归档里存的是操作者的**哈希**（最小化原则），而签名输入用的也是同一份哈希
+    # —— 所以仅凭归档文件就能重算签名值，无需原始操作者 ID。
+    if ($keyBytes) {
+        $prevPart = if ($null -eq $curPrev -or $curPrev -eq '') { 'GENESIS' } else { $curPrev }
+        $tsMs = [DateTimeOffset]::Parse($obj.ts).ToUnixTimeMilliseconds()
+        $amount = if ($null -eq $obj.Amount) { '' } else { ([decimal]$obj.Amount).ToString('F2', [System.Globalization.CultureInfo]::InvariantCulture) }
+        $payload = @(
+            $obj.AuditId, $tsMs, $obj.ActorType, $obj.actor, $obj.Operation,
+            $obj.Scenario, $obj.Decision, $obj.RuleId, $amount, $prevPart
+        ) -join '|'
+        $h = [System.Security.Cryptography.HMACSHA256]::new($keyBytes)
+        try {
+            $calc = [System.BitConverter]::ToString(
+                $h.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($payload))).Replace('-', '').ToLowerInvariant()
+            $hmacChecked++
+            if ($calc -ne $curSig) {
+                $hmacBroken++
+                if ($hmacBroken -le 5) {
+                    $broken += "第 $index 行 HMAC 重算不一致（重算=$calc 记录=$curSig）"
+                }
+            }
+        } finally { $h.Dispose() }
+    }
+
     $prev = $curSig
 }
 
 Write-Output ''
 Write-Output "链首(GENESIS)条数: $genesis"
 Write-Output "结构断点: $($broken.Count)"
+if ($keyBytes) {
+    Write-Output "HMAC 重算: 已校验 $hmacChecked 条, 不一致 $hmacBroken 条"
+}
 
 if ($genesis -ne 1) {
     Write-Output "[FAIL] 链首必须且只能有一条（GENESIS），实际 $genesis 条"
@@ -118,5 +154,10 @@ if ($broken.Count -gt 0) {
     exit 1
 }
 
-Write-Output '[PASS] 审计链结构完整：前序签名逐条衔接，链首唯一'
+if ($keyBytes) {
+    Write-Output '[PASS] 审计链完整：前序签名逐条衔接、链首唯一、HMAC 全部可重算并一致'
+} else {
+    Write-Output '[PASS] 审计链结构完整：前序签名逐条衔接，链首唯一'
+    Write-Output '  （未提供 -SigningKey，跳过 HMAC 重算；加 -VerifyHmac -SigningKey <key> 可做完整密码学校验）'
+}
 exit 0

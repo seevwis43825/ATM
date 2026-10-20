@@ -319,18 +319,31 @@ public partial class AuditLogger(
     }
 
     /// <summary>序列化待签名内容，字段顺序固定以保证可重现。</summary>
+    /// <remarks>
+    /// **操作者用哈希而不是原始 ID**：归档文件里存的是 <c>actor</c>（SHA256 前 12 位），
+    /// 而签名输入若用原始 ID，归档就**不足以重算 HMAC** ——
+    /// 离线只能校验链式衔接，无法证明"这条记录确实由持有密钥的一方产生"。
+    /// 改成用同一份哈希后，归档自身包含了重算所需的全部输入，
+    /// 完整密码学校验才真正可行（见 <c>scripts/read-audit-chain.ps1 -VerifyHmac</c>）。
+    /// 代价：签名不再绑定原始 ID —— 但原始 ID 本就不该进签名材料（PII 最小化）。
+    /// <para>
+    /// 金额一律用 <c>InvariantCulture</c> 格式化：否则签名会随机器区域设置变化，
+    /// 在逗号小数点的机器上生成的归档无法在别的机器上重算校验。
+    /// 用不变文化同时也让签名输入与归档里的 JSON 数字表示保持一致。
+    /// </para>
+    /// </remarks>
     private static string Canonicalize(AuditEvent evt, string previousSignature)
     {
         var sb = new StringBuilder();
         sb.Append(evt.AuditId).Append('|')
           .Append(evt.Timestamp.ToUnixTimeMilliseconds()).Append('|')
           .Append(evt.ActorType).Append('|')
-          .Append(evt.ActorId).Append('|')
+          .Append(HashActor(evt.ActorId)).Append('|')
           .Append(evt.Operation).Append('|')
           .Append(evt.Scenario).Append('|')
           .Append(evt.Decision).Append('|')
           .Append(evt.RuleId).Append('|')
-          .Append(evt.Amount?.ToString("F2") ?? "").Append('|')
+          .Append(evt.Amount?.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) ?? "").Append('|')
           .Append(previousSignature);
         return sb.ToString();
     }
