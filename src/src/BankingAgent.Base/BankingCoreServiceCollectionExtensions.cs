@@ -56,12 +56,28 @@ public static class BankingCoreServiceCollectionExtensions
 
         // ===== 5. 核心银行客户端 =====
         services.Configure<CoreBankOptions>(configuration.GetSection("CoreBank"));
+        // 熔断器：核心系统不可用时快速失败，避免每个请求都阻塞到超时把宿主拖垮。
+        services.AddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<CoreBankOptions>>().Value;
+            return new CoreBankCircuitBreaker(
+                options.CircuitFailureThreshold,
+                TimeSpan.FromSeconds(options.CircuitBreakSeconds));
+        });
         services.AddHttpClient<ICoreBankClient, CoreBankClient>((sp, client) =>
         {
             var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<CoreBankOptions>>().Value;
             client.BaseAddress = new Uri(options.BaseUrl);
             client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
-        });
+        })
+        // 熔断放在 HTTP 管线层：客户端 20+ 个方法逐个改既啰嗦又易漏，
+        // 管线层统一拦截则对所有下游调用（含以后新增的端点）自动生效。
+        // 用工厂重载而不是 AddHttpMessageHandler<T>：后者要求 T 已在 DI 注册，
+        // 漏注册会在**第一次发起下游调用时**才抛 "No service for type ..."，
+        // 编译与单元测试都发现不了 —— 必须在启动后真正打一次下游请求才暴露。
+        .AddHttpMessageHandler(sp => new CoreBankCircuitHandler(
+            sp.GetRequiredService<CoreBankCircuitBreaker>(),
+            sp.GetRequiredService<ILogger<CoreBankCircuitHandler>>()));
 
         // ===== 6. 插件系统 =====
         services.AddSingleton<PluginRegistry>();

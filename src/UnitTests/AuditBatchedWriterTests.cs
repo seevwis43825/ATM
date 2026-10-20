@@ -19,6 +19,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace UnitTests;
@@ -215,11 +216,108 @@ public class AuditBatchedWriterTests
         }
     }
 
+    [Fact]
+    public async Task CommitFails_RetriesThenWritesDeadLetter()
+    {
+        // 场景：审计库不可用（库被占用 / 磁盘抖动 / 连接串错）。
+        // 这一批是"可检索副本"里唯一一份 —— 丢了就再也检索不到这笔操作，
+        // 且没有任何可供事后补录的输入。所以必须：重试 → 仍失败则写死信文件。
+        var deadLetterPath = Path.Combine(
+            Path.GetTempPath(), $"audit-dl-{Guid.NewGuid():N}.jsonl");
+
+        var repo = new FailingAuditRepository();
+        var writer = new AuditDbWriter(
+            repo, NullLogger<AuditDbWriter>.Instance, deadLetterPath);
+
+        try
+        {
+            await writer.EnqueueAsync(NewEvent("DL000000001"));
+            await writer.FlushAsync();
+
+            // 有界重试：不是"失败一次就放弃"
+            Assert.Equal(AuditDbWriter.MaxCommitAttempts, repo.Attempts);
+
+            // 死信文件里必须留下完整记录（可事后补录进库）
+            Assert.True(File.Exists(deadLetterPath), "死信文件未生成");
+            var lines = await File.ReadAllLinesAsync(deadLetterPath);
+            Assert.Single(lines);
+            Assert.Contains("DL000000001", lines[0], StringComparison.Ordinal);
+        }
+        finally
+        {
+            await writer.StopAsync(CancellationToken.None);
+            if (File.Exists(deadLetterPath)) File.Delete(deadLetterPath);
+        }
+    }
+
+    [Fact]
+    public async Task CommitSucceeds_AfterTransientFailure_NoDeadLetter()
+    {
+        // 瞬时故障自愈：有界重试内成功就不该产生死信
+        var deadLetterPath = Path.Combine(
+            Path.GetTempPath(), $"audit-dl-{Guid.NewGuid():N}.jsonl");
+
+        var repo = new FailingAuditRepository { FailTimes = 1 };
+        var writer = new AuditDbWriter(
+            repo, NullLogger<AuditDbWriter>.Instance, deadLetterPath);
+
+        try
+        {
+            await writer.EnqueueAsync(NewEvent("DL000000002"));
+            await writer.FlushAsync();
+
+            Assert.Equal(2, repo.Attempts);
+            Assert.False(File.Exists(deadLetterPath), "成功落库不应产生死信文件");
+        }
+        finally
+        {
+            await writer.StopAsync(CancellationToken.None);
+            if (File.Exists(deadLetterPath)) File.Delete(deadLetterPath);
+        }
+    }
+
     private static void Cleanup(string dbPath)
     {
         foreach (var p in new[] { dbPath, dbPath + "-wal", dbPath + "-shm" })
         {
             try { if (File.Exists(p)) File.Delete(p); } catch { /* 清理失败不影响断言 */ }
         }
+    }
+
+    /// <summary>总是（或前 N 次）失败的审计仓储，用来验证重试与死信路径。</summary>
+    private sealed class FailingAuditRepository : IAuditRepository
+    {
+        public int Attempts { get; private set; }
+
+        /// <summary>前 N 次失败，之后成功；0 表示一直失败。</summary>
+        public int FailTimes { get; init; }
+
+        public Task AppendAsync(AuditEventEntity entity, CancellationToken ct = default) =>
+            AppendBatchAsync([entity], ct);
+
+        public Task AppendBatchAsync(
+            IReadOnlyList<AuditEventEntity> entities, CancellationToken ct = default)
+        {
+            Attempts++;
+            if (FailTimes == 0 || Attempts <= FailTimes)
+            {
+                throw new InvalidOperationException("模拟审计库不可用");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<AuditEventEntity>> QueryAsync(
+            string? actorHash = null, string? scenario = null,
+            DateTimeOffset? from = null, DateTimeOffset? to = null,
+            int limit = 100, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<AuditEventEntity>>([]);
+
+        public Task<ChainVerification> VerifyChainAsync(
+            DateTimeOffset from, DateTimeOffset to, CancellationToken ct = default) =>
+            Task.FromResult(new ChainVerification(true, 0, []));
+
+        public Task<long> CountAsync(
+            DateTimeOffset from, DateTimeOffset to, CancellationToken ct = default) =>
+            Task.FromResult(0L);
     }
 }

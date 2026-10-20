@@ -15,6 +15,7 @@
 // 崩溃时最多丢「尚未批量提交」的数据库副本尾部，JSONL 与签名链完好无损 ——
 // 审计的**可篡改性**由链式签名保证，不依赖数据库副本。
 
+using System.Text.Json;
 using System.Threading.Channels;
 using BankingAgent.Base.Data;
 using Microsoft.Extensions.Hosting;
@@ -25,13 +26,23 @@ namespace BankingAgent.Base.Security.Audit;
 /// <summary>审计库批量写入器：把审计事件攒批后一次性提交到数据库。</summary>
 public sealed class AuditDbWriter(
     IAuditRepository inner,
-    ILogger<AuditDbWriter> logger) : BackgroundService
+    ILogger<AuditDbWriter> logger,
+    string? deadLetterPath = null) : BackgroundService
 {
     /// <summary>单批提交的最大条数。</summary>
     public const int DefaultBatchSize = 200;
 
     /// <summary>队列容量上限。满时生产者被背压阻塞，不会丢记录。</summary>
     public const int DefaultQueueCapacity = 10000;
+
+    /// <summary>落库失败时的最大尝试次数（含首次）。</summary>
+    public const int MaxCommitAttempts = 3;
+
+    /// <summary>重试退避基数（毫秒）：200 → 800 → 3200。</summary>
+    public const int CommitRetryBaseDelayMs = 200;
+
+    /// <summary>死信告警的节流窗口。</summary>
+    public static readonly TimeSpan DeadLetterLogThrottle = TimeSpan.FromSeconds(30);
 
     private readonly Channel<AuditEventEntity> _queue =
         Channel.CreateBounded<AuditEventEntity>(new BoundedChannelOptions(DefaultQueueCapacity)
@@ -43,6 +54,15 @@ public sealed class AuditDbWriter(
         });
 
     private readonly SemaphoreSlim _commitGate = new(1, 1);
+
+    /// <summary>死信文件路径：重试耗尽后把失败批次完整留在这里，可事后补录。</summary>
+    public string? DeadLetterPath { get; } = deadLetterPath;
+
+    /// <summary>累计未能落库的记录条数。</summary>
+    private long _deadLetterCount;
+
+    /// <summary>上一次死信告警时间，用于节流。</summary>
+    private DateTimeOffset? _lastDeadLetterLog;
 
     /// <summary>把一条审计事件放入批量队列。</summary>
     /// <param name="entity">审计事件实体。</param>
@@ -164,21 +184,113 @@ public sealed class AuditDbWriter(
     }
 
     /// <summary>
-    /// 真正执行落库。失败要显式告警 —— 审计丢失属于合规事故。
-    /// 调用方必须已持有提交锁。
+    /// 真正执行落库。
+    ///
+    /// **失败不能只记一条日志就丢弃**：那一批是"可检索副本"里唯一一份，
+    /// 丢了就再也检索不到这笔操作（权威的 JSONL 链还在，但按操作者/时间/场景
+    /// 的查询能力直接缺失，且没有留下任何可供补录的输入）。
+    /// 因此这里做三件事：
+    /// 1. **有界重试**（默认 3 次，退避 200ms→800ms→3200ms）—— 瞬时故障（库被占用、
+    ///    磁盘抖动）自愈，不需要人工介入；
+    /// 2. 重试仍失败 → **写入死信文件**（<c>Audit:DeadLetterPath</c>），
+    ///    记录以 JSON 形式完整保留，可事后补录进库；
+    /// 3. 累计失败条数并节流告警（逐条打堆栈会把宿主 CPU 烧光，见 AuditLogger 同款教训）。
     /// </summary>
     /// <param name="batch">待提交的记录。</param>
     /// <param name="ct">取消令牌。</param>
     private async Task CommitCoreAsync(List<AuditEventEntity> batch, CancellationToken ct)
     {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await inner.AppendBatchAsync(batch, ct).ConfigureAwait(false);
+                if (attempt > 1)
+                {
+                    logger.LogInformation(
+                        "审计批量落库在第 {Attempt} 次尝试后成功（{Count} 条）", attempt, batch.Count);
+                }
+                return;
+            }
+            catch (Exception ex) when (attempt < MaxCommitAttempts)
+            {
+                logger.LogWarning(ex,
+                    "审计批量落库失败（第 {Attempt}/{Max} 次尝试），{Delay}ms 后重试：{Count} 条",
+                    attempt, MaxCommitAttempts, CommitRetryDelayMs(attempt), batch.Count);
+
+                try
+                {
+                    await Task.Delay(CommitRetryDelayMs(attempt), ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                await HandleCommitFailureAsync(batch, ex, ct).ConfigureAwait(false);
+                return;
+            }
+        }
+
+        // 走到这里说明重试期间被取消 —— 仍然要保留这批记录。
+        await HandleCommitFailureAsync(batch,
+            new OperationCanceledException("审计批量落库在重试期间被取消"), CancellationToken.None)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 重试耗尽后的兜底：写死信文件 + 节流告警。
+    /// </summary>
+    /// <param name="batch">失败的记录。</param>
+    /// <param name="ex">最后一次异常。</param>
+    /// <param name="ct">取消令牌。</param>
+    private async Task HandleCommitFailureAsync(
+        List<AuditEventEntity> batch, Exception ex, CancellationToken ct)
+    {
+        var dropped = Interlocked.Add(ref _deadLetterCount, batch.Count);
+
         try
         {
-            await inner.AppendBatchAsync(batch, ct).ConfigureAwait(false);
+            await WriteDeadLetterAsync(batch, ct).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception dlEx)
         {
-            logger.LogCritical(ex,
-                "审计批量落库失败（文件链已写入，但数据库缺失 {Count} 条）", batch.Count);
+            logger.LogCritical(dlEx,
+                "审计死信文件写入失败，这批记录已无处可存：{Count} 条", batch.Count);
         }
+
+        var now = DateTimeOffset.UtcNow;
+        var last = _lastDeadLetterLog;
+        if (last is not null && now - last.Value < DeadLetterLogThrottle)
+        {
+            return;
+        }
+
+        _lastDeadLetterLog = now;
+        logger.LogCritical(ex,
+            "审计批量落库重试 {Max} 次仍失败（{Count} 条已写入死信文件，累计缺失 {Total} 条）：{Path}",
+            MaxCommitAttempts, batch.Count, dropped, DeadLetterPath);
     }
+
+    /// <summary>把失败批次写入死信文件（每行一条 JSON）。</summary>
+    /// <param name="batch">失败的记录。</param>
+    /// <param name="ct">取消令牌。</param>
+    private async Task WriteDeadLetterAsync(List<AuditEventEntity> batch, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(DeadLetterPath)) return;
+
+        var dir = Path.GetDirectoryName(DeadLetterPath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        var lines = string.Join(Environment.NewLine, batch.Select(e => JsonSerializer.Serialize(e)));
+        await File.AppendAllTextAsync(DeadLetterPath, lines + Environment.NewLine, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>第 n 次失败后的退避时长。</summary>
+    /// <param name="attempt">已失败的次数（从 1 起）。</param>
+    /// <returns>等待毫秒数。</returns>
+    private static int CommitRetryDelayMs(int attempt) => (int)(CommitRetryBaseDelayMs * Math.Pow(4, attempt - 1));
 }

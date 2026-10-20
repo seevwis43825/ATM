@@ -2,7 +2,7 @@
 
 > **日期**：2026-09-28
 > **范围**：`src/` 全部代码
-> **当前验证**：`dotnet test src/UnitTests/UnitTests.csproj` 实测 **188/188 通过**。旧版“112/201 项”统计已失效；密码自检、E2E、Stress 与 LoadTest 是独立程序，不能并入当前单元测试数量，需按各自最近一次运行证据报告。
+> **当前验证**：`dotnet test src/UnitTests/UnitTests.csproj` 实测 **200/200 通过**。旧版“112/201 项”统计已失效；密码自检、E2E、Stress 与 LoadTest 是独立程序，不能并入当前单元测试数量，需按各自最近一次运行证据报告。
 
 > **Current / Target 边界**：本报告中的“已实现”只表示仓库存在代码与相应测试，不表示生产已部署。当前默认仍为 `BankingAgent.Host :5243` + `MockBank.Api :5200`、HTTP、SQLite + `EnsureCreated`；安全门默认开发配置关闭。MFA、KMS/Vault、TDE、WORM、RLS 均未实现。
 
@@ -383,7 +383,7 @@ if (value.StartsWith("enc:v1:", StringComparison.Ordinal)) return value;
 
 ```powershell
 # 单元测试
-dotnet test src/UnitTests/UnitTests.csproj  # 当前 188 项
+dotnet test src/UnitTests/UnitTests.csproj  # 当前 200 项
 
 # 密码学自检（含抗量子；以本次程序输出为准）
 dotnet run --project src/CryptoSelfTest

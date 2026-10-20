@@ -20,8 +20,25 @@ public sealed class CoreBankOptions
     public string ApiPrefix { get; set; } = "/api/corebank/v1";
     /// <summary>请求超时（秒）。</summary>
     public int TimeoutSeconds { get; set; } = 15;
+
     /// <summary>内部服务间调用凭证（生产环境应改为 mTLS 或签名）。</summary>
     public string? ServiceToken { get; set; }
+
+    /// <summary>
+    /// 连续多少次传输层失败后打开熔断。
+    /// </summary>
+    /// <remarks>
+    /// 熔断打开期间，核心系统相关请求**立即失败**而不发起调用 ——
+    /// 否则每个请求都要阻塞到超时（默认 15 秒），请求线程被一个个占住，
+    /// 整个宿主连不依赖核心系统的能力也一起不可用。
+    /// <para>
+    /// 置 0 可关闭熔断。
+    /// </para>
+    /// </remarks>
+    public int CircuitFailureThreshold { get; set; } = 5;
+
+    /// <summary>熔断打开后多久放一次探针（半开），单位秒。</summary>
+    public int CircuitBreakSeconds { get; set; } = 30;
 }
 
 /// <summary>核心银行 HTTP 客户端实现。</summary>

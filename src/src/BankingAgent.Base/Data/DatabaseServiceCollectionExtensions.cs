@@ -71,7 +71,8 @@ public static class DatabaseServiceCollectionExtensions
         // 写入器又需要仓储），容器启动时直接抛循环依赖异常。
         services.AddSingleton<AuditDbWriter>(sp => new AuditDbWriter(
             sp.GetRequiredService<EfAuditRepository>(),
-            sp.GetRequiredService<ILogger<AuditDbWriter>>()));
+            sp.GetRequiredService<ILogger<AuditDbWriter>>(),
+            sp.GetRequiredService<AuditOptions>().DeadLetterPath));
         services.AddHostedService(sp => sp.GetRequiredService<AuditDbWriter>());
         services.AddSingleton<IAuditRepository>(sp => new BatchedAuditRepository(
             sp.GetRequiredService<EfAuditRepository>(),

@@ -24,6 +24,12 @@ public sealed class AuditOptions
     public string? FilePath { get; set; } = "logs/audit-chain.log";
 
     /// <summary>
+    /// 审计库**落库失败**时的死信文件路径（重试耗尽后，失败批次完整留在这里，可事后补录）。
+    /// 为空则不写死信（仅告警）。
+    /// </summary>
+    public string? DeadLetterPath { get; set; } = "logs/audit-deadletter.jsonl";
+
+    /// <summary>
     /// 是否让审计文件保持常驻句柄（避免每条记录 open→write→close）。
     /// </summary>
     /// <remarks>
