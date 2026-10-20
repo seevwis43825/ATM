@@ -196,7 +196,7 @@
 两路任一写入失败都不回滚或阻断业务。队列**有界且满了背压等待，
 绝不丢审计记录**。
 
-**批量落库失败不再直接丢记录**：`AuditDbWriter` 先做**有界重试**（默认 3 次，退避 200→800→3200ms），
+**批量落库失败不再直接丢记录**：`AuditDbWriter` 先做**有界重试**（含首次共 3 次尝试，即最多 2 次重试，退避 200ms→800ms，最坏等待约 1.0s），
 瞬时故障（库被占用、磁盘抖动）自愈；重试仍失败则把该批完整写入**死信文件**
 （`Audit:DeadLetterPath`，默认 `logs/audit-deadletter.jsonl`），记录以 JSON 形式保留、可事后补录进库，
 并累计缺失条数 + 节流告警（逐条打堆栈会把宿主 CPU 烧光）。JSONL 权威记录始终不受影响。
@@ -335,8 +335,11 @@ AuditId | ts(Unix 毫秒) | ActorType | actor(哈希) | Operation | Scenario
 
 ### 5.1 C#/.NET 端（Current 真实实现）
 
-> 以下代码与仓库源码**逐字对应**（`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`）。
-> 本节只做**裁剪展示**，完整实现以源码为准。
+> 以下代码摘自仓库源码 `src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`。
+> 裁剪的是字段与辅助方法；**`_fileGate` 临界区与那条日志行被刻意保留** ——
+> 前者是 §4.6「签名与落盘在同一把锁内」的落点，删掉它示例就会与本文自己的结论打架；
+> 后者关系到"审计事件与控制台日志一一对应"这条运维排障路径。
+> 其余以源码为准。
 
 ```csharp
 public interface IAuditLogger
@@ -352,11 +355,28 @@ public sealed partial class AuditLogger(
 {
     public async Task WriteAsync(AuditEvent evt, CancellationToken ct = default)
     {
-        // 1. 链式签名：读链尾 → 算 HMAC → 写链尾，三步在同一临界区内
-        var signed = SignAndAdvance(evt);
+        // ===== 签名与落盘必须在同一把锁内 =====
+        // 否则会出现「A 先签名、B 后签名，但 B 先落盘」——
+        // 归档文件的物理顺序与链顺序不一致，逐行比对会误判为断裂。
+        await _fileGate.WaitAsync(ct);
+        AuditEvent signed;
+        try
+        {
+            // 1. 链式签名：读链尾 → 算 HMAC → 写链尾，三步在同一临界区内
+            signed = SignAndAdvance(evt);
 
-        // 2. 权威记录：JSONL 归档，请求返回前已落盘
-        await AppendToFileAsync(signed, ct);
+            // 2. 权威记录：JSONL 归档，请求返回前已落盘
+            await AppendToFileCoreAsync(signed, ct);
+        }
+        finally
+        {
+            _fileGate.Release();
+        }
+
+        logger.LogInformation(
+            "AUDIT | {Timestamp:yyyy-MM-dd HH:mm:ss.fff} | {ActorType}:{ActorId} | {Operation} | {Decision} | sig={Sig}",
+            signed.Timestamp, signed.ActorType, signed.ActorId, signed.Operation,
+            signed.Decision, signed.Signature[..Math.Min(12, signed.Signature.Length)]);
 
         // 3. 可检索副本：入有界队列，由 AuditDbWriter 攒批落库
         await AppendToRepositoryAsync(signed, ct);

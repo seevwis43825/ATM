@@ -38,7 +38,14 @@ public sealed class AuditDbWriter(
     /// <summary>落库失败时的最大尝试次数（含首次）。</summary>
     public const int MaxCommitAttempts = 3;
 
-    /// <summary>重试退避基数（毫秒）：200 → 800 → 3200。</summary>
+    /// <summary>
+    /// 重试退避基数（毫秒）。第 n 次失败后等待 <c>基数 × 4^(n-1)</c>。
+    ///
+    /// 注意**可达档位**：<see cref="MaxCommitAttempts"/> = 3 表示「含首次共 3 次尝试」，
+    /// 因此最多只会发生 2 次延迟 —— 实际是 <b>200ms → 800ms</b>，
+    /// 第三档 3200ms 永远不会执行（第三次失败即写死信，不再延迟）。
+    /// 文档与注释都应按「200ms → 800ms」写，不要写成三档。
+    /// </summary>
     public const int CommitRetryBaseDelayMs = 200;
 
     /// <summary>死信告警的节流窗口。</summary>
@@ -190,7 +197,8 @@ public sealed class AuditDbWriter(
     /// 丢了就再也检索不到这笔操作（权威的 JSONL 链还在，但按操作者/时间/场景
     /// 的查询能力直接缺失，且没有留下任何可供补录的输入）。
     /// 因此这里做三件事：
-    /// 1. **有界重试**（默认 3 次，退避 200ms→800ms→3200ms）—— 瞬时故障（库被占用、
+    /// 1. **有界重试**（含首次共 3 次尝试，即最多 2 次重试，退避 200ms→800ms，
+    ///    最坏等待约 1.0s）—— 瞬时故障（库被占用、
     ///    磁盘抖动）自愈，不需要人工介入；
     /// 2. 重试仍失败 → **写入死信文件**（<c>Audit:DeadLetterPath</c>），
     ///    记录以 JSON 形式完整保留，可事后补录进库；
