@@ -204,15 +204,21 @@ SQLite 默认用 rollback journal，一次写事务会**锁住整个库**，另�
 需要干净的演示数据时，二选一：
 
 ```bash
-# 方式一：调用重置端点
+# 方式一：调用重置端点（服务运行中即可）
 curl -X POST http://localhost:5200/api/corebank/v1/_admin/reset
 
-# 方式二：删掉 App_Data/ 目录下的 .db 文件后重启
+# 方式二：先停掉 MockBank 进程，再删掉 App_Data/ 目录下的 .db 文件，然后重启
 ```
+
+> ⚠️ **方式二必须先停掉 MockBank 进程**：进程运行时 SQLite 仍持有库文件的句柄，
+> 删文件会失败（Windows 报「being used by another process」—— 其实是同一个进程）。
+> 方式一没有这个限制：重置端点会**先释放该库的连接池**再删文件。
+> 这也是重置端点历史上曾直接返回 500 的原因（`File.Delete` 撞上未释放的连接池）。
 
 > 注意：WAL 模式会在库文件旁生成 `mockbank_*.db-wal` 与 `mockbank_*.db-shm` 两个附属文件。
 > 删库时必须一起删——只删主文件的话，残留的 WAL 会在新库打开时被回放，
 > 把旧结构的数据「复活」回来，制造出比缺表更难查的错乱。
+> 重置端点内部已按「主文件 + -wal + -shm」三件套一起删。
 
 ---
 

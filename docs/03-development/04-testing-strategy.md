@@ -40,7 +40,8 @@ dotnet run --project src/src/BankingAgent.Host/BankingAgent.Host.csproj
 再按目的运行：
 
 ```bash
-# ⚠️ 跑 E2E 前必须先重置 MockBank 库（见下方说明）
+# E2E 会自动重置 MockBank 演示数据（脚本第 0A 步），无需手工准备。
+# 压测 / 负载测试会消耗演示账户余额，跑它们之前建议先重置：
 curl -X POST http://localhost:5200/api/corebank/v1/_admin/reset
 
 dotnet run --project src/E2ETest/E2ETest.csproj
@@ -48,12 +49,23 @@ dotnet run --project src/StressTest/StressTest.csproj
 dotnet run --project src/LoadTest/LoadTest.csproj
 ```
 
-> **为什么 E2E 前要重置 MockBank 库**：E2E 场景 5 会从演示账户 `6222020200000001`
+> **为什么演示数据要先重置**：E2E 场景 5 会从演示账户 `6222020200000001`
 > 转出 30,000 元。该账户的种子余额是 250,000 元，但会被前面的压测与演示逐步消耗；
 > 余额耗尽后 E2E 会以 `INSUFFICIENT_FUNDS` 失败（实测 `63/70`、`67/70`）——
 > 这是**数据状态问题，不是代码缺陷**，容易误判成回归。
-> 重置方式二选一：调用 `POST /api/corebank/v1/_admin/reset`，
+>
+> **E2E 已自动处理**：`E2ETest` 的第 0A 步会调用 `POST /api/corebank/v1/_admin/reset`
+> 把各行数据重置回种子态；重置失败即直接终止 E2E（后续余额断言将失去意义），
+> 所以跑 E2E 不再需要手工准备数据。
+> 这一步同时是**回归护栏**：该端点曾因 SQLite 连接池未释放而返回 500（数据库文件删不掉），
+> 而它当时是「人肉前置条件」—— 不执行就没人发现，CI 也不会红。
+> 现在 CI 每次跑 E2E 都会真的打它一次。
+>
+> **压测 / 负载测试前仍建议手工重置**（它们会消耗演示账户余额）。重置方式二选一：
+> 调用 `POST /api/corebank/v1/_admin/reset`，
 > 或删除 `src/mock-bank/MockBank.Api/App_Data/` 下的 `*.db` / `*.db-wal` / `*.db-shm`。
+> ⚠️ 后者要在 **MockBank 进程已停止** 的前提下做：文件被进程占用时删不掉；
+> `POST /_admin/reset` 没有这个限制（它会先释放连接池再删）。
 
 这些程序的通过数、吞吐、延迟和错误率只报告本次标准输出，不引用固定示例数字。
 

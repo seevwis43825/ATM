@@ -162,6 +162,38 @@ try
 }
 catch (Exception ex) { Check("AI Agent 宿主在线", false, ex.Message); return 1; }
 
+// ===== 前置：重置演示数据 =====
+//
+// 为什么必须自动做：场景 3/4/5/8 都对账户余额做**精确断言**（扣 800、扣 30000）。
+// 上一轮 E2E 已经把钱扣走了，第二轮再跑同一套数据余额就不够 ——
+// 表现为「场景 5 因余额不足失败」，而真正的根因（前置数据没重置）离失败点很远，排查成本很高。
+// 以前这靠人记得手工 POST 一次 _admin/reset，现在由脚本自己做。
+//
+// 这一步同时是**回归护栏**：该端点曾因 SQLite 连接池没释放而直接返回 500
+// （数据库文件删不掉），而它当时是「人肉前置条件」—— 不执行就没人发现，CI 也不会红。
+// 现在 CI 每跑一次 E2E 就会真的打它一次。
+Section("0A. 重置演示数据");
+try
+{
+    var resetResp = await http.PostAsync($"{bankBase}/api/corebank/v1/_admin/reset", null);
+    var resetBody = await resetResp.Content.ReadAsStringAsync();
+    if (!resetResp.IsSuccessStatusCode)
+    {
+        Check("Mock Bank 演示数据已重置", false, $"HTTP {(int)resetResp.StatusCode}: {resetBody}");
+        Console.WriteLine("  重置失败：后续余额断言将失去意义，终止 E2E。");
+        return 1;
+    }
+
+    Check("Mock Bank 演示数据已重置", true);
+    Console.WriteLine("  响应: " + resetBody);
+}
+catch (Exception ex)
+{
+    Check("Mock Bank 演示数据已重置", false, ex.Message);
+    Console.WriteLine("  重置失败：后续余额断言将失去意义，终止 E2E。");
+    return 1;
+}
+
 // ===== 场景 0B：鉴权 =====
 Section("场景 0B: JWT 鉴权与越权防护");
 {
