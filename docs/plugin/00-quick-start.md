@@ -1,7 +1,7 @@
 # 快速运行指南（Run Guide）
 
 > **环境**：.NET SDK 9.0.200+（解决方案使用 `.slnx`，项目目标为 `net8.0`）
-> **验证口径**：单元测试 187 项已实测通过（2026-10-20）；E2E 70 断言、Stress 31 项已本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
+> **验证口径**：单元测试 188 项已实测通过（2026-10-20）；E2E 70 断言、Stress 31 项已本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
 > **插件开发**：见 [`01-plugin-onboarding-guide.md`](01-plugin-onboarding-guide.md)。
 
 ---
@@ -87,7 +87,7 @@ Invoke-RestMethod http://localhost:5243/api/auth/me -Headers $headers
 ## 4. 运行测试
 
 ```powershell
-# 单元测试：当前已实测 187 项
+# 单元测试：当前已实测 188 项
 dotnet test src/UnitTests/UnitTests.csproj -c Release
 
 # 以下需要 Host 与 MockBank 已启动；检查数量以程序最终输出和 CI 为准

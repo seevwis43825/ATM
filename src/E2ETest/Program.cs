@@ -75,6 +75,19 @@ void Check(string name, bool ok, string detail = "")
     else { failed++; Console.WriteLine($"  [FAIL] {name} {detail}"); }
 }
 
+// 读取审计链文件。
+// 宿主默认让审计文件保持常驻写句柄（Audit:KeepFileOpen），而标准
+// File.ReadAllLines 用 FileShare.Read 打开 —— 与写句柄共享模式冲突，
+// 会直接抛 IOException。合规读取方必须用 FileShare.ReadWrite。
+async Task<string[]> ReadAuditLinesAsync(string path)
+{
+    using var fs = new FileStream(
+        path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    using var sr = new StreamReader(fs);
+    var all = await sr.ReadToEndAsync();
+    return all.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+}
+
 async Task<JsonElement> PostChat(string message, string userId, string? sessionId = null,
     Dictionary<string, object?>? slots = null)
 {
@@ -388,7 +401,9 @@ var found = Directory.GetFiles(Directory.GetCurrentDirectory(), "audit-chain.log
     .FirstOrDefault();
 if (found is not null)
 {
-    var lines = await File.ReadAllLinesAsync(found);
+    // 审计文件默认保持常驻写句柄（Audit:KeepFileOpen），标准 File.ReadAllLines
+    // 用 FileShare.Read 打开会与写句柄冲突 → 必须用 FileShare.ReadWrite。
+    var lines = await ReadAuditLinesAsync(found);
     Console.WriteLine($"  审计记录数: {lines.Length}");
     Check("审计记录已生成", lines.Length > 0, $"({lines.Length} 条)");
     Check("用户 ID 已哈希（不出现明文 u_demo01）", !lines.Any(l => l.Contains("u_demo01")), "");

@@ -3,7 +3,7 @@
 > **说明**：本文件记录**代码里真实存在**的端点。
 > 设计层面的完整 API 规范见 [`../02-api/01-rest-api-spec.md`](../02-api/01-rest-api-spec.md)，
 > 两者差异见 [`03-implementation-status.md`](03-implementation-status.md)。
-> **验证口径**：单元测试 187 项已实测通过（2026-10-20）；E2E 70 断言、Stress 31 项已本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
+> **验证口径**：单元测试 188 项已实测通过（2026-10-20）；E2E 70 断言、Stress 31 项已本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
 
 ---
 

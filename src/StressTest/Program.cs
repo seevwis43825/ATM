@@ -72,6 +72,18 @@ void Check(string name, bool ok, string detail = "")
     else { failed++; Console.WriteLine($"  [FAIL] {name} {detail}"); }
 }
 
+// 读取审计链文件。
+// 审计文件默认保持常驻写句柄（Audit:KeepFileOpen），标准 File.ReadAllLines
+// 用 FileShare.Read 打开会与写句柄共享模式冲突 → 必须用 FileShare.ReadWrite。
+async Task<string[]> ReadAuditLinesAsync(string path)
+{
+    using var fs = new FileStream(
+        path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    using var sr = new StreamReader(fs);
+    var all = await sr.ReadToEndAsync();
+    return all.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+}
+
 static string S(JsonElement e, string n) =>
     e.TryGetProperty(n, out var v) ? (v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : v.ToString()) : "";
 
@@ -123,7 +135,9 @@ Section("测试 1: 审计链并发完整性（200 并发写入）");
     }
     else
     {
-        var lines = await File.ReadAllLinesAsync(opts.Value.FilePath);
+        // 读取方必须用 FileShare.ReadWrite：审计文件默认保持常驻写句柄，
+        // 标准 File.ReadAllLines 用 FileShare.Read 打开会与写句柄冲突。
+        var lines = await ReadAuditLinesAsync(opts.Value.FilePath);
         Check("记录无丢失", lines.Length == total, $"落盘 {lines.Length}/{total}");
         Check("审计文件无行撕裂", lines.Length == total, $"每条记录独立成行");
 

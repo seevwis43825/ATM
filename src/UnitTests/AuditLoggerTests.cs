@@ -13,9 +13,12 @@ public class AuditLoggerTests : IDisposable
     private readonly string _logPath =
         Path.Combine(Path.GetTempPath(), $"audit-test-{Guid.NewGuid():N}.log");
 
+    /// <summary>本测试类创建的全部日志器：删除文件前必须先释放它们。</summary>
+    private readonly List<AuditLogger> _loggers = new();
+
     private AuditLogger CreateLogger(bool chain = true)
     {
-        return new AuditLogger(
+        var logger = new AuditLogger(
             Options.Create(new AuditOptions
             {
                 SigningKey = "unit-test-key",
@@ -23,6 +26,9 @@ public class AuditLoggerTests : IDisposable
                 FilePath = _logPath
             }),
             NullLogger<AuditLogger>.Instance);
+
+        _loggers.Add(logger);
+        return logger;
     }
 
     private static AuditEvent Evt(string id, string actor = "u_1", decimal? amount = null)
@@ -42,6 +48,14 @@ public class AuditLoggerTests : IDisposable
 
     public void Dispose()
     {
+        // 必须先释放日志器：审计文件默认保持常驻写句柄，
+        // 文件被占用时 File.Delete 会直接抛 IOException。
+        foreach (var logger in _loggers)
+        {
+            logger.Dispose();
+        }
+        _loggers.Clear();
+
         if (File.Exists(_logPath)) File.Delete(_logPath);
     }
 
@@ -162,6 +176,64 @@ public class AuditLoggerTests : IDisposable
         Assert.False(result.IsValid);
     }
 
+    /// <summary>
+    /// 读取审计文件内容。
+    ///
+    /// 为什么不能用 <c>File.ReadAllLinesAsync</c>：
+    ///   审计文件默认保持**常驻写句柄**（<c>Audit:KeepFileOpen</c>，默认 true）。
+    ///   标准 <c>File.ReadAllLines</c> 用 <c>FileShare.Read</c> 打开，
+    ///   与我们持有的写句柄冲突（Windows 上共享模式不兼容）→ 直接抛 IOException。
+    ///   合规读取方必须用 <c>FileShare.ReadWrite</c>，这里即为示范。
+    /// </summary>
+    /// <param name="path">审计文件路径。</param>
+    /// <returns>文件的全部非空行。</returns>
+    private static async Task<string[]> ReadAuditLinesAsync(string path)
+    {
+        using var fs = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var sr = new StreamReader(fs);
+        var all = await sr.ReadToEndAsync();
+        return all.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    [Fact]
+    public async Task Chain_ContinuesAcrossProcessRestart()
+    {
+        // 场景：宿主重启后往同一份归档继续追加。
+        // 审计文件是追加的，而链尾只在内存里 —— 若重启后从 GENESIS 重开，
+        // 归档里就会出现多个 GENESIS，链在重启边界断开，
+        // 攻击者可以在那里截断并拼接两段记录，结构校验反而看不出来。
+        var first = CreateLogger();
+        await first.WriteAsync(Evt("r1"));
+        await first.WriteAsync(Evt("r2"));
+        first.Dispose();
+
+        var second = CreateLogger();
+        await second.WriteAsync(Evt("r3"));
+        second.Dispose();
+
+        var lines = await ReadAuditLinesAsync(_logPath);
+        Assert.Equal(3, lines.Length);
+
+        var sigs = lines
+            .Select(l => System.Text.Json.JsonDocument.Parse(l).RootElement.GetProperty("sig").GetString()!)
+            .ToList();
+        var prevs = lines
+            .Select(l =>
+            {
+                using var d = System.Text.Json.JsonDocument.Parse(l);
+                return d.RootElement.TryGetProperty("prev", out var p) && p.ValueKind != System.Text.Json.JsonValueKind.Null
+                    ? p.GetString()
+                    : null;
+            })
+            .ToList();
+
+        // 链首唯一：新进程接上了旧链尾，而不是重开 GENESIS
+        Assert.Single(prevs.Where(p => p is null));
+        Assert.Equal(sigs[1], prevs[2]);
+        Assert.Equal(sigs[0], prevs[1]);
+    }
+
     [Fact]
     public async Task WriteAsync_PersistsToFile()
     {
@@ -169,7 +241,7 @@ public class AuditLoggerTests : IDisposable
         await logger.WriteAsync(Evt("w1"));
         await logger.WriteAsync(Evt("w2"));
 
-        var lines = await File.ReadAllLinesAsync(_logPath);
+        var lines = await ReadAuditLinesAsync(_logPath);
         Assert.Equal(2, lines.Length);
         Assert.All(lines, l => Assert.StartsWith("{", l));
     }
@@ -180,7 +252,7 @@ public class AuditLoggerTests : IDisposable
         var logger = CreateLogger();
         await logger.WriteAsync(Evt("w1", actor: "sensitive_user_123"));
 
-        var content = await File.ReadAllTextAsync(_logPath);
+        var content = string.Join("\n", await ReadAuditLinesAsync(_logPath));
         Assert.DoesNotContain("sensitive_user_123", content);
         Assert.Contains("\"actor\":", content);
     }
@@ -196,7 +268,7 @@ public class AuditLoggerTests : IDisposable
             new ParallelOptions { MaxDegreeOfParallelism = 32 },
             async (i, ct) => await logger.WriteAsync(Evt($"c{i:D4}"), ct));
 
-        var lines = await File.ReadAllLinesAsync(_logPath);
+        var lines = await ReadAuditLinesAsync(_logPath);
         Assert.Equal(total, lines.Length);
 
         var sigs = new List<string>();
@@ -228,5 +300,14 @@ public class AuditLoggerTests : IDisposable
             .Select(g => g.Key)
             .ToList();
         Assert.Empty(forks);
+
+        // 归档文件的**物理顺序**必须与链顺序一致：
+        // 签名与落盘若由两把不同的锁决定，就可能出现"A 先签名、B 先落盘"，
+        // 于是文件里第 N 行的 prev 指向的不是第 N-1 行 —— 链本身没断（它是链表），
+        // 但审计员从上往下读会看到乱序条目，按"逐行比对"校验会误判为断裂。
+        for (var i = 1; i < lines.Length; i++)
+        {
+            Assert.Equal(sigs[i - 1], prevs[i]);
+        }
     }
 }

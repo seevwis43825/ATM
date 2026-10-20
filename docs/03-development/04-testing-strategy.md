@@ -11,7 +11,7 @@
 
 | 项目 | 形态 | 当前用途 |
 |------|------|----------|
-| `src/UnitTests` | xUnit 测试项目 | 当前单元/组件测试；基线为 187 个测试 |
+| `src/UnitTests` | xUnit 测试项目 | 当前单元/组件测试；基线为 188 个测试 |
 | `src/E2ETest` | `Exe` 独立程序 | Host + MockBank 跨进程场景验证 |
 | `src/StressTest` | `Exe` 独立程序 | 压力验证 |
 | `src/LoadTest` | `Exe` 独立程序 | 负载验证 |
@@ -26,7 +26,7 @@ dotnet build src/BankingAgent.slnx -c Release
 dotnet test src/UnitTests/UnitTests.csproj -c Release
 ```
 
-测试总数必须引用命令输出。当前核对基线为 **187 个 UnitTests**；新增/删除测试后同步更新文档，不把该数字视为永久常量。
+测试总数必须引用命令输出。当前核对基线为 **188 个 UnitTests**；新增/删除测试后同步更新文档，不把该数字视为永久常量。
 
 ### 1.2 跨进程验证
 

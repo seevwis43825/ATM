@@ -19,7 +19,7 @@
 
 **Current：本地研发/演示基线**
 
-已具备 .NET 8 模块化单体、Host + MockBank 双进程、四插件、SQLite、认证/人工确认/审计和 187 个 UnitTests。Transfer 支持模拟转账；BillAnalysis、CardManagement、Wealth 已有当前能力，但 Wealth 仍是只读产品/推荐/余额查询。默认使用规则意图识别，可选 LLM；尚无生产部署、真实 CBS、完整前端或合规认证。
+已具备 .NET 8 模块化单体、Host + MockBank 双进程、四插件、SQLite、认证/人工确认/审计和 188 个 UnitTests。Transfer 支持模拟转账；BillAnalysis、CardManagement、Wealth 已有当前能力，但 Wealth 仍是只读产品/推荐/余额查询。默认使用规则意图识别，可选 LLM；尚无生产部署、真实 CBS、完整前端或合规认证。
 
 **下一步目标**：先以 Issue/PR 验证每项工作，再更新“完成/上线”状态。
 
