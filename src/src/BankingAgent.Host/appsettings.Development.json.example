@@ -10,9 +10,10 @@
   //   必须从第一次提交起就不入库。
   //
   // 密钥可以全部留空：
-  //   留空时宿主在 Development 下会派生一个确定性的开发密钥并打印警告，
-  //   保证 clone 下来即可运行（见 BankingCoreServiceCollectionExtensions）。
-  //   生产环境不会走这条兜底路径，SecurityGate 会拦截缺少密钥的启动。
+  //   留空时宿主在 Development 下会使用确定性的开发密钥并打印警告，
+  //   保证 clone 下来即可运行（见 BankingCoreServiceCollectionExtensions 与 AuditSigningKeyPolicy）。
+  //   生产环境不会走这条兜底路径：审计链签名密钥为空会在**启动期**直接拒绝启动
+  //   （Program.cs 的硬校验），其余密钥由 SecurityGate 拦截。
 
   "Logging": {
     "LogLevel": {
@@ -35,7 +36,9 @@
     "SigningKey": ""
   },
 
-  // 审计链 HMAC 密钥
+  // 审计链 HMAC 密钥。
+  // ⚠️ 留空 = 「未配置」：Development 下沿用公开的开发默认密钥；
+  //    非 Development 下**启动即失败**（空密钥等于审计链可被任意伪造）。
   "Audit": {
     "SigningKey": ""
   },

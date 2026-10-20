@@ -4,7 +4,7 @@
 >
 > 架构：**模块化单体 + 插件化扩展 + 领域驱动设计 + 事件驱动**
 > 技术栈：.NET 8（C#）、EF Core、SQLite / PostgreSQL、ASP.NET Core Minimal API
-> 当前状态：**可运行基座**。单元测试 200 项已实测通过；端到端（70 断言）与并发压测（31 项）已在本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
+> 当前状态：**可运行基座**。单元测试 200 项已实测通过；端到端（71 断言 / 20 个场景）与并发压测（31 项）已在本机实测全绿（E2E 第 0A 步自动重置 MockBank 演示数据，**无需手工准备**），CI 持续复验。
 
 ---
 
@@ -94,11 +94,11 @@ ATM/
 │   │   └── BankingAgent.Host/              宿主：装配 + 端点（Endpoints/ 按职责分文件）
 │   ├── plugins/                            4 个业务插件（各自独立程序集）
 │   ├── mock-bank/MockBank.Api/             多银行模拟核心系统（:5200）
-│   │   └── data/                           各行独立数据库文件（运行后生成）
+│   │   └── App_Data/                       各行独立数据库文件（运行后生成）
 │   ├── templates/banking-plugin/           [*] dotnet new 插件脚手架
 │   ├── PluginValidator/                    [*] 插件契约校验器（CI 门禁）
 │   ├── UnitTests/                          单元测试（当前 200 项）
-│   ├── E2ETest/                            端到端场景测试（17 个场景）
+│   ├── E2ETest/                            端到端场景测试（20 个场景）
 │   ├── StressTest/                         并发与稳定性压测
 │   ├── LoadTest/                           容量阶梯加压
 │   ├── CryptoSelfTest/                     密码学自检（ML-KEM/ML-DSA）
@@ -282,7 +282,7 @@ curl -s -X POST http://localhost:5243/api/chat \
 ## 安全须知（重要）
 
 1. **故障注入仅在 Development 生效。** MockBank 的 `X-Mock-Scenario` 请求头可强制转账失败或注入延迟；非开发环境默认忽略。若确需在非开发环境演示，显式设 `MockBank:EnableFaultInjection=true` 并确保网络隔离。
-2. **密钥不入库。** `appsettings.Development.json` 已被 git 忽略（含 `.example` 模板）。生产必须通过环境变量注入：`Jwt__SigningKey`、`Audit__SigningKey`、`Crypto__DataEncryptionKey`。缺失时 Development 会派生开发密钥并告警；**Production 会拒绝启动**。
+2. **密钥不入库。** `appsettings.Development.json` 已被 git 忽略（含 `.example` 模板）。生产必须通过环境变量注入：`Jwt__SigningKey`、`Audit__SigningKey`、`Crypto__DataEncryptionKey`。缺失时 Development 会使用确定性的开发密钥并告警；**Production 会拒绝启动** —— 审计链签名密钥为空时在启动期直接抛异常（空密钥等于审计链可被任意伪造），其余缺项由 `SecurityGate` 拦截（安全门在 Production 下不可关闭）。
 3. **限流按档位分级**，认证档 5 次/分钟（防口令爆破）。压测前请先关闭限流：设 `RateLimit__Enabled=false` 环境变量并重启宿主。
 4. **审计用户标识只存哈希**，库内与文件内均无明文用户 ID。
 5. **仍未做**（生产前必须补）：MFA/OTP、审计异地 WORM 归档、KMS 密钥管理、数据库文件静态加密、合规规则补 P0 4 条。完整清单见 [`docs/plugin/03-implementation-status.md`](docs/plugin/03-implementation-status.md)。

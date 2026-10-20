@@ -81,7 +81,7 @@ public async Task<TransferResult> ExecuteAsync(TransferOrder order, Cancellation
 // ✅ 正确：CancellationToken 传递
 public async Task HandleAsync(SomeEvent @event, CancellationToken ct)
 {
-    await _audit.LogAsync(@event, ct);
+    await _audit.WriteAsync(@event, ct);
 }
 
 // ❌ 错误：async void（仅 EventHandler 可用）

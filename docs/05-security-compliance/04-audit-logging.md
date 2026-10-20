@@ -7,7 +7,7 @@
 
 ## 0. 当前实现与目标边界
 
-> **Current（源码可验证）**：`AuditLogger` 先生成 HMAC-SHA256 链签名，再追加 JSONL 文件，并把事件放入有界队列，由后台 `AuditDbWriter` 攒批（默认 200 条）后写入独立 `AuditDbContext` 的 `audit_events` 表；SQLite 下为独立表，PostgreSQL 配置下映射到 `audit` Schema。仓储接口只暴露 Append/Query/Verify/Count，不提供 Update/Delete。文件或数据库写失败均记录 Critical；异常被捕获，**不会阻断业务流程**。**权威记录是同步落盘的 JSONL + 链签名，数据库是可检索副本**（批量异步提交，读路径先 flush 保证"写完立刻查"查得到）；因此两端并非原子事务，也不保证两端总是一致，崩溃时最多丢失尚未批量提交的数据库副本尾部，JSONL 与签名链完好。**JSONL 文件默认保持常驻写句柄**（`Audit:KeepFileOpen`，默认 true），避免每条记录 open→write→close —— 该项实测把宿主吞吐从 312 QPS 提到 989 QPS（3.17×）；代价是读取方必须用 `FileShare.ReadWrite` 打开（`scripts/read-audit-chain.ps1` 是配套示例），且文件在进程运行期间不可被删除或改名（防审计链静默消失）。
+> **Current（源码可验证）**：`AuditLogger` 先生成 HMAC-SHA256 链签名，再追加 JSONL 文件，并把事件放入有界队列，由后台 `AuditDbWriter` 攒批（默认 200 条）后写入独立 `AuditDbContext` 的 `audit_events` 表；SQLite 下为独立表，PostgreSQL 配置下映射到 `audit` Schema。仓储接口只暴露 Append/Query/Verify/Count，不提供 Update/Delete。**审计文件写失败**记 Critical 并节流上报（故障期逐条打堆栈会把宿主 CPU 烧光，实测 780→38 QPS）；**审计库写失败**先做有界重试（含首次共 3 次尝试，退避 200ms→800ms，最坏等待约 1.0s），仍失败则整批写入**死信文件**可事后补录；两者都**不阻断业务流程**。**权威记录是同步落盘的 JSONL + 链签名，数据库是可检索副本**（批量异步提交，读路径先 flush 保证"写完立刻查"查得到）；因此两端并非原子事务，也不保证两端总是一致，崩溃时最多丢失尚未批量提交的数据库副本尾部，JSONL 与签名链完好。**JSONL 文件默认保持常驻写句柄**（`Audit:KeepFileOpen`，默认 true），避免每条记录 open→write→close —— 该项在同一卷同条件、3 轮交错的 A/B 下把吞吐从 312 QPS 提到 989 QPS（**3.17×**）；⚠️ 本机端到端数字离散 2~4.3 倍，这个比值只作**相对**改进的证据，单点数值不可作容量结论（见 `docs/11-performance/01-capacity-test-report.md` §4.1）。代价是读取方必须用 `FileShare.ReadWrite` 打开（`scripts/read-audit-chain.ps1` 是配套示例），且文件在进程运行期间不可被删除或改名（防审计链静默消失）。
 >
 > **Target**：PostgreSQL 分区、数据库禁止改删 trigger、WORM/OSS 异地归档、KMS 签名存储、ClickHouse/Elasticsearch、完整审计 API、指标告警与五年留存均尚未落地。下文相关内容是生产设计或 Runbook。
 
@@ -116,7 +116,7 @@
 | `Operation` | `evt.Operation` | 操作域.动作 |
 | `Scenario` | `evt.Scenario` | 业务场景 |
 | `Decision` | `evt.Decision` | SUCCESS / APPROVED / REJECTED … |
-| `RuleId` | `evt.ComplianceRule ?? evt.RuleId` | 命中的合规规则 |
+| `RuleId` | `evt.RuleId` | 命中的合规规则。⚠️ **与库表不同源**：JSONL 归档与 HMAC 签名输入用的都是 `evt.RuleId`（规则标识，如 `transfer.amount.threshold`）；而 `audit_events` 表的 `RuleId` 列存的是 `evt.ComplianceRule`（规则**版本**）。按本表重算才是对的 |
 | `Amount` | `evt.Amount` | 涉及金额（可空） |
 | `prev` | `evt.PreviousSignature` | 上一条的签名（链式结构） |
 | `sig` | `evt.Signature` | 本条的 HMAC-SHA256 签名 |
@@ -311,6 +311,12 @@ CREATE TRIGGER no_delete BEFORE DELETE ON audit.events
 | **链式结构**（前序签名衔接） | ✅ 能 | 每条的 `prev` 必须等于上一条的 `sig`，链首唯一。改任何一条记录，其后继立刻对不上 |
 | **HMAC 签名值重算** | ✅ 能 | 签名输入里的操作者用的是**哈希**（与归档 `actor` 字段同一份），因此归档自身包含重算所需的全部输入 |
 
+> ⚠️ **重算能力有算法边界**：提交 `0d00d27`（2026-10-21）把签名输入里的操作者由
+> `evt.ActorId`（原始 ID）改为 `HashActor(evt.ActorId)`，金额也由「当前区域格式的 F2」
+> 改为 `InvariantCulture` 的 F2。**该提交之前写入的历史归档用的是旧算法**，
+> 按现行算法重算必然全不一致（实测旧归档 100% 不匹配）。
+> 升级处置：旧归档需重签，或按旧算法单独留存并注明。
+
 签名输入（与 `AuditLogger.Canonicalize` 严格一致，字段顺序固定）：
 
 ```
@@ -440,12 +446,12 @@ public class AuditBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TR
     public async Task<TResponse> Handle(TRequest req, RequestHandlerDelegate<TResponse> next, CancellationToken ct)
     {
         var preAudit = new AuditEvent { Operation = req.OperationName, /* ... */ };
-        await _audit.LogAsync(preAudit, ct);
+        await _audit.WriteAsync(preAudit, ct);
         
         var response = await next(ct);
         
         var postAudit = preAudit.WithResult(response);
-        await _audit.LogAsync(postAudit, ct);
+        await _audit.WriteAsync(postAudit, ct);
         
         return response;
     }
@@ -533,8 +539,8 @@ public class AuditBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TR
 1. **冻结**相关数据（暂停销毁任务）
 2. **导出**完整时间线（事件 + 上下文 + Trace）
 3. **签名 + 时间戳**（第三方可信时间戳服务）
-5. **移交**法务 + 司法鉴定机构
-6. **归档**为案件档案
+4. **移交**法务 + 司法鉴定机构
+5. **归档**为案件档案
 
 ---
 
@@ -560,7 +566,7 @@ public class AuditBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TR
 - [x] JSONL + `audit_events` 双写已实现（失败不阻断）
 - [x] 审计文件常驻句柄已实现（`Audit:KeepFileOpen`，读取方须用 `FileShare.ReadWrite`）
 - [x] 归档链校验工具已提供（`scripts/read-audit-chain.ps1`：结构校验 + HMAC 离线重算）
-- [x] HMAC 签名值可离线重算（§4.6.1）—— 签名输入改用操作者哈希，归档自足可验
+- [x] HMAC 签名值可离线重算（§4.6.1）—— 签名输入改用操作者哈希，归档自足可验；⚠️ 仅对 `0d00d27`（2026-10-21）之后写入的归档成立，此前归档需重签（§4.6.1 的算法边界）
 - [ ] 签名锚定到 WORM / 可信时间戳（§4.6.1）
 - [x] 批量落库失败已有重试与死信文件（§4.1）
 - [ ] 死信自动回灌数据库 + 对账闭环（§4.1）—— 死信已保留完整记录，但尚未自动补录

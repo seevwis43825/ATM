@@ -1,7 +1,7 @@
 # 快速运行指南（Run Guide）
 
 > **环境**：.NET SDK 9.0.200+（解决方案使用 `.slnx`，项目目标为 `net8.0`）
-> **验证口径**：单元测试 200 项已实测通过（2026-10-20）；E2E 70 断言、Stress 31 项已本机实测全绿（E2E 需干净的 MockBank 库，见 `docs/03-development/04-testing-strategy.md`），CI 持续复验。
+> **验证口径**：单元测试 200 项已实测通过（2026-10-20）；E2E 71 断言 / 20 个场景、Stress 31 项已本机实测全绿（E2E 第 0A 步自动重置 MockBank 演示数据，无需手工准备），CI 持续复验。
 > **插件开发**：见 [`01-plugin-onboarding-guide.md`](01-plugin-onboarding-guide.md)。
 
 ---

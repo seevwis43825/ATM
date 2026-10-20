@@ -194,6 +194,13 @@
 - 触发条件：错误率 > 50% 且样本 > 20
 - 状态：Closed → Open → Half-Open → Closed
 
+> ⚠️ **本节是 Target 方案，与仓库已实现的不完全一致**：
+> 仓库实际实现的是自研的 `CoreBankCircuitBreaker` + `CoreBankCircuitHandler`
+> （HTTP 管线层，`src/src/BankingAgent.Base/CoreBank/`），判据为
+> **连续 5 次传输层失败**（`HttpRequestException` / `TaskCanceledException` / `IOException`），
+> **5xx 不计入** —— 服务端活着、只是这笔业务失败时不该开熔断去掩盖业务错误。
+> 半开探针会自动恢复。排障时阈值请以代码为准，不要按本节的「错误率 > 50%」去对账。
+
 ### 8.3 降级（Degradation）
 
 降级开关（FeatureFlag）：
