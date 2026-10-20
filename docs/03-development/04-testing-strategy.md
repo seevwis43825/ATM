@@ -49,6 +49,20 @@ dotnet run --project src/StressTest/StressTest.csproj
 dotnet run --project src/LoadTest/LoadTest.csproj
 ```
 
+> ⚠️ **跑单元测试前先停掉 MockBank（若它正在运行）**：
+> `UnitTests` 现在**直接引用 `MockBank.Api`**（为了能单测「演示数据重置的并发正确性」——
+> 加锁顺序、与跨行转账互不互锁、原地重置、快照清空），
+> 于是 `dotnet test` 会重建 `MockBank.Api` 并把产物拷进它的 `bin/` ——
+> 而运行中的 MockBank 正占着那个文件，拷贝会报
+> `MSB3026 ... 文件被 "MockBank.Api" 锁定`。
+> **这不是代码问题**，两种解法：
+> 1. 先停掉 MockBank 再跑单测；
+> 2. 用 `dotnet test src/UnitTests/UnitTests.csproj --no-dependencies`
+>    （只编译测试项目、复用已有引用件）。
+>
+> 只有 MockBank.Api **需要重新编译时**才会撞锁（增量构建会跳过拷贝），
+> 所以日常「起服务 → 跑 E2E → 跑单测」的流程基本不受影响。
+>
 > **为什么演示数据要先重置**：E2E 场景 5 会从演示账户 `6222020200000001`
 > 转出 30,000 元。该账户的种子余额是 250,000 元，但会被前面的压测与演示逐步消耗；
 > 余额耗尽后 E2E 会以 `INSUFFICIENT_FUNDS` 失败（实测 `63/70`、`67/70`）——
