@@ -54,6 +54,27 @@ var securityGate = new SecurityGate(
     loggerFactory.CreateLogger<SecurityGate>());
 securityGate.Enforce();
 
+// ===== 审计链签名密钥：启动期硬校验 =====
+//
+// 为什么必须放在启动期、而不是"第一次写审计时"才失败：
+//   空密钥不是"没有密钥"，它是**公开可推导的密钥** —— 审计链照样自洽，
+//   但任何人都能伪造记录并重算签名，「不可篡改」这条合规承诺静默失效。
+//   若只在写审计时才抛，表现是「每个请求 500」，而不是「服务起不来」——
+//   后者一眼能定位，前者会被误判成业务故障。
+//
+// 判定规则见 AuditSigningKeyPolicy：空串按「未配置」处理；
+// 非开发环境缺密钥 → 拒绝启动；开发环境沿用公开的开发默认密钥并告警。
+var auditSigningKey = builder.Configuration["Audit:SigningKey"];
+if (string.IsNullOrWhiteSpace(auditSigningKey) && builder.Environment.IsDevelopment())
+{
+    bootLogger.LogWarning(
+        "未配置 Audit:SigningKey，已启用开发环境默认密钥（公开可推导，仅限本地开发）。" +
+        "生产环境必须通过环境变量 Audit__SigningKey 注入。");
+}
+
+// 非开发环境且缺密钥 → 抛异常，阻止启动。
+AuditSigningKeyPolicy.Resolve(auditSigningKey, builder.Environment.IsDevelopment());
+
 var registry = new PluginRegistry(
     bootstrap,
     loggerFactory.CreateLogger<PluginRegistry>(),

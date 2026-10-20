@@ -16,8 +16,14 @@ using Microsoft.Extensions.Options;
 /// <summary>审计配置。</summary>
 public sealed class AuditOptions
 {
-    /// <summary>HMAC 签名密钥。生产环境必须通过环境变量注入，禁止硬编码。</summary>
-    public string SigningKey { get; set; } = "dev-only-key-change-in-production";
+    /// <summary>
+    /// HMAC 签名密钥。生产环境必须通过环境变量注入，禁止硬编码。
+    ///
+    /// ⚠️ 绑定的**空串等于「未配置」**，不是「用空密钥签名」——
+    /// 空密钥是公开可推导的密钥，会让「审计不可篡改」这条承诺静默失效。
+    /// 判定与兜底见 <see cref="AuditSigningKeyPolicy"/>。
+    /// </summary>
+    public string SigningKey { get; set; } = AuditSigningKeyPolicy.DevelopmentDefaultKey;
     /// <summary>是否启用链式签名。</summary>
     public bool EnableChainSignature { get; set; } = true;
     /// <summary>审计日志文件输出路径。为空则只写数据库。</summary>
@@ -44,6 +50,59 @@ public sealed class AuditOptions
     /// </para>
     /// </remarks>
     public bool KeepFileOpen { get; set; } = true;
+}
+
+/// <summary>
+/// 审计链签名密钥的策略：把「空串」判定为「未配置」，并按环境给出可用结论。
+///
+/// ===== 为什么必须有这个策略 =====
+/// 随仓库入库的 <c>appsettings.json</c> 里 <c>Audit:SigningKey</c> 是**空串**，
+/// 而配置绑定会用空串**覆盖掉** <see cref="AuditOptions.SigningKey"/> 的默认值 ——
+/// 于是 <c>HMACSHA256</c> 拿到的是**零长度密钥**。
+///
+/// 空密钥不是「没有密钥」，它是一个**公开可推导的密钥**：
+/// 审计链照样能生成、照样逐条自洽，但任何人都能伪造审计记录并重算链签名，
+/// 「不可篡改」这条合规承诺直接失效 —— 而且**全程不报任何错**，静默地失效。
+///
+/// ===== 结论 =====
+/// - 非 Development 环境：未配置密钥 → **拒绝启动**（不是降级运行）；
+/// - Development 环境：未配置密钥 → 沿用公开的开发默认密钥（与既有归档、
+///   与 <c>scripts/read-audit-chain.ps1</c> 的默认用法一致，保证离线可重算），
+///   并由调用方打印显著警告。
+/// </summary>
+public static class AuditSigningKeyPolicy
+{
+    /// <summary>
+    /// 开发环境沿用的公开密钥。它公开可推导，因此**只能**用于本地开发；
+    /// 生产环境必须在启动期就因缺失它而失败。
+    /// </summary>
+    public const string DevelopmentDefaultKey = "dev-only-key-change-in-production";
+
+    /// <summary>
+    /// 判定配置里的审计签名密钥是否可用，并给出可直接使用的密钥。
+    /// </summary>
+    /// <param name="configuredKey">配置中的 <c>Audit:SigningKey</c>，可能是空串或 null。</param>
+    /// <param name="isDevelopment">当前是否运行在 Development 环境。</param>
+    /// <returns>可直接用于 HMAC 签名的密钥，绝不为空。</returns>
+    /// <exception cref="InvalidOperationException">
+    /// 非开发环境且未配置密钥时抛出 —— 空密钥会让审计链可被任意伪造。
+    /// </exception>
+    public static string Resolve(string? configuredKey, bool isDevelopment)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredKey))
+        {
+            return configuredKey;
+        }
+
+        if (!isDevelopment)
+        {
+            throw new InvalidOperationException(
+                "未配置 Audit:SigningKey。审计链签名密钥为空等于审计链可被任意伪造，" +
+                "生产环境必须通过环境变量 Audit__SigningKey 注入。");
+        }
+
+        return DevelopmentDefaultKey;
+    }
 }
 
 /// <summary>审计事件。</summary>

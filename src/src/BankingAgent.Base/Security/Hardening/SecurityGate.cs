@@ -73,9 +73,24 @@ public sealed class SecurityGate
         _logger = logger;
     }
 
-    /// <summary>是否生产环境。</summary>
+    /// <summary>
+    /// 是否生产环境。
+    ///
+    /// 同时看两个来源：配置里的 <c>SecurityGate:Environment</c>，
+    /// 以及进程的环境变量 <c>ASPNETCORE_ENVIRONMENT</c> / <c>DOTNET_ENVIRONMENT</c>。
+    ///
+    /// 为什么必须看环境变量：随仓库入库的配置里 <c>SecurityGate:Environment</c> 是
+    /// <c>Development</c>、<c>SecurityGate:Enabled</c> 是 <c>false</c>。
+    /// 若只认配置那一个，一个把 <c>ASPNETCORE_ENVIRONMENT=Production</c> 部署上去、
+    /// 却没改配置文件的环境，会在**完全没有安全检查**的情况下启动 ——
+    /// 空审计密钥、空 JWT 密钥全部放行。
+    /// </summary>
     public bool IsProduction =>
         (Str("SecurityGate:Environment") ?? "Development")
+            .Equals("Production", StringComparison.OrdinalIgnoreCase)
+        || (Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "")
+            .Equals("Production", StringComparison.OrdinalIgnoreCase)
+        || (Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "")
             .Equals("Production", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>读取布尔配置，缺省时返回 fallback。</summary>
@@ -100,7 +115,10 @@ public sealed class SecurityGate
         var violations = new List<string>();
         var warnings = new List<string>();
 
-        if (!Flag("Enabled", IsProduction))
+        // 安全门在生产环境**不可关闭**。
+        // 否则一个没改配置文件、只设了 ASPNETCORE_ENVIRONMENT=Production 的部署
+        // 会带着空审计密钥、空 JWT 密钥直接上线 —— 所有硬性检查都被短路成一条警告。
+        if (!Flag("Enabled", IsProduction) && !IsProduction)
         {
             _logger.LogWarning("安全门已关闭（SecurityGate:Enabled=false），仅允许在开发环境使用");
             return new SecurityGateResult { Passed = true, Warnings = ["安全门未启用"] };
@@ -152,6 +170,10 @@ public sealed class SecurityGate
         else if (auditKey.StartsWith("dev-only-", StringComparison.Ordinal))
         {
             violations.Add("使用了开发默认审计密钥");
+        }
+        else if (auditKey.Length < 32)
+        {
+            violations.Add($"审计链签名密钥长度不足（{auditKey.Length} < 32 字符）");
         }
 
         // ===== 4. 传输加密 =====

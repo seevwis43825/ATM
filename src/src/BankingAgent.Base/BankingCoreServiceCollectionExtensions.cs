@@ -193,6 +193,21 @@ public static class BankingCoreServiceCollectionExtensions
                 Microsoft.Extensions.Options.Options.Create(opts), log);
         });
 
+        // 审计链签名密钥：把**空串按「未配置」处理**，而不是「用空密钥签名」。
+        // 开发环境沿用公开的开发默认密钥（与既有归档、与 read-audit-chain.ps1 一致，
+        // 保证离线可重算），非开发环境则直接拒绝 —— 详见 AuditSigningKeyPolicy。
+        //
+        // 为什么必须挂在 Configure 上（而不是默认值或构造函数）：
+        //   配置绑定会用空串**覆盖掉** AuditOptions 的默认值，
+        //   所以只有在绑定**之后**再施加策略，空串才有机会被当成「未配置」。
+        //   而这一步必须在 IOptions 物化时发生 —— 否则 AuditLogger 可能拿到未修正的实例。
+        services.Configure<AuditOptions>(options =>
+        {
+            options.SigningKey = AuditSigningKeyPolicy.Resolve(
+                options.SigningKey,
+                IsDevelopmentEnvironment(configuration));
+        });
+
         services.AddSingleton<IAuditLogger, AuditLogger>();
 
         // 令牌服务同 CryptoService：缺少密钥时构造即抛异常。
@@ -257,6 +272,28 @@ public static class BankingCoreServiceCollectionExtensions
         var env = sp.GetService<Microsoft.Extensions.Hosting.IHostEnvironment>();
         return env is not null &&
                env.EnvironmentName.Equals("Development", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 从配置里判断当前是否运行在 Development 环境。
+    ///
+    /// 为什么需要另有一个「配置版」判定：<see cref="IsDevelopment(IServiceProvider)"/>
+    /// 依赖容器里的 <c>IHostEnvironment</c>，而配置绑定阶段拿不到服务提供者。
+    /// 审计密钥必须在 <c>IOptions</c> 物化时判定（绑定之后、构造之前），只能走配置。
+    ///
+    /// 为什么读环境变量是可靠的：默认宿主配置包含环境变量源，
+    /// 所以 <c>configuration["ASPNETCORE_ENVIRONMENT"]</c> 就是宿主实际使用的环境名来源；
+    /// 未设置时 ASP.NET Core 的默认环境是 <c>Production</c>（fail-closed 的默认值）。
+    /// </summary>
+    /// <param name="configuration">宿主配置。</param>
+    /// <returns>是否 Development 环境。</returns>
+    private static bool IsDevelopmentEnvironment(IConfiguration configuration)
+    {
+        var name = configuration["ASPNETCORE_ENVIRONMENT"]
+                   ?? configuration["DOTNET_ENVIRONMENT"]
+                   ?? "Production";
+
+        return name.Equals("Development", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>注册插件提供的 Agent（宿主在构建容器后调用）。</summary>
