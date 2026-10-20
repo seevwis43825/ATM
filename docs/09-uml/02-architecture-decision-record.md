@@ -422,9 +422,9 @@
   |------|------|
   | ✅ 正面 | 文件行原子性有保证；E2E 测试验证了哈希化与链式字段 |
   | ⚖️ 代价 | 审计写入成为全局串行点，文件 IO 抖动会传导到请求延迟 |
-  | ⚠️ 风险 | 磁盘满时只 `LogCritical` 不重试也不落库。生产化应补：写失败计数 + 告警对接 + 本地环形缓冲兜底 |
+  | ⚠️ 风险 | 磁盘满时审计库写不进去。**已缓解**：落库失败先有界重试 3 次（退避 200/800/3200ms），仍失败则整批写入死信文件 `logs/audit-deadletter.jsonl` 可事后补录，并累计缺失条数 + 节流告警。**残余风险**：磁盘真正写满时死信文件同样写不进去（此时只记 Critical），该批只能从 JSONL 归档离线重放补回 —— 当前**没有**自动化重放工具。生产化仍应补：死信自动回灌 + 对账 + 告警对接 |
 
-- **关联代码**：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`、`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`
+- **关联代码**：`src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs`、`src/src/BankingAgent.Base/Security/Audit/AuditDbWriter.cs`
 
 ---
 
