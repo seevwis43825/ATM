@@ -344,19 +344,26 @@ jobs:
       - name: 校验审计链（结构 + HMAC 离线重算）
         shell: pwsh
         run: |
-          # 审计链是「不可篡改」承诺的载体，却一直没有任何门禁守着 ——
-          # 链断了、签名重算不一致，CI 都不会知道。
-          # 这里做两道校验：链式结构（前序签名逐条衔接、链首唯一）+ HMAC 离线重算。
-          # CI 下没有 appsettings.Development.json（被 gitignore），
-          # 所以审计链用的是公开的开发默认密钥 —— 这正是它要守的默认部署形态。
+          # 失败原因必须能被**匿名**看到：
+          #   - 作业日志  → 需要仓库管理员权限
+          #   - 作业摘要  → 不在公开仓库的匿名 HTML 里
+          #   - **注解**   → 公开仓库可匿名读取  ← 用这个通道
           $chain = 'src/src/BankingAgent.Host/logs/audit-chain.log'
           if (-not (Test-Path $chain)) {
-            "## 审计链缺失`n`n宿主没有产出审计记录：$chain" |
-              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Write-Output "::error title=审计链缺失::宿主没有产出审计记录：$chain"
             exit 1
           }
-          ./scripts/read-audit-chain.ps1 -Path $chain -VerifyChain -VerifyHmac `
-            -SigningKey 'dev-only-key-change-in-production'
+          $out = @(& ./scripts/read-audit-chain.ps1 -Path $chain -VerifyChain -VerifyHmac -SigningKey 'dev-only-key-change-in-production' 2>&1)
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Output $_ }
+          if ($code -ne 0) {
+            $i = 0
+            foreach ($line in ($out | Select-Object -Last 12)) {
+              $i++
+              Write-Output "::error title=审计链校验失败#$i::$line"
+            }
+            exit 1
+          }
 
       - name: 失败详情（写入作业摘要，公开可见）
         if: failure()

@@ -28,14 +28,19 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem 2>$null | Out-Null
 
 # 默认审计文件路径：与宿主默认一致（内容根目录下的 logs/audit-chain.log）
+#
+# 用 [System.IO.Path]::Combine 逐段拼接，**不要**用带反斜杠的字符串：
+# 反斜杠在 Linux 上不是路径分隔符，'..\src\src\...' 在 Linux 上会被当成
+# 一个文件名，候选路径全部匹配不上 ⇒ 脚本报「找不到默认审计文件」而退出 1。
 if (-not $Path) {
     $candidates = @(
-        (Join-Path $PSScriptRoot '..\src\src\BankingAgent.Host\logs\audit-chain.log'),
-        (Join-Path $PSScriptRoot '..\..\src\src\BankingAgent.Host\logs\audit-chain.log')
+        [System.IO.Path]::Combine($PSScriptRoot, '..', 'src', 'src', 'BankingAgent.Host', 'logs', 'audit-chain.log'),
+        [System.IO.Path]::Combine($PSScriptRoot, '..', '..', 'src', 'src', 'BankingAgent.Host', 'logs', 'audit-chain.log')
     )
     $Path = ($candidates | Where-Object { Test-Path $_ } | Select-Object -First 1)
     if (-not $Path) {
-        Write-Output "[致命] 找不到默认审计文件，请用 -Path 指定"
+        Write-Output "[致命] 找不到默认审计文件，请用 -Path 指定。已尝试："
+        $candidates | ForEach-Object { Write-Output "  - $_" }
         exit 1
     }
 }
