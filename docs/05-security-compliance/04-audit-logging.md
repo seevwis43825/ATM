@@ -335,6 +335,35 @@ AuditId | ts(Unix 毫秒) | ActorType | actor(哈希) | Operation | Scenario
 > **不能**证明操作者本人实施了该操作（那需要额外的身份认证与抗抵赖机制，如可信时间戳或签名锚定）。
 > 归档链的**起点**（第一条记录）同样无法自证 —— 生产需把链尾定期锚到 WORM 存储或独立 KMS。
 
+### 4.6.2 签名密钥从哪来、缺了会怎样
+
+> 这一节是 P0 修复的对外契约。曾经的漏洞：随仓库入库的 `appsettings.json` 把
+> `Audit:SigningKey` 置为**空串**，而配置绑定会用空串**覆盖掉**代码里的默认值 ——
+> 于是 `HMACSHA256` 拿到的是**零长度密钥**。空密钥不是「没有密钥」，
+> 它是一个**公开可推导的密钥**：审计链照样生成、照样逐条自洽，
+> 但任何人都能伪造审计记录并重算链签名，「不可篡改」这条合规承诺**静默失效**。
+
+| 情形 | 行为 | 理由 |
+|------|------|------|
+| 配置了非空密钥 | 原样使用 | 运维注入的密钥优先，绝不被派生逻辑覆盖 |
+| 空串 + **非 Development** 环境 | **启动期直接抛异常，拒绝启动** | 空密钥 = 审计链可被任意伪造，不能「降级运行」 |
+| 空串 + **Development** 环境 | 沿用公开的开发默认密钥 `dev-only-key-change-in-production`，并打印显著警告 | 保证 clone 下来即可运行；该密钥公开可推导，**只能**用于本地开发 |
+
+判定代码在 `AuditSigningKeyPolicy.Resolve`（`AuditLogger.cs`），由两处共同执行：
+宿主 `Program.cs` 的**启动期硬校验**（第一道，必须在启动期失败，
+而不是拖到「第一条审计写入时每个请求都 500」——后者会被误判成业务故障），
+以及 DI 里 `Configure<AuditOptions>` 的**装配期兜底**（第二道，保证任何装配路径下都流不出空密钥）。
+
+**环境判定三处同源**：宿主的 `builder.Environment`、审计密钥策略、`SecurityGate`
+统一走 `HostEnvironmentResolver`（`DOTNET_ENVIRONMENT` 优先于 `ASPNETCORE_ENVIRONMENT`，
+都没设时为 `Production`）。
+解析规则若各写一份，就会出现「宿主认为是生产、安全门却以为是开发」的**分裂** ——
+而分裂的代价正是安全门被短路、空密钥被放行。
+
+⚠️ 连带影响：`SecurityGate` 现在**非 Development 环境一律不可关闭**
+（`SecurityGate:Enabled=false` 只在开发环境生效），且环境名不再读配置项
+`SecurityGate:Environment`（该键已随修复移除，避免它与宿主环境名各说各话）。
+
 ---
 
 ## 5. 代码实现

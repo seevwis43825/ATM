@@ -57,8 +57,9 @@ dotnet run --project src/LoadTest/LoadTest.csproj
 > `MSB3026 ... 文件被 "MockBank.Api" 锁定`。
 > **这不是代码问题**，两种解法：
 > 1. 先停掉 MockBank 再跑单测；
-> 2. 用 `dotnet test src/UnitTests/UnitTests.csproj --no-dependencies`
->    （只编译测试项目、复用已有引用件）。
+> 2. 用 `dotnet test src/UnitTests/UnitTests.csproj --no-build`
+>    （**只编译测试项目、复用已有引用件**；`--no-build` 是 `dotnet test` 支持的选项，
+>    而 `--no-dependencies` 只对 `dotnet build` 有效，传给 `dotnet test` 会直接报错）。
 >
 > 只有 MockBank.Api **需要重新编译时**才会撞锁（增量构建会跳过拷贝），
 > 所以日常「起服务 → 跑 E2E → 跑单测」的流程基本不受影响。

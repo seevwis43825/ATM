@@ -147,6 +147,24 @@ jobs:
             --results-directory src/UnitTests/TestResults \
             --collect:"XPlat Code Coverage"
 
+      - name: 失败详情（写入作业摘要，公开可见）
+        if: failure()
+        shell: pwsh
+        run: |
+          # GitHub Actions 的**日志**需要仓库管理员权限才能下载，
+          # 公开仓库的外部审阅者看不到 —— CI 一红就成黑盒。
+          # 而**作业摘要**（step summary）对公开仓库是匿名可见的，
+          # 所以把失败用例名、错误消息与调用栈写进摘要，排查不必再申请日志权限。
+          "## 单元测试失败详情" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          $trx = Get-ChildItem src/UnitTests/TestResults/*.trx -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($trx) {
+            & ./scripts/summarize-trx-failures.ps1 -TrxPath $trx.FullName |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            "未找到 trx（测试可能没走到产出阶段；看上一条步骤的输出）" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
       - name: 上传测试报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -311,14 +329,38 @@ jobs:
       - name: 运行端到端测试
         working-directory: src
         run: |
+          # tee 把输出同时留在文件里：日志需要仓库管理员权限才能下载，
+          # 而作业摘要对公开仓库匿名可见 —— 失败时排查不必再靠猜。
+          # GitHub 默认 shell 启用了 pipefail，所以 tee 不会吞掉退出码。
           dotnet run --project E2ETest -c Release --no-build \
-            -- http://localhost:5243 http://localhost:5200
+            -- http://localhost:5243 http://localhost:5200 2>&1 | tee e2e-output.txt
 
       - name: 运行并发压力测试
         working-directory: src
         run: |
           dotnet run --project StressTest -c Release --no-build \
-            -- http://localhost:5243 http://localhost:5200
+            -- http://localhost:5243 http://localhost:5200 2>&1 | tee stress-output.txt
+
+      - name: 失败详情（写入作业摘要，公开可见）
+        if: failure()
+        shell: pwsh
+        run: |
+          # GitHub Actions 的**日志**需要仓库管理员权限才能下载，
+          # 公开仓库的外部审阅者看不到 —— CI 一红就成黑盒。
+          # 而**作业摘要**（step summary）对公开仓库是匿名可见的，
+          # 所以把失败输出写进摘要，排查不必再申请日志权限。
+          "## 集成测试失败详情" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          foreach ($f in @('src/e2e-output.txt', 'src/stress-output.txt')) {
+            if (Test-Path $f) {
+              "### $f（末尾 120 行）" >> $env:GITHUB_STEP_SUMMARY
+              "" >> $env:GITHUB_STEP_SUMMARY
+              "``````text" >> $env:GITHUB_STEP_SUMMARY
+              Get-Content $f -Tail 120 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+              "``````" >> $env:GITHUB_STEP_SUMMARY
+              "" >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
 
       - name: 上传服务日志
         if: failure()

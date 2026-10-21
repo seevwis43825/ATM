@@ -241,9 +241,11 @@ dotnet run --project src/LoadTest -c Release -- http://localhost:5243 http://loc
 > 1. `dotnet run` 会自动套用 `Properties/launchSettings.json`（含 `ASPNETCORE_ENVIRONMENT=Development` 与开发密钥），
 >    **直接跑 DLL 不会** —— 直接 `dotnet <dll>` 启动会因缺 `Crypto:DataEncryptionKey` 而启动失败，
 >    故障注入也会因环境不是 Development 而被静默忽略（返回 200 而不是 503）。
-> 2. **E2E 场景 5 会从演示账户转出 30,000 元**，跑之前必须重置 MockBank 库
->    （`POST http://localhost:5200/api/corebank/v1/_admin/reset`，或删除 `App_Data/*.db*`），
->    否则余额被前几轮压测耗尽，E2E 会以 `INSUFFICIENT_FUNDS` 失败（实测 63/70、67/70）。
+> 2. **E2E 场景 5 会从演示账户转出 30,000 元** —— 但 E2E 现在**自己会重置**：
+>    `E2ETest` 的第 0A 步会调用 `POST http://localhost:5200/api/corebank/v1/_admin/reset`
+>    把各行数据打回种子态，重置失败即终止 E2E。
+>    所以跑 E2E 不需要手工准备数据；**只有压测/负载测试**才需要考虑先重置
+>    （它们会消耗演示账户余额；余额被耗尽后 E2E 会以 `INSUFFICIENT_FUNDS` 失败）。
 
 ---
 
