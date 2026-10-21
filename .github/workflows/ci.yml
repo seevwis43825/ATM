@@ -341,6 +341,23 @@ jobs:
           dotnet run --project StressTest -c Release --no-build \
             -- http://localhost:5243 http://localhost:5200 2>&1 | tee stress-output.txt
 
+      - name: 校验审计链（结构 + HMAC 离线重算）
+        shell: pwsh
+        run: |
+          # 审计链是「不可篡改」承诺的载体，却一直没有任何门禁守着 ——
+          # 链断了、签名重算不一致，CI 都不会知道。
+          # 这里做两道校验：链式结构（前序签名逐条衔接、链首唯一）+ HMAC 离线重算。
+          # CI 下没有 appsettings.Development.json（被 gitignore），
+          # 所以审计链用的是公开的开发默认密钥 —— 这正是它要守的默认部署形态。
+          $chain = 'src/src/BankingAgent.Host/logs/audit-chain.log'
+          if (-not (Test-Path $chain)) {
+            "## 审计链缺失`n`n宿主没有产出审计记录：$chain" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 1
+          }
+          ./scripts/read-audit-chain.ps1 -Path $chain -VerifyChain -VerifyHmac `
+            -SigningKey 'dev-only-key-change-in-production'
+
       - name: 失败详情（写入作业摘要，公开可见）
         if: failure()
         shell: pwsh
