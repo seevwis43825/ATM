@@ -442,6 +442,19 @@ public partial class AuditLogger(
             {
                 evt.AuditId,
                 ts = evt.Timestamp.ToString("O"),
+                // ===== 有符号的整数毫秒，与 Canonicalize 里的值完全同源 =====
+                //
+                // 为什么必须单独落盘：离线重算时若只靠 ISO-8601 字符串，
+                // 就会依赖「谁、用什么工具、怎么解析这个日期」——
+                // 而不同工具的行为并不一致：PowerShell 7 的 ConvertFrom-Json
+                // 会把日期串转成 [DateTime]，再转字符串时按当前区域格式输出、
+                // **丢掉亚毫秒小数**（例如 07:53:38.1234567 → "15:53:38"），
+                // 于是 epoch 毫秒差了几毫秒 → 签名载荷整体不同 → **每一条都判为不一致**，
+                // 而链结构其实完好无损。
+                //
+                // 把签名用的那个整数原样写进归档，离线校验就不再依赖任何日期解析，
+                // 归档也真正做到「自足可验」（见 scripts/read-audit-chain.ps1）。
+                tsMs = evt.Timestamp.ToUnixTimeMilliseconds(),
                 evt.ActorType,
                 // 审计文件中用户 ID 做哈希，符合最小化原则
                 actor = HashActor(evt.ActorId),

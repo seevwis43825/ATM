@@ -327,6 +327,21 @@ AuditId | ts(Unix 毫秒) | ActorType | actor(哈希) | Operation | Scenario
 链首参与签名的是 `GENESIS`，而归档里存的是 `null` —— 校验时需要还原。
 金额一律用 `InvariantCulture` 格式化，否则签名会随机器区域设置变化，跨机无法重算。
 
+> ⚠️ **离线重算必须用归档里的整数毫秒 `tsMs`，不能去解析 `ts` 字符串**
+> （`tsMs` 自 2026-10-21 起写入归档，与参与签名的那个整数**完全同源**）。
+>
+> 原因：ISO-8601 字符串的解析结果**依工具而异**。PowerShell 7 的 `ConvertFrom-Json`
+> 会把日期串转成 `[DateTime]`，再被 `[DateTimeOffset]::Parse` 消费时先按当前区域格式
+> 转成字符串，**亚毫秒小数被丢掉**（`07:53:38.1234567` → `"07:53:38"`）——
+> epoch 毫秒因此差了几毫秒，签名载荷整体不同，于是**每一条都被判为 HMAC 不一致，
+> 而链结构其实完好无损**。
+> 实测：同一份归档在 Windows PowerShell 5.1 下 434/434 全过，在 PowerShell 7 下 66/66 全挂，
+> 且报错表现为「结构断点 5」，极易被误判成链断裂。
+>
+> 因此 `scripts/read-audit-chain.ps1` 优先读 `tsMs`；老归档没有该字段时才回退解析 `ts`
+> （回退路径已对「日期被强转为 `[DateTime]`」做了保瞬间处理）。
+> 验证：该脚本在 `ts` 被改乱、甚至被整个删除时仍能通过校验 —— 证明它不依赖日期串。
+
 配套工具：`scripts/read-audit-chain.ps1`
 - `-VerifyChain`：只校验链式结构（不需要密钥）；
 - `-VerifyChain -VerifyHmac -SigningKey <key>`：**完整密码学校验**（结构 + 签名值重算）。

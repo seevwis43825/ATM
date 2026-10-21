@@ -15,6 +15,18 @@
 #   powershell -File scripts\read-audit-chain.ps1 -Path D:\x\audit.log
 #
 # 退出码：0 = 通过；1 = 链断裂或文件不可读。
+#
+# ===== 关于时间戳：为什么优先用 tsMs 而不是 ts =====
+# 归档里同时有 ts（ISO-8601 字符串，给人读）和 tsMs（整数毫秒，给机器算）。
+# tsMs 与参与签名的那个整数完全同源，因此校验时直接用它 —— 不做任何日期解析。
+#
+# 为什么必须这样：ISO 字符串的解析结果依工具而异。PowerShell 7 的 ConvertFrom-Json
+# 会把日期串转成 [DateTime]，再被 [DateTimeOffset]::Parse 消费时先按当前区域格式
+# 转成字符串，亚毫秒小数被丢掉（07:53:38.1234567 → "07:53:38"），
+# epoch 毫秒差了几毫秒 → 签名载荷整体不同 → **每一条都判为 HMAC 不一致**，
+# 而链结构其实完好（曾表现为「结构断点 5」，极易误判成链断裂）。
+#
+# 老归档没有 tsMs 时才回退解析 ts，并对「已被强转为 [DateTime]」做保瞬间处理。
 
 param(
     [string]$Path = '',
@@ -91,27 +103,43 @@ if (-not $VerifyChain) {
 #           | Decision | RuleId | Amount(F2) | prev
 # 注意 prev 在链首处参与签名的是 "GENESIS"，而归档里存的是 null —— 校验时要还原。
 $prev = $null
-$broken = @()
+# 结构问题与 HMAC 明细必须**分开计数**：
+# 早期版本把两者塞进同一个 $broken，于是「结构断点: 5」其实是 0 个结构断点
+# 加 5 条 HMAC 不一致明细 —— 标签误导，排查时容易误判成链断裂。
+$structBroken = @()
+$hmacMessages = @()
 $genesis = 0
 $index = 0
 $hmacBroken = 0
 $hmacChecked = 0
 $keyBytes = if ($SigningKey) { [System.Text.Encoding]::UTF8.GetBytes($SigningKey) } else { $null }
 
+# ===== ConvertFrom-Json 的日期强制必须关掉 =====
+# PowerShell 7.5 起 ConvertFrom-Json 会把 ISO-8601 日期串转成 [DateTime]（默认 -DateKind Local）。
+# 它再被 [DateTimeOffset]::Parse 消费时，会先按**当前区域格式**转成字符串，
+# 亚毫秒小数被丢掉（07:53:38.1234567 → "07:53:38"），epoch 毫秒差了几毫秒 ——
+# 于是签名载荷整体不同，**每一条都被判为 HMAC 不一致**，而链结构其实完好。
+# （Windows PowerShell 5.1 不做这个转换，所以同一份脚本在本地过、在 CI 挂。）
+# 有 -DateKind 就强制按字符串解析；5.1 没有这个参数，本来就不会转。
+$cfjParams = @{}
+if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+    $cfjParams['DateKind'] = 'String'
+}
+
 foreach ($line in $lines) {
     $index++
     $obj = $null
-    try { $obj = $line | ConvertFrom-Json } catch { $broken += "第 $index 行不是合法 JSON"; continue }
+    try { $obj = $line | ConvertFrom-Json @cfjParams } catch { $structBroken += "第 $index 行不是合法 JSON"; continue }
 
     $curPrev = $obj.prev
     $curSig = $obj.sig
 
     if ($null -eq $curPrev -or $curPrev -eq '') { $genesis++ }
     if ($curPrev -ne $prev) {
-        $broken += "第 $index 行(prev=$curPrev) 与上一行 sig($prev) 不衔接"
+        $structBroken += "第 $index 行(prev=$curPrev) 与上一行 sig($prev) 不衔接"
     }
     if ([string]::IsNullOrWhiteSpace($curSig)) {
-        $broken += "第 $index 行缺少 sig"
+        $structBroken += "第 $index 行缺少 sig"
     }
 
     # ===== HMAC 离线重算 =====
@@ -119,7 +147,19 @@ foreach ($line in $lines) {
     # —— 所以仅凭归档文件就能重算签名值，无需原始操作者 ID。
     if ($keyBytes) {
         $prevPart = if ($null -eq $curPrev -or $curPrev -eq '') { 'GENESIS' } else { $curPrev }
-        $tsMs = [DateTimeOffset]::Parse($obj.ts).ToUnixTimeMilliseconds()
+        # ===== 时间戳：优先用归档里的整数毫秒 =====
+        # 归档自 2026-10-21 起带 tsMs 字段，其值与 C# Canonicalize 里参与签名的
+        # Timestamp.ToUnixTimeMilliseconds() **完全同源**，因此不需要任何日期解析 ——
+        # 这正是它能绕开「不同工具解析 ISO 日期结果不同」这个坑的原因。
+        # 老归档没有 tsMs 时才回退到解析 ts；此时必须拿到原始字符串（见上面的 $cfjParams）。
+        $tsMs = if ($null -ne $obj.tsMs) {
+            [long]$obj.tsMs
+        } elseif ($obj.ts -is [datetime]) {
+            # 已经是 [DateTime]：直接转 DateTimeOffset 保瞬间，不要先转字符串
+            ([DateTimeOffset]$obj.ts).ToUnixTimeMilliseconds()
+        } else {
+            [DateTimeOffset]::Parse([string]$obj.ts).ToUnixTimeMilliseconds()
+        }
         $amount = if ($null -eq $obj.Amount) { '' } else { ([decimal]$obj.Amount).ToString('F2', [System.Globalization.CultureInfo]::InvariantCulture) }
         $payload = @(
             $obj.AuditId, $tsMs, $obj.ActorType, $obj.actor, $obj.Operation,
@@ -133,7 +173,7 @@ foreach ($line in $lines) {
             if ($calc -ne $curSig) {
                 $hmacBroken++
                 if ($hmacBroken -le 5) {
-                    $broken += "第 $index 行 HMAC 重算不一致（重算=$calc 记录=$curSig）"
+                    $hmacMessages += "第 $index 行 HMAC 重算不一致（重算=$calc 记录=$curSig）"
                 }
             }
         } finally { $h.Dispose() }
@@ -144,18 +184,25 @@ foreach ($line in $lines) {
 
 Write-Output ''
 Write-Output "链首(GENESIS)条数: $genesis"
-Write-Output "结构断点: $($broken.Count)"
+Write-Output "结构断点: $($structBroken.Count)"
 if ($keyBytes) {
     Write-Output "HMAC 重算: 已校验 $hmacChecked 条, 不一致 $hmacBroken 条"
+}
+if ($hmacMessages.Count -gt 0) {
+    $hmacMessages | ForEach-Object { Write-Output "  - $_" }
 }
 
 if ($genesis -ne 1) {
     Write-Output "[FAIL] 链首必须且只能有一条（GENESIS），实际 $genesis 条"
     exit 1
 }
-if ($broken.Count -gt 0) {
-    $broken | Select-Object -First 10 | ForEach-Object { Write-Output "  - $_" }
+if ($structBroken.Count -gt 0) {
+    $structBroken | Select-Object -First 10 | ForEach-Object { Write-Output "  - $_" }
     Write-Output '[FAIL] 审计链结构断裂'
+    exit 1
+}
+if ($keyBytes -and $hmacBroken -gt 0) {
+    Write-Output "[FAIL] 有 $hmacBroken 条记录的 HMAC 无法离线重算一致（密钥不匹配，或归档缺少 tsMs 字段）"
     exit 1
 }
 

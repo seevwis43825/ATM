@@ -310,4 +310,38 @@ public class AuditLoggerTests : IDisposable
             Assert.Equal(sigs[i - 1], prevs[i]);
         }
     }
+
+    [Fact]
+    public async Task Archive_ContainsTheSignedTimestampInMilliseconds()
+    {
+        // 归档必须落下**参与签名的那一个整数毫秒**（tsMs）。
+        //
+        // 为什么：离线重算若只靠 ISO-8601 字符串，就得依赖「谁、用什么工具、怎么解析这个日期」——
+        // 而不同工具的行为并不一致。PowerShell 7 的 ConvertFrom-Json 会把日期串转成 [DateTime]，
+        // 再转字符串时按当前区域格式输出、**丢掉亚毫秒小数**，
+        // 于是 epoch 毫秒差了几毫秒 → 签名载荷整体不同 → 每一条都被判为 HMAC 不一致，
+        // 而链结构其实完好无损（实测 CI 上 66/66 全不一致就是这个原因）。
+        //
+        // 有了 tsMs，离线校验完全不依赖日期解析，也就不再受工具版本与区域设置影响。
+        var logger = CreateLogger();
+        var evt = Evt("tsms-1") with
+        {
+            // 刻意带亚毫秒小数：正是它会被「日期字符串 → DateTime → 字符串」的往返丢掉
+            Timestamp = new DateTimeOffset(2026, 10, 21, 7, 53, 38, TimeSpan.Zero).AddTicks(1_234_567)
+        };
+
+        await logger.WriteAsync(evt);
+
+        var lines = await ReadAuditLinesAsync(_logPath);
+        Assert.Single(lines);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(lines[0]);
+        var root = doc.RootElement;
+
+        Assert.True(root.TryGetProperty("tsMs", out var tsMs), "归档必须包含 tsMs 字段");
+        Assert.Equal(evt.Timestamp.ToUnixTimeMilliseconds(), tsMs.GetInt64());
+
+        // ts 仍然保留（人读用），但离线校验不再依赖它
+        Assert.True(root.TryGetProperty("ts", out _));
+    }
 }

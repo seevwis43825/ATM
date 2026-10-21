@@ -353,7 +353,16 @@ jobs:
             Write-Output "::error title=审计链缺失::宿主没有产出审计记录：$chain"
             exit 1
           }
-          $out = @(& ./scripts/read-audit-chain.ps1 -Path $chain -VerifyChain -VerifyHmac -SigningKey 'dev-only-key-change-in-production' 2>&1)
+          # 密钥从**源码里的常量**解析，不在这里硬编码：
+          # 硬编码一旦与 AuditSigningKeyPolicy.DevelopmentDefaultKey 漂移，
+          # 门禁会以「全部 HMAC 不匹配」的形式误报，而真正的原因（密钥变了）被淹没。
+          $key = (Select-String -Path 'src/src/BankingAgent.Base/Security/Audit/AuditLogger.cs' `
+                    -Pattern 'DevelopmentDefaultKey\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $key) {
+            Write-Output '::error title=审计链校验失败::未能从源码解析出开发默认审计密钥'
+            exit 1
+          }
+          $out = @(& ./scripts/read-audit-chain.ps1 -Path $chain -VerifyChain -VerifyHmac -SigningKey $key 2>&1)
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Output $_ }
           if ($code -ne 0) {
