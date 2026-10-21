@@ -33,7 +33,9 @@ builder.Logging.AddSimpleConsole(o =>
 
 // ===== 1. 装配核心框架 =====
 // 数据库、审计、合规、限流、加密、核心银行客户端、事件总线都在这里就位。
-builder.Services.AddBankingCore(builder.Configuration);
+// 把宿主环境一并传进去：审计签名密钥的策略要与宿主行为**同源**，
+// 否则会出现「宿主认为是生产、DI 认为是开发」这种判定分裂。
+builder.Services.AddBankingCore(builder.Configuration, builder.Environment);
 builder.Services.AddSingleton<IPluginStartupHook, PluginLifecycleBridge>();
 builder.Services.AddSingleton<IPluginShutdownHook, PluginLifecycleBridge>();
 
@@ -49,9 +51,12 @@ var loggerFactory = bootstrap.GetRequiredService<ILoggerFactory>();
 var bootLogger = loggerFactory.CreateLogger("Bootstrap");
 
 // ===== 安全门：生产配置不合规则阻止启动 =====
+// 传入宿主环境：安全门的环境判定与宿主完全同源，
+// 且在**非 Development 环境**下不可被 SecurityGate:Enabled=false 关闭。
 var securityGate = new SecurityGate(
     builder.Configuration,
-    loggerFactory.CreateLogger<SecurityGate>());
+    loggerFactory.CreateLogger<SecurityGate>(),
+    builder.Environment);
 securityGate.Enforce();
 
 // ===== 审计链签名密钥：启动期硬校验 =====

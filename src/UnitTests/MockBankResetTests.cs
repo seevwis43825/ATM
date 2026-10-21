@@ -30,79 +30,72 @@ public class MockBankResetTests
     private static readonly TimeSpan ResetTimeout = TimeSpan.FromSeconds(30);
 
     [Fact]
-    public async Task ResetAll_AcquiresLocksInBankCodeOrdinalOrder()
+    public async Task ResetAll_WhileCrossBankTransferHoldsFirstLock_DoesNotDeadlock()
     {
         var (factory, dataDir) = BuildFactory();
         try
         {
             var ledgers = factory.CreateAll();
             var byCode = ledgers.ToDictionary(l => l.Bank.BankCode, l => l);
-
-            // 行代码字典序：CCB < CMB < ICBC。
-            // 这条顺序必须与 MockBankStore.AcquireLedgerLocksAsync 用的是同一个。
-            Assert.Equal(
-                new[] { "CCB", "CMB", "ICBC" },
-                byCode.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray());
-
-            // 占住中间那档（CMB）的写锁，重置就应当先拿到 CCB、再卡在 CMB 上。
-            // 若顺序被改成别的（例如先 ICBC），它会在到达 CMB 之前就先去抢别的锁。
-            var cmb = byCode["CMB"];
             var ccb = byCode["CCB"];
-            cmb.Gate.Wait();
+            var icbc = byCode["ICBC"];
 
-            var reset = Task.Run(() => factory.ResetAll());
-            try
-            {
-                // 观测：阻塞期间 CCB 的锁应当**已被重置持有** ——
-                // 这正是「按字典序先取 CCB」的证据。
-                Assert.True(
-                    WaitUntil(() => IsHeldByOther(ccb.Gate), TimeSpan.FromSeconds(15)),
-                    "重置应当已持有 CCB 的写锁（说明它按字典序先取了 CCB，再卡在 CMB 上）");
+            // ===== 跨行转账的关键结构：持第一把锁去要第二把 =====
+            // 死锁的成因是「甲持 A 等 B、乙持 B 等 A」这个环。
+            // 所以这里**刻意**分两步取锁：先拿 CCB（字典序第一把），
+            // 停一下，再去拿 ICBC —— 复刻 MockBankStore.AcquireLedgerLocksAsync
+            // 「一把一把拿」的行为。
+            //
+            // ⚠️ 一次性把两把锁都拿齐的写法**构不成环**（拿齐之后就不再需要任何锁），
+            // 那种写法对死锁是空转的：无论重置的顺序怎么改，它都测不出问题。
+            var holdingCcb = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-                cmb.Gate.Release();
-                var finished = await Task.WhenAny(reset, Task.Delay(ResetTimeout));
-                Assert.True(finished == reset, "释放 CMB 的锁后重置应当完成");
-            }
-            finally
-            {
-                if (!reset.IsCompleted)
-                {
-                    cmb.Gate.Release();
-                    await reset.WaitAsync(ResetTimeout);
-                }
-            }
-        }
-        finally
-        {
-            Cleanup(dataDir);
-        }
-    }
-
-    [Fact]
-    public async Task ResetAll_WhileCrossBankLocksHeld_DoesNotDeadlock()
-    {
-        var (factory, dataDir) = BuildFactory();
-        try
-        {
-            var ledgers = factory.CreateAll();
-            var store = new MockBankStore(ledgers, NullLogger<MockBankStore>.Instance);
-
-            // 模拟一笔跨行转账：按 MockBankStore 自己的规则拿两行的锁并持有。
             var transfer = Task.Run(async () =>
             {
-                await using var handles = await store.AcquireLedgerLocksAsync(["ICBC", "CCB"]);
-                await Task.Delay(400);
+                // 顺序与 MockBankStore 一致：行代码字典序 ⇒ CCB 先、ICBC 后
+                await ccb.Gate.WaitAsync();
+                try
+                {
+                    holdingCcb.TrySetResult();
+                    await proceed.Task;            // 模拟「持着第一把锁去做别的事」
+                    await icbc.Gate.WaitAsync();   // ← 顺序不一致时，死锁就发生在这里
+                    try
+                    {
+                        // 跨行转账的其余动作（此处无）
+                    }
+                    finally
+                    {
+                        icbc.Gate.Release();
+                    }
+                }
+                finally
+                {
+                    ccb.Gate.Release();
+                }
             });
 
-            // 等转账确实拿到锁后再发起重置
-            await Task.Delay(100);
+            await holdingCcb.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
+            // 重置与转账并发
             var reset = Task.Run(() => factory.ResetAll());
+
+            // 观测：重置有没有抢在 CCB 之前拿走 ICBC？
+            //   正确顺序（与转账同序，CCB 优先）⇒ 重置会卡在 CCB 上，什么也没拿到；
+            //   错误顺序（ICBC 优先）⇒ 重置拿走 ICBC，随后与转账形成等待环。
+            var resetGrabbedIcbcFirst = await WaitUntilAsync(
+                () => IsHeldByOther(icbc.Gate), TimeSpan.FromSeconds(3));
+
+            // 放行转账去要第二把锁
+            proceed.TrySetResult();
 
             var all = Task.WhenAll(transfer, reset);
             var finished = await Task.WhenAny(all, Task.Delay(ResetTimeout));
-            Assert.True(finished == all,
-                "跨行转账与重置并发时必须在超时前全部完成 —— 若加锁顺序不一致，这里会死锁");
+            Assert.True(
+                finished == all,
+                "跨行转账与重置并发时必须在超时前全部完成 —— 若两边的加锁顺序不一致，" +
+                "就会形成「转账持 CCB 等 ICBC、重置持 ICBC 等 CCB」的等待环而死锁。" +
+                $"（本次观测：重置是否抢先拿走 ICBC = {resetGrabbedIcbcFirst}；正确顺序下应为 False）");
 
             await all;
         }
@@ -250,8 +243,8 @@ public class MockBankResetTests
         return true;
     }
 
-    /// <summary>轮询等待条件成立。</summary>
-    private static bool WaitUntil(Func<bool> condition, TimeSpan timeout)
+    /// <summary>轮询等待条件成立（异步版）。</summary>
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         while (sw.Elapsed < timeout)
@@ -261,7 +254,7 @@ public class MockBankResetTests
                 return true;
             }
 
-            Thread.Sleep(20);
+            await Task.Delay(20);
         }
 
         return condition();

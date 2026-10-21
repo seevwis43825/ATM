@@ -23,6 +23,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Text;
 
@@ -32,8 +33,14 @@ public static class BankingCoreServiceCollectionExtensions
     /// <summary>注册 Base 全部基础能力。</summary>
     /// <param name="services">服务集合。</param>
     /// <param name="configuration">配置根，用于读取连接字符串与阈值。</param>
+    /// <param name="environment">
+    /// 宿主环境。传入时，审计签名密钥的策略与宿主行为**同源**
+    /// （不会出现「宿主认为是生产、DI 认为是开发」这种分裂）；
+    /// 为空时按配置解析环境名（供手工装配容器的场景使用）。
+    /// </param>
     public static IServiceCollection AddBankingCore(
-        this IServiceCollection services, IConfiguration configuration)
+        this IServiceCollection services, IConfiguration configuration,
+        IHostEnvironment? environment = null)
     {
         // ===== 1. 时钟与当前用户 =====
         services.TryAddSingleton(new DateTimeOffsetProvider());
@@ -43,7 +50,7 @@ public static class BankingCoreServiceCollectionExtensions
         services.AddBankingDatabase(configuration);
 
         // ===== 3. 安全合规 =====
-        services.AddBankingSecurity(configuration);
+        services.AddBankingSecurity(configuration, environment);
 
         // ===== 4. 事件总线 =====
         services.AddSingleton<IEventPublisher>(sp =>
@@ -150,8 +157,16 @@ public static class BankingCoreServiceCollectionExtensions
     }
 
     /// <summary>注册安全合规基础设施。</summary>
+    /// <param name="services">服务集合。</param>
+    /// <param name="configuration">配置根。</param>
+    /// <param name="environment">
+    /// 宿主环境。传入时，审计签名密钥的策略与宿主行为**同源**
+    /// （不会出现「宿主认为是生产、DI 认为是开发」这种分裂）；
+    /// 为空时按配置解析环境名（供手工装配容器的场景使用）。
+    /// </param>
     public static IServiceCollection AddBankingSecurity(
-        this IServiceCollection services, IConfiguration configuration)
+        this IServiceCollection services, IConfiguration configuration,
+        IHostEnvironment? environment = null)
     {
         services.Configure<AuditOptions>(configuration.GetSection("Audit"));
         services.Configure<ComplianceOptions>(configuration.GetSection("Compliance"));
@@ -205,7 +220,7 @@ public static class BankingCoreServiceCollectionExtensions
         {
             options.SigningKey = AuditSigningKeyPolicy.Resolve(
                 options.SigningKey,
-                IsDevelopmentEnvironment(configuration));
+                IsDevelopmentEnvironment(configuration, environment));
         });
 
         services.AddSingleton<IAuditLogger, AuditLogger>();
@@ -275,26 +290,21 @@ public static class BankingCoreServiceCollectionExtensions
     }
 
     /// <summary>
-    /// 从配置里判断当前是否运行在 Development 环境。
+    /// 判断当前是否运行在 Development 环境。
     ///
-    /// 为什么需要另有一个「配置版」判定：<see cref="IsDevelopment(IServiceProvider)"/>
-    /// 依赖容器里的 <c>IHostEnvironment</c>，而配置绑定阶段拿不到服务提供者。
-    /// 审计密钥必须在 <c>IOptions</c> 物化时判定（绑定之后、构造之前），只能走配置。
-    ///
-    /// 为什么读环境变量是可靠的：默认宿主配置包含环境变量源，
-    /// 所以 <c>configuration["ASPNETCORE_ENVIRONMENT"]</c> 就是宿主实际使用的环境名来源；
-    /// 未设置时 ASP.NET Core 的默认环境是 <c>Production</c>（fail-closed 的默认值）。
+    /// 统一走 <see cref="HostEnvironmentResolver"/>，避免与宿主 / 安全门各判各的。
+    /// 宿主环境存在时以它为准（权威来源）；不存在时（手工装配容器的场景）
+    /// 按配置里的环境变量解析，规则与宿主一致。
     /// </summary>
     /// <param name="configuration">宿主配置。</param>
+    /// <param name="environment">宿主环境，可为空。</param>
     /// <returns>是否 Development 环境。</returns>
-    private static bool IsDevelopmentEnvironment(IConfiguration configuration)
-    {
-        var name = configuration["ASPNETCORE_ENVIRONMENT"]
-                   ?? configuration["DOTNET_ENVIRONMENT"]
-                   ?? "Production";
-
-        return name.Equals("Development", StringComparison.OrdinalIgnoreCase);
-    }
+    private static bool IsDevelopmentEnvironment(
+        IConfiguration configuration, IHostEnvironment? environment) =>
+        environment is not null
+            ? environment.EnvironmentName.Equals(
+                HostEnvironmentResolver.DevelopmentEnvironmentName, StringComparison.OrdinalIgnoreCase)
+            : HostEnvironmentResolver.IsDevelopment(configuration);
 
     /// <summary>注册插件提供的 Agent（宿主在构建容器后调用）。</summary>
     public static IServiceCollection AddPluginAgents(this IServiceCollection services)

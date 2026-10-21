@@ -58,11 +58,12 @@ public class AuditSigningKeyTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<IConfiguration>(config);
-        // IHostEnvironment 决定「是不是开发环境」，宿主由 WebApplicationBuilder 自动注册，
-        // 手工装配的容器必须显式补上，否则会一律按非开发环境处理。
-        services.AddSingleton<IHostEnvironment>(
-            new StubHostEnvironment(environmentName));
-        services.AddBankingCore(config);
+        // 审计密钥的环境判定现在以**宿主环境**为准（与宿主行为同源），
+        // 所以必须把同一个环境实例同时注册进容器并传给 AddBankingCore ——
+        // 否则测的就不是生产实际走的那条路径（容器解析到的会是配置里的环境变量）。
+        var environment = new StubHostEnvironment(environmentName);
+        services.AddSingleton<IHostEnvironment>(environment);
+        services.AddBankingCore(config, environment);
 
         return services.BuildServiceProvider(new ServiceProviderOptions
         {
@@ -119,6 +120,40 @@ public class AuditSigningKeyTests
 
         var options = provider.GetRequiredService<AuditOptions>();
         Assert.Equal(configured, options.SigningKey);
+    }
+
+    [Fact]
+    public void HostEnvironment_WinsOverConfigEnvironmentVariable()
+    {
+        // 第四轮审查点出的「判定分裂」：ASP.NET Core 宿主是 DOTNET_ENVIRONMENT 优先
+        // （已实测：ASPNETCORE=Development + DOTNET=Production ⇒ 宿主取 Production）。
+        // 如果审计密钥策略自己再按配置解析一遍，两处就会给出相反的答案。
+        // 现在策略直接用宿主环境 ⇒ 结构上不可能分裂。
+        //
+        // 这里构造「配置说开发、宿主说生产」：必须按**宿主**（生产）处理 ⇒ 拒绝启动。
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                // 配置里写的是「开发」，但宿主环境是「生产」 —— 宿主说了算
+                ["ASPNETCORE_ENVIRONMENT"] = "Development",
+                ["DOTNET_ENVIRONMENT"] = "Production",
+                ["Audit:SigningKey"] = "",
+                ["RateLimit:Enabled"] = "false"
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IConfiguration>(config);
+        var environment = new StubHostEnvironment("Production");
+        services.AddSingleton<IHostEnvironment>(environment);
+        services.AddBankingCore(config, environment);
+
+        using var provider = services.BuildServiceProvider();
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => provider.GetRequiredService<IAuditLogger>());
+        Assert.Contains("Audit:SigningKey", ex.Message, StringComparison.Ordinal);
     }
 
     /// <summary>最小化的 IHostEnvironment 实现，只提供环境名与内容根。</summary>

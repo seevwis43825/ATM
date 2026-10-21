@@ -11,6 +11,7 @@
 namespace BankingAgent.Base.Security.Hardening;
 
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 /// <summary>安全门配置。</summary>
@@ -65,33 +66,52 @@ public sealed class SecurityGate
 {
     private readonly IConfiguration _config;
     private readonly ILogger<SecurityGate> _logger;
+    private readonly IHostEnvironment? _environment;
 
     /// <summary>构造安全门。</summary>
-    public SecurityGate(IConfiguration config, ILogger<SecurityGate> logger)
+    /// <param name="config">宿主配置。</param>
+    /// <param name="logger">日志记录器。</param>
+    /// <param name="environment">
+    /// 宿主环境。传入时以它为准（与宿主行为完全同源）；
+    /// 为空时退回按配置解析环境名（供手工装配容器的场景使用）。
+    /// </param>
+    public SecurityGate(IConfiguration config, ILogger<SecurityGate> logger, IHostEnvironment? environment = null)
     {
         _config = config;
         _logger = logger;
+        _environment = environment;
     }
 
     /// <summary>
     /// 是否生产环境。
     ///
-    /// 同时看两个来源：配置里的 <c>SecurityGate:Environment</c>，
-    /// 以及进程的环境变量 <c>ASPNETCORE_ENVIRONMENT</c> / <c>DOTNET_ENVIRONMENT</c>。
+    /// 判定规则：**非 Development 即视为生产**。
     ///
-    /// 为什么必须看环境变量：随仓库入库的配置里 <c>SecurityGate:Environment</c> 是
-    /// <c>Development</c>、<c>SecurityGate:Enabled</c> 是 <c>false</c>。
-    /// 若只认配置那一个，一个把 <c>ASPNETCORE_ENVIRONMENT=Production</c> 部署上去、
-    /// 却没改配置文件的环境，会在**完全没有安全检查**的情况下启动 ——
-    /// 空审计密钥、空 JWT 密钥全部放行。
+    /// 为什么不是「名字恰好等于 Production」：
+    ///   只认字面 <c>Production</c> 的话，<c>Staging</c>、<c>Prod</c>、带空格的
+    ///   <c>production </c> 都会让 <c>IsProduction=false</c> ⇒ 安全门可被
+    ///   <c>SecurityGate:Enabled=false</c> 短路 ⇒ JWT 密钥、加密密钥、HTTPS、限流
+    ///   这些硬性检查在预发环境形同虚设。
+    ///   规则反过来（只要不是开发环境就按生产对待）就没有这个洞。
+    ///
+    /// 环境名来源与宿主一致（见 <see cref="HostEnvironmentResolver"/>）：
+    /// <c>DOTNET_ENVIRONMENT</c> 优先于 <c>ASPNETCORE_ENVIRONMENT</c>，
+    /// 都没设时为 <c>Production</c>（ASP.NET Core 自身的默认值，fail-closed）。
     /// </summary>
-    public bool IsProduction =>
-        (Str("SecurityGate:Environment") ?? "Development")
-            .Equals("Production", StringComparison.OrdinalIgnoreCase)
-        || (Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "")
-            .Equals("Production", StringComparison.OrdinalIgnoreCase)
-        || (Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "")
-            .Equals("Production", StringComparison.OrdinalIgnoreCase);
+    public bool IsProduction => !IsDevelopment();
+
+    /// <summary>当前是否是开发环境。</summary>
+    private bool IsDevelopment()
+    {
+        // 宿主环境优先：它是权威来源（含代码里显式设置 EnvironmentName 的情形）。
+        if (_environment is not null)
+        {
+            return _environment.EnvironmentName
+                .Equals(HostEnvironmentResolver.DevelopmentEnvironmentName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return HostEnvironmentResolver.IsDevelopment(_config);
+    }
 
     /// <summary>读取布尔配置，缺省时返回 fallback。</summary>
     private bool Flag(string key, bool fallback)
